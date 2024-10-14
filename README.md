@@ -32,7 +32,7 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
 
    - Go to **"Event Subscriptions"**.
    - Turn on **"Enable Events"**.
-   - Under **"Request URL"**, set the publicly available URL of the running `bot.py` instance.
+   - Do not enter a **"Request URL"** — it's not needed in Socket Mode.
    - Under **"Subscribe to bot events"**, add:
      - `message.channels`
      - `reaction_added`
@@ -49,13 +49,18 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
    - Give it a name (e.g., `default`) and add the scope `connections:write`.
    - Click **"Generate"** and copy the token.
 
-5. **Install the App**
+5. **Enable Socket Mode**
+
+   - Go to **"Socket Mode"**.
+   - Click on **"Enable Socket Mode"**.
+
+6. **Install the App**
 
    - Go to **"Install App"**.
    - Click **"Install App to Workspace"** and authorize the app.
    - Copy the **Bot User OAuth Token**; you'll need it later.
 
-6. **Run the App**
+7. **Run the App**
 
 ```
 export SLACK_BOT_TOKEN='xoxb-your-bot-token'
