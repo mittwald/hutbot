@@ -6,8 +6,6 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 
-app = App()
-
 default_config = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
