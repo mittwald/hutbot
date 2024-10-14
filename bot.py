@@ -226,6 +226,7 @@ def register_app_handlers(app):
             logger.info(f"Scheduling reminder for message {ts} in channel {channel}")
             task = asyncio.create_task(schedule_reply(app, channel, ts))
             scheduled_messages[(channel, ts)] = task
+            print(str(scheduled_messages))
 
 
     @app.event("message")
@@ -234,13 +235,16 @@ def register_app_handlers(app):
         subtype = event.get('subtype')
 
         if subtype == 'message_deleted':
+            print(str(event))
             channel = event.get('channel')
             deleted_ts = event['previous_message']['ts']
 
             # Cancel the scheduled task if it exists
             key = (channel, deleted_ts)
+            print(str(key))
             if key in scheduled_messages:
                 logger.info(f"Message deleted. Cancelling reminder for message {deleted_ts} in channel {channel}")
+                print(str("deleting"))
                 scheduled_messages[key].cancel()
                 del scheduled_messages[key]
 
