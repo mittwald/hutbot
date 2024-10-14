@@ -9,7 +9,21 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
    - Go to [Slack API: Applications](https://api.slack.com/apps) and click **"Create New App"**.
    - Choose **"From scratch"** and give your app a name and select your workspace.
 
-2. **Add Required Permissions**
+2. **Create an App-Level Token**
+
+   - Go back to your app's settings.
+   - Navigate to **"Basic Information"**.
+   - Scroll down to **"App-Level Tokens"**.
+   - Click **"Generate Token and Scopes"**.
+   - Give it a name (e.g., `default`) and add the scope `connections:write`.
+   - Click **"Generate"** and copy the token.
+
+3. **Enable Socket Mode**
+
+   - Go to **"Socket Mode"**.
+   - Click on **"Enable Socket Mode"**.
+
+4. **Add Required Permissions**
 
    - Navigate to **"OAuth & Permissions"** on the left sidebar.
    - Under **"Scopes"**, add the following bot token scopes:
@@ -28,11 +42,10 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
      - `team:read`
      - `commands`
 
-3. **Enable Event Subscriptions**
+5. **Enable Event Subscriptions**
 
    - Go to **"Event Subscriptions"**.
    - Turn on **"Enable Events"**.
-   - Do not enter a **"Request URL"** — it's not needed in Socket Mode.
    - Under **"Subscribe to bot events"**, add:
      - `message.channels`
      - `reaction_added`
@@ -40,27 +53,13 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
      - `message.im`
      - `message.mpim`
 
-4. **Create an App-Level Token**
-
-   - Go back to your app's settings.
-   - Navigate to **"Basic Information"**.
-   - Scroll down to **"App-Level Tokens"**.
-   - Click **"Generate Token and Scopes"**.
-   - Give it a name (e.g., `default`) and add the scope `connections:write`.
-   - Click **"Generate"** and copy the token.
-
-5. **Enable Socket Mode**
-
-   - Go to **"Socket Mode"**.
-   - Click on **"Enable Socket Mode"**.
-
 6. **Install the App**
 
    - Go to **"Install App"**.
    - Click **"Install App to Workspace"** and authorize the app.
    - Copy the **Bot User OAuth Token**; you'll need it later.
 
-7. **Run the App**
+8. **Run the App**
 
 ```
 export SLACK_BOT_TOKEN='xoxb-your-bot-token'
@@ -71,7 +70,7 @@ python bot.py
 
 See [Hutbot Slack App](https://api.slack.com/apps/A07RQ54Q5H9)
 
-7. **Invite Bot**
+9. **Invite Bot**
 
 ```
 /invite @Hutbot
