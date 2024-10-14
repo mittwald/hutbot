@@ -40,16 +40,33 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
      - `message.im`
      - `message.mpim`
 
-4. **Install the App**
+4. **Create an App-Level Token**
+
+   - Go back to your app's settings.
+   - Navigate to **"Basic Information"**.
+   - Scroll down to **"App-Level Tokens"**.
+   - Click **"Generate Token and Scopes"**.
+   - Give it a name (e.g., `default`) and add the scope `connections:write`.
+   - Click **"Generate"** and copy the token.
+
+5. **Install the App**
 
    - Go to **"Install App"**.
    - Click **"Install App to Workspace"** and authorize the app.
    - Copy the **Bot User OAuth Token**; you'll need it later.
 
-5. **Run the App**
+6. **Run the App**
 
 ```
 export SLACK_BOT_TOKEN='xoxb-your-bot-token'
 export SLACK_APP_TOKEN='xapp-your-app-level-token'
 python bot.py
+```
+
+See [Hutbot Slack App](https://api.slack.com/apps/A07RQ54Q5H9)
+
+7. **Invite Bot**
+
+```
+/invite @Hutbot
 ```

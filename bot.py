@@ -24,7 +24,7 @@ scheduled_messages = {}
 SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait_time\s+(\d+)', re.IGNORECASE)
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
-
+HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 
 @app.event("message")
 def handle_message_events(body, logger):
@@ -105,8 +105,11 @@ def handle_command(text, channel, user):
         set_reply_message(channel, message, user)
     elif SHOW_CONFIG_PATTERN.match(text):
         show_config(channel, user)
+    elif HELP_PATTERN.match(text):
+        send_help_message(channel, user)
     else:
-        send_message(channel, user, "Sorry, I didn't understand that command.")
+        send_message(channel, user, "Sorry, I didn't understand that command. Type 'help' for a list of commands.")
+
 
 @app.command("/hutbot")
 def handle_config_command(ack, body, logger):
@@ -143,10 +146,30 @@ def send_message(channel, user, text):
         app.client.chat_postEphemeral(
             channel=channel,
             user=user,
-            text=text
+            text=text,
+            mrkdwn=True  # Enable Markdown formatting
         )
     except SlackApiError as e:
         print(f"Error sending message: {e}")
+
+
+def send_help_message(channel, user):
+    help_text = (
+        "Hello! I'm *Hutbot*. Here's how you can interact with me:\n\n"
+        "*Set Wait Time:*\n"
+        "```@Hutbot set wait_time [minutes]```\n"
+        "Sets the wait time before I send a reminder. Replace `[minutes]` with the number of minutes you want.\n\n"
+        "*Set Reply Message:*\n"
+        "```@Hutbot set message \"Your reminder message\"```\n"
+        "Sets the reminder message I'll send. Enclose your message in quotes.\n\n"
+        "*Show Current Configuration:*\n"
+        "```@Hutbot show config```\n"
+        "Displays the current wait time and reply message.\n\n"
+        "*Help:*\n"
+        "```@Hutbot help```\n"
+        "Displays this help message.\n"
+    )
+    send_message(channel, user, help_text)
 
 
 async def schedule_reply(channel, ts):
