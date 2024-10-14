@@ -52,7 +52,7 @@ async def save_configuration():
         print(f"ERROR: Failed to save configuration: {e}", file=sys.stderr)
 
 
-async def update_user_cache():
+async def update_user_cache(app):
     global user_cache
     try:
         response = await app.client.users_list()
@@ -273,8 +273,8 @@ async def main():
 
     try:
         await load_configuration()
-        await update_user_cache()
         app = AsyncApp(token=os.environ.get("SLACK_BOT_TOKEN"))
+        await update_user_cache(app)
         register_app_handlers(app)
         handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
         await handler.start_async()
