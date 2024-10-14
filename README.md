@@ -40,6 +40,7 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
      - `groups:history`
      - `groups:read`
      - `team:read`
+     - `users.read`
      - `commands`
 
 5. **Enable Event Subscriptions**

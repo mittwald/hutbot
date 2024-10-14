@@ -109,10 +109,10 @@ async def set_reply_message(app, channel, message, user):
     if not message or message.strip() == "":
         await send_message(app, channel, user, "Invalid reply message. Must be non-empty.")
         return
-    ok, error, message = await process_mentions(app, message)
-    if not ok:
-        await send_message(app, channel, user, "Invalid reply message: " + error + ".")
-        return
+    #ok, error, message = await process_mentions(app, message)
+    #if not ok:
+    #    await send_message(app, channel, user, "Invalid reply message: " + error + ".")
+    #    return
     if channel not in channel_config:
         channel_config[channel] = default_config.copy()
 
@@ -123,7 +123,7 @@ async def set_reply_message(app, channel, message, user):
 
 async def process_mentions(app, message) -> tuple[bool, str, str]:
     # Regular expression to find @username patterns
-    mention_pattern = re.compile(r'@(\w+)')
+    mention_pattern = re.compile(r'@([\w]+)')
     matches = mention_pattern.findall(message)
     if matches:
         # Ensure user cache is updated
@@ -204,10 +204,15 @@ def register_app_handlers(app):
     @app.event("message")
     async def handle_message_events(body, logger):
         event = body.get('event', {})
+        subtype = event.get('subtype')
         channel = event.get('channel')
         user = event.get('user')
         ts = event.get('ts')
         text = event.get('text', '')
+
+        # Ignore bot messages and message deletions in this handler
+        if subtype == 'message_deleted' or 'bot_id' in event:
+            return
 
         # Ignore messages from the bot itself
         if user == body['authorizations'][0]['user_id']:
@@ -221,6 +226,23 @@ def register_app_handlers(app):
             logger.info(f"Scheduling reminder for message {ts} in channel {channel}")
             task = asyncio.create_task(schedule_reply(app, channel, ts))
             scheduled_messages[(channel, ts)] = task
+
+
+    @app.event("message")
+    async def handle_message_deletion_events(body, logger):
+        event = body.get('event', {})
+        subtype = event.get('subtype')
+
+        if subtype == 'message_deleted':
+            channel = event.get('channel')
+            deleted_ts = event['previous_message']['ts']
+
+            # Cancel the scheduled task if it exists
+            key = (channel, deleted_ts)
+            if key in scheduled_messages:
+                logger.info(f"Message deleted. Cancelling reminder for message {deleted_ts} in channel {channel}")
+                scheduled_messages[key].cancel()
+                del scheduled_messages[key]
 
 
     @app.event("reaction_added")
