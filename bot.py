@@ -46,7 +46,6 @@ async def save_configuration():
         async with aiofiles.open(config_file, 'w') as f:
             content = json.dumps(channel_config)
             await f.write(content)
-            print("Configuration saved to disk.")
     except Exception as e:
         print(f"Error saving configuration: {e}")
 
@@ -108,7 +107,7 @@ async def show_config(app, channel, user):
     config = channel_config.get(channel, default_config)
     wait_time_minutes = config['wait_time'] // 60
     reply_message = config['reply_message']
-    message = f"Current configuration:\nWait time: `{wait_time_minutes}` minutes\nReply message:\n{reply_message}"
+    message = f"This is the configuration for the current channel:\n\n*Wait time*: `{wait_time_minutes}` minutes\n\n*Reply message*:\n{reply_message}"
     await send_message(app, channel, user, message)
 
 
