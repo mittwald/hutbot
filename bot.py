@@ -201,6 +201,9 @@ def main():
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         exit(1)
+    except KeyboardInterrupt:
+        print("Exiting...")
+        exit(0)
 
 if __name__ == "__main__":
     main()
