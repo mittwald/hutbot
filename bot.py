@@ -202,7 +202,7 @@ def main():
         print(f"ERROR: {e}", file=sys.stderr)
         exit(1)
     except KeyboardInterrupt:
-        print("Exiting...")
+        print("\rExiting...")
         exit(0)
 
 if __name__ == "__main__":
