@@ -140,8 +140,8 @@ def register_app_handlers(app):
             return
 
         # Check if the message is a command directed at the bot
-        if is_command(app, text):
-            handle_command(app, text, channel, user)
+        if await is_command(app, text):
+            await handle_command(app, text, channel, user)
         else:
             # Schedule a reminder
             logger.info(f"Scheduling reminder for message {ts} in channel {channel}")
@@ -186,11 +186,11 @@ def register_app_handlers(app):
 
     @app.command("/hutbot")
     async def handle_config_command(ack, body, logger):
-        ack()
+        await ack()
         text = body.get('text', '')
         channel = body['channel_id']
         user = body['user_id']
-        handle_command(app, text, channel, user)
+        await handle_command(app, text, channel, user)
 
 async def main():
     if os.environ.get("SLACK_APP_TOKEN") is None or os.environ.get("SLACK_BOT_TOKEN") is None:
