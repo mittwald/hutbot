@@ -5,12 +5,10 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 
-# Initialize the app with your bot token and signing secret
-app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+app = None
 
-# Default configurations
 default_config = {
-    "wait_time": 30 * 60,  # 30 minutes in seconds
+    "wait_time": 30 * 60,
     "reply_message": "Anybody?",
 }
 
@@ -21,10 +19,10 @@ channel_config = {}
 scheduled_messages = {}
 
 # Regex patterns for command parsing
+HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait_time\s+(\d+)', re.IGNORECASE)
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
-HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 
 @app.event("message")
 def handle_message_events(body, logger):
@@ -150,7 +148,7 @@ def send_message(channel, user, text):
             mrkdwn=True  # Enable Markdown formatting
         )
     except SlackApiError as e:
-        print(f"Error sending message: {e}")
+        print(f"ERROR: Failed to send message: {e}")
 
 
 def send_help_message(channel, user):
@@ -186,12 +184,21 @@ async def schedule_reply(channel, ts):
     except asyncio.CancelledError:
         pass  # Task was cancelled because a reaction or reply was detected
     except SlackApiError as e:
-        print(f"Error sending scheduled reply: {e}")
+        print(f"ERROR: Failed to send scheduled reply: {e}")
 
+def main():
+    if os.environ.get("SLACK_APP_TOKEN") is None or os.environ.get("SLACK_BOT_TOKEN") is None:
+        print("ERROR: Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app", file=sys.stderr)
+        exit(1)
+
+    try:
+        global app
+        app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+        handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
+        handler.start()
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        exit(1)
 
 if __name__ == "__main__":
-    # Set your bot token and app token as environment variables
-    # os.environ["SLACK_BOT_TOKEN"] = "xoxb-your-slack-bot-token"
-    # os.environ["SLACK_APP_TOKEN"] = "xapp-your-app-level-token"
-    handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
-    handler.start()
+    main()    
