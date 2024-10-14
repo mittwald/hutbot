@@ -2,8 +2,8 @@ import os
 import re
 import sys
 import asyncio
-from slack_bolt import App
-from slack_bolt.adapter.socket_mode import SocketModeHandler
+from slack_bolt.async_app import AsyncApp
+from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
 
 default_config = {
@@ -24,59 +24,59 @@ SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
 
 
-def is_command(app, text):
+async def is_command(app, text):
     # Check if the message is directed at the bot and is a command
-    bot_user_id = app.client.auth_test()["user_id"]
+    bot_user_id = (await app.client.auth_test())["user_id"]
     return f"<@{bot_user_id}>" in text
 
 
-def handle_command(app, text, channel, user):
+async def handle_command(app, text, channel, user):
     # Remove bot mention
-    bot_user_id = app.client.auth_test()["user_id"]
+    bot_user_id = (await app.client.auth_test())["user_id"]
     text = text.replace(f"<@{bot_user_id}>", "").strip()
 
     # Parse commands
     if SET_WAIT_TIME_PATTERN.match(text):
         match = SET_WAIT_TIME_PATTERN.match(text)
         wait_time_minutes = int(match.group(1))
-        set_wait_time(app, channel, wait_time_minutes, user)
+        await set_wait_time(app, channel, wait_time_minutes, user)
     elif SET_REPLY_MESSAGE_PATTERN.match(text):
         match = SET_REPLY_MESSAGE_PATTERN.match(text)
         message = match.group(1).strip('"').strip("'")
-        set_reply_message(app, channel, message, user)
+        await set_reply_message(app, channel, message, user)
     elif SHOW_CONFIG_PATTERN.match(text):
-        show_config(app, channel, user)
+        await show_config(app, channel, user)
     elif HELP_PATTERN.match(text):
-        send_help_message(app, channel, user)
+        await send_help_message(app, channel, user)
     else:
-        send_message(app, channel, user, "Sorry, I didn't understand that command. Type 'help' for a list of commands.")
+        await send_message(app, channel, user, "Sorry, I didn't understand that command. Type 'help' for a list of commands.")
 
 
-def set_wait_time(app, channel, wait_time_minutes, user):
+async def set_wait_time(app, channel, wait_time_minutes, user):
     if channel not in channel_config:
         channel_config[channel] = default_config.copy()
     channel_config[channel]['wait_time'] = wait_time_minutes * 60  # Convert to seconds
-    send_message(app, channel, user, f"Wait time set to {wait_time_minutes} minutes.")
+    await send_message(app, channel, user, f"Wait time set to {wait_time_minutes} minutes.")
 
 
-def set_reply_message(app, channel, message, user):
+async def set_reply_message(app, channel, message, user):
     if channel not in channel_config:
         channel_config[channel] = default_config.copy()
     channel_config[channel]['reply_message'] = message
-    send_message(app, channel, user, f"Reply message set to: {message}")
+    await send_message(app, channel, user, f"Reply message set to: {message}")
 
 
-def show_config(app, channel, user):
+async def show_config(app, channel, user):
     config = channel_config.get(channel, default_config)
     wait_time_minutes = config['wait_time'] // 60
     reply_message = config['reply_message']
     message = f"Current configuration:\n- Wait time: {wait_time_minutes} minutes\n- Reply message: {reply_message}"
-    send_message(app, channel, user, message)
+    await send_message(app, channel, user, message)
 
 
-def send_message(app, channel, user, text):
+async def send_message(app, channel, user, text):
     try:
-        app.client.chat_postEphemeral(
+        await app.client.chat_postEphemeral(
             channel=channel,
             user=user,
             text=text,
@@ -86,7 +86,7 @@ def send_message(app, channel, user, text):
         print(f"ERROR: Failed to send message: {e}")
 
 
-def send_help_message(app, channel, user):
+async def send_help_message(app, channel, user):
     help_text = (
         "Hello! I'm *Hutbot*. Here's how you can interact with me:\n\n"
         "*Set Wait Time:*\n"
@@ -106,7 +106,7 @@ def send_help_message(app, channel, user):
         "```@Hutbot help```\n"
         "Displays this help message.\n"
     )
-    send_message(app, channel, user, help_text)
+    await send_message(app, channel, user, help_text)
 
 
 async def schedule_reply(app, channel, ts):
@@ -115,7 +115,7 @@ async def schedule_reply(app, channel, ts):
     reply_message = config['reply_message']
     try:
         await asyncio.sleep(wait_time)
-        app.client.chat_postMessage(
+        await app.client.chat_postMessage(
             channel=channel,
             thread_ts=ts,
             text=reply_message
@@ -128,7 +128,7 @@ async def schedule_reply(app, channel, ts):
 
 def register_app_handlers(app):
     @app.event("message")
-    def handle_message_events(body, logger):
+    async def handle_message_events(body, logger):
         event = body.get('event', {})
         channel = event.get('channel')
         user = event.get('user')
@@ -150,7 +150,7 @@ def register_app_handlers(app):
 
 
     @app.event("reaction_added")
-    def handle_reaction_added_events(body, logger):
+    async def handle_reaction_added_events(body, logger):
         event = body.get('event', {})
         item = event.get('item', {})
         channel = item.get('channel')
@@ -165,7 +165,7 @@ def register_app_handlers(app):
 
 
     @app.event("message")
-    def handle_thread_responses(body, logger):
+    async def handle_thread_responses(body, logger):
         event = body.get('event', {})
         channel = event.get('channel')
         thread_ts = event.get('thread_ts')
@@ -185,23 +185,25 @@ def register_app_handlers(app):
 
 
     @app.command("/hutbot")
-    def handle_config_command(ack, body, logger):
+    async def handle_config_command(ack, body, logger):
         ack()
         text = body.get('text', '')
         channel = body['channel_id']
         user = body['user_id']
         handle_command(app, text, channel, user)
 
-def main():
+async def main():
     if os.environ.get("SLACK_APP_TOKEN") is None or os.environ.get("SLACK_BOT_TOKEN") is None:
         print("ERROR: Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app", file=sys.stderr)
         exit(1)
 
     try:
-        app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+        app = AsyncApp(token=os.environ.get("SLACK_BOT_TOKEN"))
         register_app_handlers(app)
-        handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
-        handler.start()
+        handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
+        await handler.start_async()
+    except asyncio.CancelledError:
+        pass # Task was cancelled because a reaction or reply was detected
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         exit(1)
@@ -210,4 +212,4 @@ def main():
         exit(0)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
