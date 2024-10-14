@@ -32,7 +32,7 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
 
    - Go to **"Event Subscriptions"**.
    - Turn on **"Enable Events"**.
-   - Under **"Request URL"**, we'll set this up after hosting the bot.
+   - Under **"Request URL"**, set the publicly available URL of the running `bot.py` instance.
    - Under **"Subscribe to bot events"**, add:
      - `message.channels`
      - `reaction_added`
@@ -60,6 +60,7 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
 ```
 export SLACK_BOT_TOKEN='xoxb-your-bot-token'
 export SLACK_APP_TOKEN='xapp-your-app-level-token'
+pip install -r requirements.txt
 python bot.py
 ```
 
