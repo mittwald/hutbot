@@ -24,13 +24,13 @@ SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
 
 
-def is_command(text):
+def is_command(app, text):
     # Check if the message is directed at the bot and is a command
     bot_user_id = app.client.auth_test()["user_id"]
     return f"<@{bot_user_id}>" in text
 
 
-def handle_command(text, channel, user):
+def handle_command(app, text, channel, user):
     # Remove bot mention
     bot_user_id = app.client.auth_test()["user_id"]
     text = text.replace(f"<@{bot_user_id}>", "").strip()
@@ -39,42 +39,42 @@ def handle_command(text, channel, user):
     if SET_WAIT_TIME_PATTERN.match(text):
         match = SET_WAIT_TIME_PATTERN.match(text)
         wait_time_minutes = int(match.group(1))
-        set_wait_time(channel, wait_time_minutes, user)
+        set_wait_time(app, channel, wait_time_minutes, user)
     elif SET_REPLY_MESSAGE_PATTERN.match(text):
         match = SET_REPLY_MESSAGE_PATTERN.match(text)
         message = match.group(1).strip('"').strip("'")
-        set_reply_message(channel, message, user)
+        set_reply_message(app, channel, message, user)
     elif SHOW_CONFIG_PATTERN.match(text):
-        show_config(channel, user)
+        show_config(app, channel, user)
     elif HELP_PATTERN.match(text):
-        send_help_message(channel, user)
+        send_help_message(app, channel, user)
     else:
-        send_message(channel, user, "Sorry, I didn't understand that command. Type 'help' for a list of commands.")
+        send_message(app, channel, user, "Sorry, I didn't understand that command. Type 'help' for a list of commands.")
 
 
-def set_wait_time(channel, wait_time_minutes, user):
+def set_wait_time(app, channel, wait_time_minutes, user):
     if channel not in channel_config:
         channel_config[channel] = default_config.copy()
     channel_config[channel]['wait_time'] = wait_time_minutes * 60  # Convert to seconds
-    send_message(channel, user, f"Wait time set to {wait_time_minutes} minutes.")
+    send_message(app, channel, user, f"Wait time set to {wait_time_minutes} minutes.")
 
 
-def set_reply_message(channel, message, user):
+def set_reply_message(app, channel, message, user):
     if channel not in channel_config:
         channel_config[channel] = default_config.copy()
     channel_config[channel]['reply_message'] = message
-    send_message(channel, user, f"Reply message set to: {message}")
+    send_message(app, channel, user, f"Reply message set to: {message}")
 
 
-def show_config(channel, user):
+def show_config(app, channel, user):
     config = channel_config.get(channel, default_config)
     wait_time_minutes = config['wait_time'] // 60
     reply_message = config['reply_message']
     message = f"Current configuration:\n- Wait time: {wait_time_minutes} minutes\n- Reply message: {reply_message}"
-    send_message(channel, user, message)
+    send_message(app, channel, user, message)
 
 
-def send_message(channel, user, text):
+def send_message(app, channel, user, text):
     try:
         app.client.chat_postEphemeral(
             channel=channel,
@@ -86,7 +86,7 @@ def send_message(channel, user, text):
         print(f"ERROR: Failed to send message: {e}")
 
 
-def send_help_message(channel, user):
+def send_help_message(app, channel, user):
     help_text = (
         "Hello! I'm *Hutbot*. Here's how you can interact with me:\n\n"
         "*Set Wait Time:*\n"
@@ -102,10 +102,10 @@ def send_help_message(channel, user):
         "```@Hutbot help```\n"
         "Displays this help message.\n"
     )
-    send_message(channel, user, help_text)
+    send_message(app, channel, user, help_text)
 
 
-async def schedule_reply(channel, ts):
+async def schedule_reply(app, channel, ts):
     config = channel_config.get(channel, default_config)
     wait_time = config['wait_time']
     reply_message = config['reply_message']
@@ -136,12 +136,12 @@ def register_app_handlers(app):
             return
 
         # Check if the message is a command directed at the bot
-        if is_command(text):
-            handle_command(text, channel, user)
+        if is_command(app, text):
+            handle_command(app, text, channel, user)
         else:
             # Schedule a reminder
             logger.info(f"Scheduling reminder for message {ts} in channel {channel}")
-            task = asyncio.create_task(schedule_reply(channel, ts))
+            task = asyncio.create_task(schedule_reply(app, channel, ts))
             scheduled_messages[(channel, ts)] = task
 
 
@@ -186,7 +186,7 @@ def register_app_handlers(app):
         text = body.get('text', '')
         channel = body['channel_id']
         user = body['user_id']
-        handle_command(text, channel, user)
+        handle_command(app, text, channel, user)
 
 def main():
     if os.environ.get("SLACK_APP_TOKEN") is None or os.environ.get("SLACK_BOT_TOKEN") is None:
