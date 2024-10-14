@@ -68,7 +68,8 @@ pip install -r requirements.txt
 python bot.py
 ```
 
-See [Hutbot Slack App](https://api.slack.com/apps/A07RQ54Q5H9)
+   - See [Hutbot Slack App](https://api.slack.com/apps/A07RQ54Q5H9)
+   - Hosted at `nexus-cli get projects p-knksv4 -olink`
 
 9. **Invite Bot**
 
