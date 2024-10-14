@@ -19,6 +19,8 @@ channel_config = {}             # Will be loaded from disk
 # Dictionary to keep track of scheduled tasks
 scheduled_messages = {}
 
+user_cache = {}
+
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_-]?time\s+(\d+)', re.IGNORECASE)
@@ -37,7 +39,7 @@ async def load_configuration():
         print("No configuration file found. Using default settings.")
         channel_config = {}
     except json.JSONDecodeError as e:
-        print(f"Error decoding JSON configuration: {e} Using default settings.")
+        print(f"ERROR: Failed to decode JSON configuration: {e} Using default settings.", file=sys.stderr)
         channel_config = {}
 
 # Save configuration to disk
@@ -47,7 +49,19 @@ async def save_configuration():
             content = json.dumps(channel_config)
             await f.write(content)
     except Exception as e:
-        print(f"Error saving configuration: {e}")
+        print(f"ERROR: Failed to save configuration: {e}", file=sys.stderr)
+
+
+async def update_user_cache():
+    global user_cache
+    try:
+        response = await app.client.users_list()
+        users = response['members']
+        user_cache = {user['name']: user['id'] for user in users}
+        print("User cache updated.")
+    except SlackApiError as e:
+        print(f"ERROR: Failed to fetch user list: {e}", file=sys.stderr)
+
 
 async def is_command(app, text):
     # Check if the message is directed at the bot and is a command
@@ -74,7 +88,7 @@ async def handle_command(app, text, channel, user):
     elif HELP_PATTERN.match(text):
         await send_help_message(app, channel, user)
     else:
-        await send_message(app, channel, user, "Sorry, I didn't understand that command. Type 'help' for a list of commands.")
+        await send_message(app, channel, user, "Huh? :thinking_face: Maybe type 'help' for a list of commands.")
 
 
 async def set_wait_time(app, channel, wait_time_minutes, user):
@@ -95,12 +109,34 @@ async def set_reply_message(app, channel, message, user):
     if not message or message.strip() == "":
         await send_message(app, channel, user, "Invalid reply message. Must be non-empty.")
         return
-
+    ok, error, message = await process_mentions(message)
+    if not ok:
+        await send_message(app, channel, user, "Invalid reply message: " + error + ".")
+        return
     if channel not in channel_config:
         channel_config[channel] = default_config.copy()
+
     channel_config[channel]['reply_message'] = message
     await save_configuration()
     await send_message(app, channel, user, f"Reply message set to: {message}")
+
+
+async def process_mentions(message) -> tuple[bool, str, str]:
+    # Regular expression to find @username patterns
+    mention_pattern = re.compile(r'@(\w+)')
+    matches = mention_pattern.findall(message)
+    if matches:
+        # Ensure user cache is updated
+        if not user_cache:
+            await update_user_cache()
+        for username in matches:
+            user_id = user_cache.get(username)
+            if user_id:
+                message = message.replace(f"@{username}", f"<@{user_id}>")
+            else:
+                print(f"ERROR: Invalid reply message: username {username} not found", file=sys.stderr)
+                return False, f"{username} not found", None
+    return True, None, message
 
 
 async def show_config(app, channel, user):
@@ -120,7 +156,7 @@ async def send_message(app, channel, user, text):
             mrkdwn=True  # Enable Markdown formatting
         )
     except SlackApiError as e:
-        print(f"ERROR: Failed to send message: {e}")
+        print(f"ERROR: Failed to send message: {e}", file=sys.stderr)
 
 
 async def send_help_message(app, channel, user):
@@ -155,12 +191,13 @@ async def schedule_reply(app, channel, ts):
         await app.client.chat_postMessage(
             channel=channel,
             thread_ts=ts,
-            text=reply_message
+            text=reply_message,
+            mrkdwn=True
         )
     except asyncio.CancelledError:
         pass  # Task was cancelled because a reaction or reply was detected
     except SlackApiError as e:
-        print(f"ERROR: Failed to send scheduled reply: {e}")
+        print(f"ERROR: Failed to send scheduled reply: {e}", file=sys.stderr)
 
 
 def register_app_handlers(app):
@@ -236,6 +273,7 @@ async def main():
 
     try:
         await load_configuration()
+        await update_user_cache()
         app = AsyncApp(token=os.environ.get("SLACK_BOT_TOKEN"))
         register_app_handlers(app)
         handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
