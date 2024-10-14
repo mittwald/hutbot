@@ -1,11 +1,12 @@
 import os
 import re
+import sys
 import asyncio
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 
-app = None
+app = App()
 
 default_config = {
     "wait_time": 30 * 60,
@@ -23,62 +24,6 @@ HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait_time\s+(\d+)', re.IGNORECASE)
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
-
-@app.event("message")
-def handle_message_events(body, logger):
-    event = body.get('event', {})
-    channel = event.get('channel')
-    user = event.get('user')
-    ts = event.get('ts')
-    text = event.get('text', '')
-
-    # Ignore messages from the bot itself
-    if user == body['authorizations'][0]['user_id']:
-        return
-
-    # Check if the message is a command directed at the bot
-    if is_command(text):
-        handle_command(text, channel, user)
-    else:
-        # Schedule a reminder
-        logger.info(f"Scheduling reminder for message {ts} in channel {channel}")
-        task = asyncio.create_task(schedule_reply(channel, ts))
-        scheduled_messages[(channel, ts)] = task
-
-
-@app.event("reaction_added")
-def handle_reaction_added_events(body, logger):
-    event = body.get('event', {})
-    item = event.get('item', {})
-    channel = item.get('channel')
-    ts = item.get('ts')
-
-    # Cancel the scheduled task if it exists
-    key = (channel, ts)
-    if key in scheduled_messages:
-        logger.info(f"Reaction added. Cancelling reminder for message {ts} in channel {channel}")
-        scheduled_messages[key].cancel()
-        del scheduled_messages[key]
-
-
-@app.event("message")
-def handle_thread_responses(body, logger):
-    event = body.get('event', {})
-    channel = event.get('channel')
-    thread_ts = event.get('thread_ts')
-    user = event.get('user')
-
-    # Ignore messages from the bot itself
-    if user == body['authorizations'][0]['user_id']:
-        return
-
-    if thread_ts:
-        # Cancel the scheduled task if it exists
-        key = (channel, thread_ts)
-        if key in scheduled_messages:
-            logger.info(f"Thread reply detected. Cancelling reminder for message {thread_ts} in channel {channel}")
-            scheduled_messages[key].cancel()
-            del scheduled_messages[key]
 
 
 def is_command(text):
@@ -108,14 +53,6 @@ def handle_command(text, channel, user):
     else:
         send_message(channel, user, "Sorry, I didn't understand that command. Type 'help' for a list of commands.")
 
-
-@app.command("/hutbot")
-def handle_config_command(ack, body, logger):
-    ack()
-    text = body.get('text', '')
-    channel = body['channel_id']
-    user = body['user_id']
-    handle_command(text, channel, user)
 
 def set_wait_time(channel, wait_time_minutes, user):
     if channel not in channel_config:
@@ -186,14 +123,81 @@ async def schedule_reply(channel, ts):
     except SlackApiError as e:
         print(f"ERROR: Failed to send scheduled reply: {e}")
 
+
+def register_app_handlers(app):
+    @app.event("message")
+    def handle_message_events(body, logger):
+        event = body.get('event', {})
+        channel = event.get('channel')
+        user = event.get('user')
+        ts = event.get('ts')
+        text = event.get('text', '')
+
+        # Ignore messages from the bot itself
+        if user == body['authorizations'][0]['user_id']:
+            return
+
+        # Check if the message is a command directed at the bot
+        if is_command(text):
+            handle_command(text, channel, user)
+        else:
+            # Schedule a reminder
+            logger.info(f"Scheduling reminder for message {ts} in channel {channel}")
+            task = asyncio.create_task(schedule_reply(channel, ts))
+            scheduled_messages[(channel, ts)] = task
+
+
+    @app.event("reaction_added")
+    def handle_reaction_added_events(body, logger):
+        event = body.get('event', {})
+        item = event.get('item', {})
+        channel = item.get('channel')
+        ts = item.get('ts')
+
+        # Cancel the scheduled task if it exists
+        key = (channel, ts)
+        if key in scheduled_messages:
+            logger.info(f"Reaction added. Cancelling reminder for message {ts} in channel {channel}")
+            scheduled_messages[key].cancel()
+            del scheduled_messages[key]
+
+
+    @app.event("message")
+    def handle_thread_responses(body, logger):
+        event = body.get('event', {})
+        channel = event.get('channel')
+        thread_ts = event.get('thread_ts')
+        user = event.get('user')
+
+        # Ignore messages from the bot itself
+        if user == body['authorizations'][0]['user_id']:
+            return
+
+        if thread_ts:
+            # Cancel the scheduled task if it exists
+            key = (channel, thread_ts)
+            if key in scheduled_messages:
+                logger.info(f"Thread reply detected. Cancelling reminder for message {thread_ts} in channel {channel}")
+                scheduled_messages[key].cancel()
+                del scheduled_messages[key]
+
+
+    @app.command("/hutbot")
+    def handle_config_command(ack, body, logger):
+        ack()
+        text = body.get('text', '')
+        channel = body['channel_id']
+        user = body['user_id']
+        handle_command(text, channel, user)
+
 def main():
     if os.environ.get("SLACK_APP_TOKEN") is None or os.environ.get("SLACK_BOT_TOKEN") is None:
         print("ERROR: Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app", file=sys.stderr)
         exit(1)
 
     try:
-        global app
         app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+        register_app_handlers(app)
         handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
         handler.start()
     except Exception as e:
@@ -201,4 +205,4 @@ def main():
         exit(1)
 
 if __name__ == "__main__":
-    main()    
+    main()
