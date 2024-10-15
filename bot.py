@@ -109,10 +109,10 @@ async def set_reply_message(app, channel, message, user):
     if not message or message.strip() == "":
         await send_message(app, channel, user, "Invalid reply message. Must be non-empty.")
         return
-    #ok, error, message = await process_mentions(app, message)
-    #if not ok:
-    #    await send_message(app, channel, user, "Invalid reply message: " + error + ".")
-    #    return
+    ok, error, message = await process_mentions(app, message)
+    if not ok:
+        await send_message(app, channel, user, "Invalid reply message: " + error + ".")
+        return
     if channel not in channel_config:
         channel_config[channel] = default_config.copy()
 
@@ -123,7 +123,7 @@ async def set_reply_message(app, channel, message, user):
 
 async def process_mentions(app, message) -> tuple[bool, str, str]:
     # Regular expression to find @username patterns
-    mention_pattern = re.compile(r'@([\w]+)')
+    mention_pattern = re.compile(r'@([a-z0-9_-\.]{1,22})')
     matches = mention_pattern.findall(message)
     if matches:
         # Ensure user cache is updated
