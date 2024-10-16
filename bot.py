@@ -37,13 +37,13 @@ SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
 def log(*args):
     message = ' '.join([str(arg) for arg in args])
     prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} INFO: "
-    print(prefix, message)
+    print(prefix, message, flush=True)
 
 
 def log_error(*args):
     message = ' '.join([str(arg) for arg in args])
     prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} ERROR:"
-    print(prefix, message, file=sys.stderr)
+    print(prefix, message, flush=True, file=sys.stderr)
 
 
 async def load_configuration():
