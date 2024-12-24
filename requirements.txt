@@ -3,4 +3,4 @@ slack_bolt
 asyncio
 aiohttp
 aiofiles
-dotenv
+environs

@@ -1,4 +1,3 @@
-import os
 import re
 import sys
 import collections
@@ -7,7 +6,7 @@ import json
 import aiofiles
 import datetime
 import aiohttp  # Added for making HTTP requests
-from dotenv import load_dotenv, find_dotenv
+from environs import Env
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
@@ -35,6 +34,8 @@ SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_-]?time\s+(\d+)', re.IGNORECASE
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
 
+env = Env()
+env.read_env()
 
 def log(*args):
     message = ' '.join([str(arg) for arg in args])
@@ -341,11 +342,10 @@ async def send_heartbeat(opsgenie_token, opsgenie_heartbeat_name):
             await asyncio.sleep(60)
 
 async def main():
-    load_dotenv()
-    slack_app_token = os.environ.get("SLACK_APP_TOKEN")
-    slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
-    opsgenie_token = os.environ.get("OPSGENIE_TOKEN")
-    opsgenie_heartbeat_name = os.environ.get("OPSGENIE_HEARTBEAT_NAME")
+    slack_app_token = env("SLACK_APP_TOKEN", default=None)
+    slack_bot_token = env("SLACK_BOT_TOKEN", default=None)
+    opsgenie_token = env("OPSGENIE_TOKEN", default=None)
+    opsgenie_heartbeat_name = env("OPSGENIE_HEARTBEAT_NAME", default=None)
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)
