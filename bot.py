@@ -359,7 +359,6 @@ async def send_heartbeat(opsgenie_token, opsgenie_heartbeat_name):
         while True:
             try:
                 async with session.get(url, headers=headers) as response:
-                    log(f"Sent heartbeat")
                     if response.status != 202:
                         log_error(f"Failed to send heartbeat: {response.status}")
             except Exception as e:
