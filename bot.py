@@ -6,6 +6,7 @@ import asyncio
 import json
 import aiofiles
 import datetime
+import aiohttp  # Added for making HTTP requests
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
@@ -194,7 +195,7 @@ async def send_help_message(app, channel, user):
     await send_message(app, channel, user, help_text)
 
 
-async def schedule_reply(app, channel, ts):
+async def schedule_reply(app, opsgenie_token, event, channel, user, text, ts):
     config = channel_config.get(channel, default_config)
     wait_time = config['wait_time']
     reply_message = config['reply_message']
@@ -206,13 +207,40 @@ async def schedule_reply(app, channel, ts):
             text=reply_message,
             mrkdwn=True
         )
+        await post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts)
     except asyncio.CancelledError:
         pass  # Task was cancelled because a reaction or reply was detected
     except SlackApiError as e:
         log_error(f"Failed to send scheduled reply: {e}")
 
+async def post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts):
+    url = 'https://api.opsgenie.com/v2/alerts'
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'GenieKey {opsgenie_token}'
+    }
+    async with aiohttp.ClientSession() as session:
+        try:
+            # example data: {"message": "Test 19:48","alias": "hutbot: Test Test","description":"Every alert needs a description","tags": ["Hutbot"],"details":{"channel":"#cloud-hosting-ks","sender":"Dave","bot":"hutbot"},"priority":"P4"}
+            data = {
+                "message": f"{text}",
+                "alias": f"hutbot: {user} in {channel} at {ts}",
+                "description": f"#{channel}: {user} at {ts}: {text}",
+                "tags": ["Hutbot"],
+                "details": {
+                    "channel": channel,
+                    "sender": user,
+                    "bot": "hutbot"
+                },
+                "priority": "P4",
+            }
+            async with session.post(url, headers=headers, data=json.dumps(data)) as response:
+                if response.status != 202:
+                    log_error(f"Failed to send alert: {response.status}")
+        except Exception as e:
+            log_error(f"Exception while sending alert: {e}")
 
-def register_app_handlers(app: AsyncApp):
+def register_app_handlers(app: AsyncApp, opsgenie_token=None):
 
     @app.event("message")
     async def handle_message_events(body, logger):
@@ -241,7 +269,7 @@ def register_app_handlers(app: AsyncApp):
             await handle_thread_response(app, event, channel, user, thread_ts)
         elif user and ts:
             # channel message
-            await handle_channel_message(app, event, channel, user, ts)
+            await handle_channel_message(app, event, channel, user, text, ts)
 
 
     async def handle_thread_response(app, event, channel, user, thread_ts):
@@ -252,10 +280,10 @@ def register_app_handlers(app: AsyncApp):
             del scheduled_messages[key]
 
 
-    async def handle_channel_message(app, event, channel, user, ts):
+    async def handle_channel_message(app, event, channel, user, text, ts):
         # Schedule a reminder
         log(f"Scheduling reminder for message {ts} in channel {channel} by user {user}")
-        task = asyncio.create_task(schedule_reply(app, channel, ts))
+        task = asyncio.create_task(schedule_reply(app, opsgenie_token, event, channel, user, text, ts))
         scheduled_messages[(channel, ts)] = ScheduledReply(task, user)
 
 
@@ -296,22 +324,45 @@ def register_app_handlers(app: AsyncApp):
         user = body.get('user_id')
         await handle_command(app, text, channel, user)
 
+async def send_heartbeat(opsgenie_token, opsgenie_heartbeat_name):
+    url = 'https://api.opsgenie.com/v2/heartbeats/' + opsgenie_heartbeat_name + '/ping'
+    headers = {
+        'Authorization': f'GenieKey {opsgenie_token}'
+    }
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(url, headers=headers) as response:
+                    if response.status != 202:
+                        log_error(f"Failed to send heartbeat: {response.status}")
+            except Exception as e:
+                log_error(f"Exception while sending heartbeat: {e}")
+            await asyncio.sleep(60)
+
 async def main():
-    if os.environ.get("SLACK_APP_TOKEN") is None or os.environ.get("SLACK_BOT_TOKEN") is None:
+    slack_app_token = os.environ.get("SLACK_APP_TOKEN")
+    slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+    opsgenie_token = os.environ.get("OPSGENIE_TOKEN")
+    opsgenie_heartbeat_name = os.environ.get("OPSGENIE_HEARTBEAT_NAME")
+    if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)
 
+    handler = None
+    heartbeat_task = None
     try:
         await load_configuration()
-        app = AsyncApp(token=os.environ.get("SLACK_BOT_TOKEN"))
+        app = AsyncApp(token=slack_bot_token)
         global bot_user_id
         bot_user_id = (await app.client.auth_test())["user_id"]
         await update_id_cache(app)
         register_app_handlers(app)
-        handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
+        handler = AsyncSocketModeHandler(app, slack_app_token)
+        if opsgenie_token and opsgenie_heartbeat_name:
+            heartbeat_task = asyncio.create_task(send_heartbeat(opsgenie_token, opsgenie_heartbeat_name))
         await handler.start_async()
     except asyncio.CancelledError:
-        pass # Task was cancelled because a reaction or reply was detected
+        pass
     except KeyboardInterrupt:
         pass
     except Exception as e:
@@ -321,6 +372,12 @@ async def main():
         try:
             if handler:
                 await handler.close_async()
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
         except BaseException as e:
             pass
 
