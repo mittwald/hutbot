@@ -7,6 +7,7 @@ import json
 import aiofiles
 import datetime
 import aiohttp  # Added for making HTTP requests
+from dotenv import load_dotenv, find_dotenv
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
@@ -340,6 +341,7 @@ async def send_heartbeat(opsgenie_token, opsgenie_heartbeat_name):
             await asyncio.sleep(60)
 
 async def main():
+    load_dotenv()
     slack_app_token = os.environ.get("SLACK_APP_TOKEN")
     slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
     opsgenie_token = os.environ.get("OPSGENIE_TOKEN")
