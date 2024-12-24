@@ -263,6 +263,8 @@ async def post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts):
             async with session.post(url, headers=headers, data=json.dumps(data)) as response:
                 if response.status != 202:
                     log_error(f"Failed to send alert: {response.status}")
+                else:
+                    log(f"Successfully sent OpsGenie alert for {user} in {channel} at {ts} with status code {response.status}")
         except Exception as e:
             log_error(f"Exception while sending alert: {e}")
 
@@ -355,6 +357,7 @@ async def send_heartbeat(opsgenie_token, opsgenie_heartbeat_name):
     headers = {
         'Authorization': f'GenieKey {opsgenie_token}'
     }
+    log(f"Starting to send heartbeat to {url}...")
     async with aiohttp.ClientSession() as session:
         while True:
             try:
