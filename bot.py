@@ -256,7 +256,7 @@ async def post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts):
                 "details": {
                     "channel": channel,
                     "sender": user,
-                    "bot": "hutbot"
+                    "bot": "hutbot",
                 },
                 "priority": "P4",
             }
@@ -386,7 +386,7 @@ async def main():
         global bot_user_id
         bot_user_id = (await app.client.auth_test())["user_id"]
         await update_id_cache(app)
-        register_app_handlers(app)
+        register_app_handlers(app, opsgenie_token=opsgenie_token)
         handler = AsyncSocketModeHandler(app, slack_app_token)
         if opsgenie_token and opsgenie_heartbeat_name:
             heartbeat_task = asyncio.create_task(send_heartbeat(opsgenie_token, opsgenie_heartbeat_name))
