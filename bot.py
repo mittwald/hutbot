@@ -1,3 +1,4 @@
+import os
 import re
 import sys
 import collections
@@ -6,7 +7,6 @@ import json
 import aiofiles
 import datetime
 import aiohttp  # Added for making HTTP requests
-from environs import Env
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
@@ -34,8 +34,32 @@ SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_-]?time\s+(\d+)', re.IGNORECASE
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
 
-env = Env()
-env.read_env()
+def load_env_file():
+    env_file_path = os.path.join(os.path.dirname(__file__), '.env')
+    if not os.path.exists(env_file_path):
+        return
+
+    with open(env_file_path) as file:
+        for line in file:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            # remove "export " from the start of the line
+            if line.startswith('export '):
+                line = line[7:]
+
+            # Split key-value pairs
+            key, sep, value = line.partition('=')
+            if sep != '=':
+                continue  # Skip malformed lines
+
+            # Remove surrounding quotes from the value if present
+            key = key.strip()
+            value = value.strip().strip('\'"')
+
+            # Set the environment variable
+            os.environ[key] = value
 
 def log(*args):
     message = ' '.join([str(arg) for arg in args])
@@ -342,10 +366,11 @@ async def send_heartbeat(opsgenie_token, opsgenie_heartbeat_name):
             await asyncio.sleep(60)
 
 async def main():
-    slack_app_token = env("SLACK_APP_TOKEN", default=None)
-    slack_bot_token = env("SLACK_BOT_TOKEN", default=None)
-    opsgenie_token = env("OPSGENIE_TOKEN", default=None)
-    opsgenie_heartbeat_name = env("OPSGENIE_HEARTBEAT_NAME", default=None)
+    load_env_file()
+    slack_app_token = os.environ.get("SLACK_APP_TOKEN")
+    slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+    opsgenie_token = os.environ.get("OPSGENIE_TOKEN")
+    opsgenie_heartbeat_name = os.environ.get("OPSGENIE_HEARTBEAT_NAME")
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)
