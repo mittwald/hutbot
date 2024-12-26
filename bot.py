@@ -28,10 +28,14 @@ user_cache = {}
 
 bot_user_id = None
 
+opsgenie_configured = False
+
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_-]?time\s+(\d+)', re.IGNORECASE)
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
+ENABLE_OPSGENIE_PATTERN = re.compile(r'enable\s+opsgenie', re.IGNORECASE)
+DISABLE_OPSGENIE_PATTERN = re.compile(r'disable\s+opsgenie', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
 
 def load_env_file():
@@ -123,12 +127,24 @@ async def handle_command(app, text, channel, user):
         match = SET_REPLY_MESSAGE_PATTERN.match(text)
         message = match.group(1).strip('"').strip("'")
         await set_reply_message(app, channel, message, user)
+    elif ENABLE_OPSGENIE_PATTERN.match(text):
+        await set_opsgenie(app, channel, True, user)
+    elif DISABLE_OPSGENIE_PATTERN.match(text):
+        await set_opsgenie(app, channel, False, user)
     elif SHOW_CONFIG_PATTERN.match(text):
         await show_config(app, channel, user)
     elif HELP_PATTERN.match(text):
         await send_help_message(app, channel, user)
     else:
         await send_message(app, channel, user, "Huh? :thinking_face: Maybe type `help` for a list of commands.")
+
+
+async def set_opsgenie(app, channel, enabled, user):
+    if channel not in channel_config:
+        channel_config[channel] = default_config.copy()
+    channel_config[channel]['opsgenie'] = enabled
+    await save_configuration()
+    await send_message(app, channel, user, f"OpsGenie integration {'enabled' if enabled else 'disabled'}{', but not configured' if enabled and not opsgenie_configured else ''}.")
 
 
 async def set_wait_time(app, channel, wait_time_minutes, user):
@@ -180,9 +196,10 @@ async def process_mentions(app, message) -> tuple[bool, str, str]:
 
 async def show_config(app, channel, user):
     config = channel_config.get(channel, default_config)
+    opsgenie_enabled = config.get('opsgenie', False)
     wait_time_minutes = config['wait_time'] // 60
     reply_message = config['reply_message']
-    message = f"This is the configuration for the current channel:\n\n*Wait time*: `{wait_time_minutes}` minutes\n\n*Reply message*:\n{reply_message}"
+    message = f"This is the configuration for the current channel:\n\n*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}{' (not configured)' if opsgenie_configured else ''}\n\n*Wait time*: `{wait_time_minutes}` minutes\n\n*Reply message*:\n{reply_message}"
     await send_message(app, channel, user, message)
 
 
@@ -201,6 +218,14 @@ async def send_message(app, channel, user, text):
 async def send_help_message(app, channel, user):
     help_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's how you can configure me via command or @mention:\n\n"
+        "*Enable OpsGenie Integration:*\n"
+        "```/hutbot enable opsgenie\n"
+        "@Hutbot enable opsgenie```\n"
+        "Enables the OpsGenie integration.\n\n"
+        "*Disable OpsGenie Integration:*\n"
+        "```/hutbot disable opsgenie\n"
+        "@Hutbot disable opsgenie```\n"
+        "Disables the OpsGenie integration.\n\n"
         "*Set Wait Time:*\n"
         "```/hutbot set wait-time [minutes]\n"
         "@Hutbot set wait-time [minutes]```\n"
@@ -223,6 +248,7 @@ async def send_help_message(app, channel, user):
 
 async def schedule_reply(app, opsgenie_token, event, channel, user, text, ts):
     config = channel_config.get(channel, default_config)
+    opsgenie_enabled = config.get('opsgenie', False)
     wait_time = config['wait_time']
     reply_message = config['reply_message']
     try:
@@ -233,7 +259,8 @@ async def schedule_reply(app, opsgenie_token, event, channel, user, text, ts):
             text=reply_message,
             mrkdwn=True
         )
-        await post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts)
+        if opsgenie_configured and opsgenie_enabled:
+            await post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts)
     except asyncio.CancelledError:
         pass  # Task was cancelled because a reaction or reply was detected
     except SlackApiError as e:
@@ -389,6 +416,8 @@ async def main():
         register_app_handlers(app, opsgenie_token=opsgenie_token)
         handler = AsyncSocketModeHandler(app, slack_app_token)
         if opsgenie_token and opsgenie_heartbeat_name:
+            global opsgenie_configured
+            opsgenie_configured = True
             heartbeat_task = asyncio.create_task(send_heartbeat(opsgenie_token, opsgenie_heartbeat_name))
         await handler.start_async()
     except asyncio.CancelledError:
