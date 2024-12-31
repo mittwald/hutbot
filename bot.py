@@ -11,21 +11,25 @@ from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
 
-ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user'])
+ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
+User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
 
 default_config = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
+    "excluded_teams": [],
+    "included_teams": [],
 }
 
-users_file = 'users.json'  # Path to the users retrieved from https://lb.mittwald.it/api/users
+company_users_file = 'company_users.json'  # Path to the users retrieved from https://lb.mittwald.it/api/users
 config_file = 'hutmensch.json'  # Path to the configuration file
 channel_config = {}             # Will be loaded from disk
 
 # Dictionary to keep track of scheduled tasks
 scheduled_messages = {}
 
-user_cache = {}
+user_id_cache = {}
+id_user_cache = {}
 
 bot_user_id = None
 
@@ -35,6 +39,10 @@ opsgenie_configured = False
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_-]?time\s+(\d+)', re.IGNORECASE)
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
+ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'add\s+excluded[_-]?team\s+(.+)', re.IGNORECASE)
+CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'clear\s+excluded[_-]?team', re.IGNORECASE)
+ADD_INCLUDED_TEAM_PATTERN = re.compile(r'add\s+included[_-]?team\s+(.+)', re.IGNORECASE)
+CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'clear\s+included[_-]?team', re.IGNORECASE)
 ENABLE_OPSGENIE_PATTERN = re.compile(r'enable\s+opsgenie', re.IGNORECASE)
 DISABLE_OPSGENIE_PATTERN = re.compile(r'disable\s+opsgenie', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
@@ -71,12 +79,10 @@ def log(*args):
     prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} INFO: "
     print(prefix, message, flush=True)
 
-
 def log_error(*args):
     message = ' '.join([str(arg) for arg in args])
     prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} ERROR:"
     print(prefix, message, flush=True, file=sys.stderr)
-
 
 async def load_configuration():
     global channel_config
@@ -92,7 +98,6 @@ async def load_configuration():
         log(f"Failed to decode JSON configuration: {e} Using default settings.")
         channel_config = {}
 
-
 async def save_configuration():
     try:
         async with aiofiles.open(config_file, 'w') as f:
@@ -101,140 +106,216 @@ async def save_configuration():
     except Exception as e:
         log_error(f"Failed to save configuration: {e}")
 
-async def load_users() -> dict:
+async def load_company_users() -> dict:
+    # TODO: use the API directly
     try:
-        async with aiofiles.open(users_file, 'r') as f:
+        async with aiofiles.open(company_users_file, 'r') as f:
             content = await f.read()
             users = json.loads(content)
-            log("Users loaded from disk.")
-            return users
+            company_users = {}
+            for user in users:
+                id = user.get('ad_name', None)
+                if id:
+                    company_users[id] = user
+            log(f"{len(company_users)} company users loaded from disk.")
+            return company_users
     except FileNotFoundError:
-        log("No users file found. Will not be able to do department mapping.")
+        log("No company users file found. Will not be able to do team mapping.")
     except json.JSONDecodeError as e:
-        log(f"Failed to decode JSON users: {e}. Will not be able to do department mapping.")
+        log(f"Failed to decode company users JSON: {e}. Will not be able to do team mapping.")
     return {}
 
+async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
+    try:
+        response = app.client.conversations_info(channel=channel_id)
+        channel_name = response["channel"]["name"]
+        return channel_name
+    except SlackApiError as e:
+        log_error(f"Failed to get channel name: {e}")
+        return channel_id
+
 async def update_user_cache(app: AsyncApp):
-    global user_cache
-    if not user_cache:
+    global user_id_cache, id_user_cache
+    if not user_id_cache or not id_user_cache:
+        company_users = load_company_users()
         try:
             response = await app.client.users_list()
             users = response['members']
             for user in users:
-                log(f"{user}")
-                log(user.get('profile', {}).get('email', ''))
-                user_id = user['id']
-                user_name = user['name']
-                user_cache[user_name] = user_id
+                if not user.get('deleted'):
+                    user_id = user.get('id', '')
+                    user_name = user.get('name', '')
+                    user_real_name = user.get('real_name', '')
+                    user_team = ''
+                    if user_name in company_users:
+                        user_team = company_users[user_name].get('group', '')
+                    else:
+                        # try with real name
+                        for _, value in user.items():
+                            company_real_name = value.get('real_name', '')
+                            if company_real_name == user_real_name:
+                                user_team = value.get('group', '')
+                                break
+                    user_id_cache[user_name] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
+                    id_user_cache[user_id] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
         except SlackApiError as e:
             log_error(f"Failed to fetch user list: {e}")
 
+async def get_user_by_id(app: AsyncApp, id: str) -> User:
+    await update_user_cache(app)
+    return id_user_cache.get(id, None)
+
+async def get_user_by_name(app: AsyncApp, name: str) -> User:
+    await update_user_cache(app)
+    return user_id_cache.get(name, None)
 
 def is_command(text):
     return f"<@{bot_user_id}>" in text
 
-
-async def handle_command(app, text, channel, user):
+async def handle_command(app, text, channel_id, user_id):
     text = text.replace(f"<@{bot_user_id}>", "").strip()
 
     # Parse commands
     if SET_WAIT_TIME_PATTERN.match(text):
         match = SET_WAIT_TIME_PATTERN.match(text)
         wait_time_minutes = int(match.group(1))
-        await set_wait_time(app, channel, wait_time_minutes, user)
+        await set_wait_time(app, channel_id, wait_time_minutes, user_id)
     elif SET_REPLY_MESSAGE_PATTERN.match(text):
         match = SET_REPLY_MESSAGE_PATTERN.match(text)
         message = match.group(1).strip('"').strip("'")
-        await set_reply_message(app, channel, message, user)
+        await set_reply_message(app, channel_id, message, user_id)
     elif ENABLE_OPSGENIE_PATTERN.match(text):
-        await set_opsgenie(app, channel, True, user)
+        await set_opsgenie(app, channel_id, True, user_id)
     elif DISABLE_OPSGENIE_PATTERN.match(text):
-        await set_opsgenie(app, channel, False, user)
+        await set_opsgenie(app, channel_id, False, user_id)
+    elif ADD_EXCLUDED_TEAM_PATTERN.match(text):
+        match = ADD_EXCLUDED_TEAM_PATTERN.match(text)
+        team = match.group(1)
+        await add_excluded_team(app, channel_id, team, user_id)
+    elif CLEAR_EXCLUDED_TEAM_PATTERN.match(text):
+        await clear_excluded_team(app, channel_id, user_id)
+    elif ADD_INCLUDED_TEAM_PATTERN.match(text):
+        match = ADD_INCLUDED_TEAM_PATTERN.match(text)
+        team = match.group(1)
+        await add_included_team(app, channel_id, team, user_id)
+    elif CLEAR_INCLUDED_TEAM_PATTERN.match(text):
+        await clear_included_team(app, channel_id, user_id)
     elif SHOW_CONFIG_PATTERN.match(text):
-        await show_config(app, channel, user)
+        await show_config(app, channel_id, user_id)
     elif HELP_PATTERN.match(text):
-        await send_help_message(app, channel, user)
+        await send_help_message(app, channel_id, user_id)
     else:
-        await send_message(app, channel, user, "Huh? :thinking_face: Maybe type `help` for a list of commands.")
+        await send_message(app, channel_id, user_id, "Huh? :thinking_face: Maybe type `help` for a list of commands.")
 
-
-async def set_opsgenie(app, channel, enabled, user):
-    if channel not in channel_config:
-        channel_config[channel] = default_config.copy()
-    channel_config[channel]['opsgenie'] = enabled
+async def set_opsgenie(app, channel_id, enabled, user_id):
+    if channel_id not in channel_config:
+        channel_config[channel_id] = default_config.copy()
+    channel_config[channel_id]['opsgenie'] = enabled
     await save_configuration()
-    await send_message(app, channel, user, f"OpsGenie integration {'enabled' if enabled else 'disabled'}{', but not configured' if enabled and not opsgenie_configured else ''}.")
+    await send_message(app, channel_id, user_id, f"OpsGenie integration {'enabled' if enabled else 'disabled'}{', but not configured' if enabled and not opsgenie_configured else ''}.")
 
-
-async def set_wait_time(app, channel, wait_time_minutes, user):
+async def set_wait_time(app, channel_id, wait_time_minutes, user_id):
     # check if number and in range 0-1440
     if not wait_time_minutes or wait_time_minutes < 0 or wait_time_minutes > 1440:
-        await send_message(app, channel, user, "Invalid wait time. Must be a number between 0 and 1440.")
+        await send_message(app, channel_id, user_id, "Invalid wait time. Must be a number between 0 and 1440.")
         return
 
-    if channel not in channel_config:
-        channel_config[channel] = default_config.copy()
-    channel_config[channel]['wait_time'] = wait_time_minutes * 60  # Convert to seconds
+    if channel_id not in channel_config:
+        channel_config[channel_id] = default_config.copy()
+    channel_config[channel_id]['wait_time'] = wait_time_minutes * 60  # Convert to seconds
     await save_configuration()
-    await send_message(app, channel, user, f"*Wait time* set to `{wait_time_minutes}` minutes.")
+    await send_message(app, channel_id, user_id, f"*Wait time* set to `{wait_time_minutes}` minutes.")
 
-
-async def set_reply_message(app, channel, message, user):
+async def set_reply_message(app, channel_id, message, user_id):
     # check message
     if not message or message.strip() == "":
-        await send_message(app, channel, user, "Invalid reply message. Must be non-empty.")
+        await send_message(app, channel_id, user_id, "Invalid reply message. Must be non-empty.")
         return
     ok, error, message = await process_mentions(app, message)
     if not ok:
-        await send_message(app, channel, user, "Invalid reply message: " + error + ".")
+        await send_message(app, channel_id, user_id, "Invalid reply message: " + error + ".")
         return
-    if channel not in channel_config:
-        channel_config[channel] = default_config.copy()
+    if channel_id not in channel_config:
+        channel_config[channel_id] = default_config.copy()
 
-    channel_config[channel]['reply_message'] = message
+    channel_config[channel_id]['reply_message'] = message
     await save_configuration()
-    await send_message(app, channel, user, f"*Reply message* set to: {message}")
-
+    await send_message(app, channel_id, user_id, f"*Reply message* set to: {message}")
 
 async def process_mentions(app, message) -> tuple[bool, str, str]:
     # Regular expression to find @username patterns
     mention_pattern = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
     matches = mention_pattern.findall(message)
     if matches:
-        # Ensure user cache is updated
-        await update_user_cache(app)
         for username in matches:
-            user_id = user_cache.get(username)
-            if user_id:
-                message = message.replace(f"@{username}", f"<@{user_id}>")
+            user = get_user_by_name(app, username)
+            if user:
+                message = message.replace(f"@{username}", f"<@{user.id}>")
             else:
                 log_error(f"Invalid reply message: username {username} not found")
                 return False, f"{username} not found", None
     return True, None, message
 
+async def add_excluded_team(app, channel_id, team, user_id):
+    # TODO CHECK INCLUDED IS NOT SET
+    if channel_id not in channel_config:
+        channel_config[channel_id] = default_config.copy()
+    channel_config[channel_id]['excluded_teams'].append(team)
+    await save_configuration()
+    await send_message(app, channel_id, user_id, f"Added {team} to excluded teams.")
 
-async def show_config(app, channel, user):
-    config = channel_config.get(channel, default_config)
+async def clear_excluded_team(app, channel_id, user_id):
+    if channel_id not in channel_config:
+        channel_config[channel_id] = default_config.copy()
+    channel_config[channel_id]['excluded_teams'] = []
+    await save_configuration()
+    await send_message(app, channel_id, user_id, "Cleared *excluded teams*.")
+
+async def add_included_team(app, channel_id, team, user_id):
+    # TODO CHECK EXCLUDED IS NOT SET
+    if channel_id not in channel_config:
+        channel_config[channel_id] = default_config.copy()
+    channel_config[channel_id]['included_teams'].append(team)
+    await save_configuration()
+    await send_message(app, channel_id, user_id, f"Added {team} to *included teams*.")
+
+async def clear_included_team(app, channel_id, user_id):
+    if channel_id not in channel_config:
+        channel_config[channel_id] = default_config.copy()
+    channel_config[channel_id]['included_teams'] = []
+    await save_configuration()
+    await send_message(app, channel_id, user_id, "Cleared *included teams*.")
+
+async def show_config(app, channel_id, user_id):
+    config = channel_config.get(channel_id, default_config)
     opsgenie_enabled = config.get('opsgenie', False)
     wait_time_minutes = config['wait_time'] // 60
+    included_teams = config.get('included_teams', [])
+    excluded_teams = config.get('excluded_teams', [])
     reply_message = config['reply_message']
-    message = f"This is the configuration for the current channel:\n\n*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}{'' if opsgenie_configured else ' (not configured)'}\n\n*Wait time*: `{wait_time_minutes}` minutes\n\n*Reply message*:\n{reply_message}"
-    await send_message(app, channel, user, message)
+    message = (
+        "This is the configuration for the current channel:\n\n"
+        f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
+        f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
+        f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
+        f"*Included teams*: {', '.join(included_teams) if included_teams else '<None>'}\n\n"
+        f"*Excluded teams*: {', '.join(excluded_teams) if excluded_teams else '<None>'}\n\n"
+        f"*Reply message*:\n{reply_message}"
+    )
+    await send_message(app, channel_id, user_id, message)
 
-
-async def send_message(app, channel, user, text):
+async def send_message(app, channel_id, user_id, text):
     try:
         await app.client.chat_postEphemeral(
-            channel=channel,
-            user=user,
+            channel=channel_id,
+            user=user_id,
             text=text,
             mrkdwn=True  # Enable Markdown formatting
         )
     except SlackApiError as e:
         log_error(f"Failed to send message: {e}")
 
-
-async def send_help_message(app, channel, user):
+async def send_help_message(app, channel_id, user_id):
     help_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's how you can configure me via command or @mention:\n\n"
         "*Enable OpsGenie Integration:*\n"
@@ -249,6 +330,22 @@ async def send_help_message(app, channel, user):
         "```/hutbot set wait-time [minutes]\n"
         "@Hutbot set wait-time [minutes]```\n"
         "Sets the wait time before I send a reminder. Replace `[minutes]` with the number of minutes you want.\n\n"
+        "*Add Excluded Team:*\n"
+        "```/hutbot add excluded-team [team]\n"
+        "@Hutbot add excluded-team [team]```\n"
+        "Adds a team whose members I will not respond to. Replace `[team]` with the name of the team.\n\n"
+        "*Clear Excluded Teams:*\n"
+        "```/hutbot clear excluded-teams\n"
+        "@Hutbot clear excluded-teams```\n"
+        "Clears the list of excluded teams.\n\n"
+        "*Add Included Team:*\n"
+        "```/hutbot add included-team [team]\n"
+        "@Hutbot add included-team [team]```\n"
+        "Adds a team whose members I will respond to *only*. Replace `[team]` with the name of the team.\n\n"
+        "*Clear Included Teams:*\n"
+        "```/hutbot clear included-teams\n"
+        "@Hutbot clear included-teams```\n"
+        "Clears the list of included teams.\n\n"
         "*Set Reply Message:*\n"
         "```/hutbot set message \"Your reminder message\"\n"
         "@Hutbot set message \"Your reminder message\"```\n"
@@ -262,30 +359,34 @@ async def send_help_message(app, channel, user):
         "@Hutbot help```\n"
         "Displays this help message.\n"
     )
-    await send_message(app, channel, user, help_text)
+    await send_message(app, channel_id, user_id, help_text)
 
-
-async def schedule_reply(app, opsgenie_token, event, channel, user, text, ts):
-    config = channel_config.get(channel, default_config)
+async def schedule_reply(app, opsgenie_token, event, channel_id, user_id, text, ts):
+    config = channel_config.get(channel_id, default_config)
     opsgenie_enabled = config.get('opsgenie', False)
     wait_time = config['wait_time']
     reply_message = config['reply_message']
     try:
         await asyncio.sleep(wait_time)
         await app.client.chat_postMessage(
-            channel=channel,
+            channel=channel_id,
             thread_ts=ts,
             text=reply_message,
             mrkdwn=True
         )
         if opsgenie_configured and opsgenie_enabled:
-            await post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts)
+            channel_name = await get_channel_name(app, channel_id)
+            user_name = user_id
+            user = await get_user_by_id(app, user_id)
+            if user:
+                user_name = user.name
+            await post_opsgenie_alert(opsgenie_token, channel_name, user_name, text, ts)
     except asyncio.CancelledError:
         pass  # Task was cancelled because a reaction or reply was detected
     except SlackApiError as e:
         log_error(f"Failed to send scheduled reply: {e}")
 
-async def post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts):
+async def post_opsgenie_alert(opsgenie_token, channel_name, user_name, text, ts):
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
         'Content-Type': 'application/json',
@@ -295,13 +396,13 @@ async def post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts):
         try:
             # example data: {"message": "Test 19:48","alias": "hutbot: Test Test","description":"Every alert needs a description","tags": ["Hutbot"],"details":{"channel":"#cloud-hosting-ks","sender":"Dave","bot":"hutbot"},"priority":"P4"}
             data = {
-                "message": f"{text}",
-                "alias": f"hutbot: {user} in {channel} at {ts}",
-                "description": f"#{channel}: {user} at {ts}: {text}",
+                "message": f"{user_name}: {text}",
+                "alias": f"hutbot: {user_name} in {channel_name} at {ts}",
+                "description": f"#{channel_name}: {user_name} at {ts}: {text}",
                 "tags": ["Hutbot"],
                 "details": {
-                    "channel": channel,
-                    "sender": user,
+                    "channel": channel_name,
+                    "sender": user_name,
                     "bot": "hutbot",
                 },
                 "priority": "P4",
@@ -310,7 +411,7 @@ async def post_opsgenie_alert(opsgenie_token, event, channel, user, text, ts):
                 if response.status != 202:
                     log_error(f"Failed to send alert: {response.status}")
                 else:
-                    log(f"Successfully sent OpsGenie alert for {user} in {channel} at {ts} with status code {response.status}")
+                    log(f"Successfully sent OpsGenie alert for {user_name} in {channel_name} at {ts} with status code {response.status}")
         except Exception as e:
             log_error(f"Exception while sending alert: {e}")
 
@@ -321,82 +422,77 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
         event = body.get('event', {})
         subtype = event.get('subtype')
         previous_message = event.get('previous_message')
-        channel = event.get('channel')
-        user = event.get('user')
+        channel_id = event.get('channel')
+        user_id = event.get('user_id')
         ts = event.get('ts')
         thread_ts = event.get('thread_ts')
         text = event.get('text', '')
 
         # Ignore messages from the bot itself
-        if user == bot_user_id:
-            log(f"Ignoring message from the bot from channel {channel}.")
+        if user_id == bot_user_id:
+            log(f"Ignoring message from the bot from channel {channel_id}.")
             return
 
         if subtype == 'message_deleted' and previous_message:
             # deleted message
-            await handle_message_deletion(app, event, channel, previous_message.get('user'), previous_message.get('ts'))
-        elif user and is_command(text):
+            await handle_message_deletion(app, event, channel_id, previous_message.get('user'), previous_message.get('ts'))
+        elif user_id and is_command(text):
             # command
-            await handle_command(app, text, channel, user)
-        elif user and thread_ts:
+            await handle_command(app, text, channel_id, user_id)
+        elif user_id and thread_ts:
             # thread
-            await handle_thread_response(app, event, channel, user, thread_ts)
-        elif user and ts:
+            await handle_thread_response(app, event, channel_id, user_id, thread_ts)
+        elif user_id and ts:
             # channel message
-            await handle_channel_message(app, event, channel, user, text, ts)
+            await handle_channel_message(app, event, channel_id, user_id, text, ts)
 
-
-    async def handle_thread_response(app, event, channel, user, thread_ts):
-        key = (channel, thread_ts)
-        if key in scheduled_messages and scheduled_messages[key].user != user:
-            log(f"Thread reply from a different user detected. Cancelling reminder for message {thread_ts} in channel {channel}")
+    async def handle_thread_response(app, event, channel_id, user_id, thread_ts):
+        key = (channel_id, thread_ts)
+        if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
+            log(f"Thread reply from a different user detected. Cancelling reminder for message {thread_ts} in channel {channel_id}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
 
-
-    async def handle_channel_message(app, event, channel, user, text, ts):
+    async def handle_channel_message(app, event, channel_id, user_id, text, ts):
         # Schedule a reminder
-        log(f"Scheduling reminder for message {ts} in channel {channel} by user {user}")
-        task = asyncio.create_task(schedule_reply(app, opsgenie_token, event, channel, user, text, ts))
-        scheduled_messages[(channel, ts)] = ScheduledReply(task, user)
+        log(f"Scheduling reminder for message {ts} in channel {channel_id} by user {user_id}")
+        task = asyncio.create_task(schedule_reply(app, opsgenie_token, event, channel_id, user_id, text, ts))
+        scheduled_messages[(channel_id, ts)] = ScheduledReply(task, user_id)
 
-
-    async def handle_message_deletion(app, event, channel, previous_message_user, previous_message_ts):
+    async def handle_message_deletion(app, event, channel_id, previous_message_user, previous_message_ts):
         if previous_message_user == bot_user_id:
-            log(f"Ignoring message deletion by bot from channel {channel}.")
+            log(f"Ignoring message deletion by bot from channel {channel_id}.")
             return
 
         # Cancel the scheduled task if it exists
-        key = (channel, previous_message_ts)
+        key = (channel_id, previous_message_ts)
         if key in scheduled_messages:
-            log(f"Message deleted. Cancelling reminder for message {previous_message_ts} in channel {channel} by user {previous_message_user}")
+            log(f"Message deleted. Cancelling reminder for message {previous_message_ts} in channel {channel_id} by user {previous_message_user}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
-
 
     @app.event("reaction_added")
     async def handle_reaction_added_events(body, logger):
         event = body.get('event', {})
         item = event.get('item', {})
-        channel = item.get('channel')
-        user = event.get('user')
+        channel_id = item.get('channel')
+        user_id = event.get('user')
         ts = item.get('ts')
 
         # Cancel the scheduled task if it exists
-        key = (channel, ts)
-        if key in scheduled_messages and scheduled_messages[key].user != user:
-            log(f"Reaction added by different user. Cancelling reminder for message {ts} in channel {channel}")
+        key = (channel_id, ts)
+        if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
+            log(f"Reaction added by different user. Cancelling reminder for message {ts} in channel {channel_id}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
-
 
     @app.command("/hutbot")
     async def handle_config_command(ack, body, logger):
         await ack()
         text = body.get('text', '')
-        channel = body.get('channel_id')
-        user = body.get('user_id')
-        await handle_command(app, text, channel, user)
+        channel_id = body.get('channel_id')
+        user_id = body.get('user_id')
+        await handle_command(app, text, channel_id, user_id)
 
 async def send_heartbeat(opsgenie_token, opsgenie_heartbeat_name):
     url = 'https://api.opsgenie.com/v2/heartbeats/' + opsgenie_heartbeat_name + '/ping'
