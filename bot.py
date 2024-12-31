@@ -296,7 +296,7 @@ async def show_config(app, channel_id, user_id):
     message = (
         "This is the configuration for the current channel:\n\n"
         f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
-        f"{' (not configured)' if opsgenie_configured else ''}\n\n"
+        f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
         f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
         f"*Included teams*: {', '.join(included_teams) if included_teams else '<None>'}\n\n"
         f"*Excluded teams*: {', '.join(excluded_teams) if excluded_teams else '<None>'}\n\n"
