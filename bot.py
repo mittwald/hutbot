@@ -18,6 +18,7 @@ default_config = {
     "reply_message": "Anybody?",
 }
 
+users_file = 'users.json'  # Path to the users retrieved from https://lb.mittwald.it/api/users
 config_file = 'hutmensch.json'  # Path to the configuration file
 channel_config = {}             # Will be loaded from disk
 
@@ -100,16 +101,34 @@ async def save_configuration():
     except Exception as e:
         log_error(f"Failed to save configuration: {e}")
 
+async def load_users() -> dict:
+    try:
+        async with aiofiles.open(users_file, 'r') as f:
+            content = await f.read()
+            users = json.loads(content)
+            log("Users loaded from disk.")
+            return users
+    except FileNotFoundError:
+        log("No users file found. Will not be able to do department mapping.")
+    except json.JSONDecodeError as e:
+        log(f"Failed to decode JSON users: {e}. Will not be able to do department mapping.")
+    return {}
 
-async def update_id_cache(app: AsyncApp):
+async def update_user_cache(app: AsyncApp):
     global user_cache
     if not user_cache:
         try:
             response = await app.client.users_list()
             users = response['members']
-            user_cache = {user['name']: user['id'] for user in users}
+            for user in users:
+                log(f"{user}")
+                log(user.get('profile', {}).get('email', ''))
+                user_id = user['id']
+                user_name = user['name']
+                user_cache[user_name] = user_id
         except SlackApiError as e:
             log_error(f"Failed to fetch user list: {e}")
+
 
 def is_command(text):
     return f"<@{bot_user_id}>" in text
@@ -183,7 +202,7 @@ async def process_mentions(app, message) -> tuple[bool, str, str]:
     matches = mention_pattern.findall(message)
     if matches:
         # Ensure user cache is updated
-        await update_id_cache(app)
+        await update_user_cache(app)
         for username in matches:
             user_id = user_cache.get(username)
             if user_id:
@@ -412,7 +431,7 @@ async def main():
         app = AsyncApp(token=slack_bot_token)
         global bot_user_id
         bot_user_id = (await app.client.auth_test())["user_id"]
-        await update_id_cache(app)
+        await update_user_cache(app)
         register_app_handlers(app, opsgenie_token=opsgenie_token)
         handler = AsyncSocketModeHandler(app, slack_app_token)
         if opsgenie_token and opsgenie_heartbeat_name:
