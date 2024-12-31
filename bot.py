@@ -199,7 +199,7 @@ async def show_config(app, channel, user):
     opsgenie_enabled = config.get('opsgenie', False)
     wait_time_minutes = config['wait_time'] // 60
     reply_message = config['reply_message']
-    message = f"This is the configuration for the current channel:\n\n*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}{' (not configured)' if opsgenie_configured else ''}\n\n*Wait time*: `{wait_time_minutes}` minutes\n\n*Reply message*:\n{reply_message}"
+    message = f"This is the configuration for the current channel:\n\n*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}{'' if opsgenie_configured else ' (not configured)'}\n\n*Wait time*: `{wait_time_minutes}` minutes\n\n*Reply message*:\n{reply_message}"
     await send_message(app, channel, user, message)
 
 
