@@ -158,7 +158,6 @@ async def update_user_cache(app: AsyncApp):
                     user_name = user.get('name', '')
                     user_name_normalized = user_name.lower().replace('.', '').strip()
                     user_real_name = normalize_real_name(user.get('real_name', ''))
-                    user_real_name_normalized = user.get('profile', {}).get('real_name_normalized', '')
                     user_team = ''
                     if user_name in company_users:
                         user_team = company_users[user_name].get('group', '').strip()
@@ -167,14 +166,14 @@ async def update_user_cache(app: AsyncApp):
                     else:
                         # try with real name
                         for _, value in company_users.items():
-                            company_real_name = normalize_real_name(value.get('fullname', ''))
-                            if company_real_name == user_real_name:
+                            company_real_name_normalized = normalize_real_name(value.get('fullname', ''))
+                            # hackidy hack for slack, actually for AD fullnames with umlauts replaced
+                            company_real_name_super_normalized = normalize_real_name(value.get('fullname', '').lower().replace('ae', 'ä').replace('oe', 'ö').replace('ue', 'ü').strip())
+                            if company_real_name_normalized == user_real_name or company_real_name_super_normalized == user_real_name:
                                 user_team = value.get('group', '').strip()
                                 break
-                        if user_team != '':
-                            log(f"Found user {user_name} with real name {user_real_name} in company users.")
-                        else:
-                            log(f"Could not find user {user_name} with real name {user_real_name} and slack normalized {user_real_name_normalized} in company users.")
+                        if user_team == '':
+                            log(f"ERROR: Failed to map user {user_name} with real name {user_real_name} to a company user.")
 
                     if user_team == '':
                         user_team = team_unknown
