@@ -42,11 +42,11 @@ opsgenie_configured = False
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_-]?time\s+(\d+)', re.IGNORECASE)
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
-ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'add\s+excluded[_-]?team\s+(.+)', re.IGNORECASE)
-CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'clear\s+excluded[_-]?team', re.IGNORECASE)
-ADD_INCLUDED_TEAM_PATTERN = re.compile(r'add\s+included[_-]?team\s+(.+)', re.IGNORECASE)
-CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'clear\s+included[_-]?team', re.IGNORECASE)
-LIST_TEAMS_PATTERN = re.compile(r'list\s+teams', re.IGNORECASE)
+ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'add\s+excluded[_-]?teams?\s+(.+)', re.IGNORECASE)
+CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'clear\s+excluded[_-]?teams?', re.IGNORECASE)
+ADD_INCLUDED_TEAM_PATTERN = re.compile(r'add\s+included[_-]?teams?\s+(.+)', re.IGNORECASE)
+CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'clear\s+included[_-]?teams?', re.IGNORECASE)
+LIST_TEAMS_PATTERN = re.compile(r'list\s+teams?', re.IGNORECASE)
 ENABLE_OPSGENIE_PATTERN = re.compile(r'enable\s+opsgenie', re.IGNORECASE)
 DISABLE_OPSGENIE_PATTERN = re.compile(r'disable\s+opsgenie', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
@@ -88,12 +88,18 @@ def log_error(*args):
     prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} ERROR:"
     print(prefix, message, flush=True, file=sys.stderr)
 
+def apply_defaults(config):
+    for key, value in default_config.items():
+        if key not in config:
+            config[key] = value
+    return config
+
 async def load_configuration():
     global channel_config
     try:
         async with aiofiles.open(config_file, 'r') as f:
             content = await f.read()
-            channel_config = json.loads(content)
+            channel_config = apply_defaults(json.loads(content))
             log("Configuration loaded from disk.")
     except FileNotFoundError:
         log("No configuration file found. Using default settings.")
