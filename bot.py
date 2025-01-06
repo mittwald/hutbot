@@ -139,12 +139,15 @@ async def load_company_users() -> dict:
 
 async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
     try:
-        response = app.client.conversations_info(channel=channel_id)
-        channel_name = response["channel"]["name"]
-        return channel_name
+        response = await app.client.conversations_info(channel=channel_id)
+        print(json.dumps(response))
+        channel_name = response.get('channel', {}).get('name', '')
+        if channel_name:
+            return channel_name
     except SlackApiError as e:
         log_error(f"Failed to get channel name: {e}")
-        return channel_id
+
+    return channel_id
 
 def normalize_real_name(real_name: str) -> str:
     normalized = real_name.strip().lower().replace(' ', '_').replace('.', '_')
