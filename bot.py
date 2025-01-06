@@ -89,9 +89,10 @@ def log_error(*args):
     print(prefix, message, flush=True, file=sys.stderr)
 
 def apply_defaults(config):
-    for key, value in default_config.items():
-        if key not in config:
-            config[key] = value
+    for _, channel_config in config.items():
+        for key, value in default_config.items():
+            if key not in channel_config:
+                channel_config[key] = value
     return config
 
 async def load_configuration():
