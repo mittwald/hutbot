@@ -7,6 +7,7 @@ import json
 import aiofiles
 import datetime
 import aiohttp  # Added for making HTTP requests
+from unidecode import unidecode
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
@@ -139,7 +140,10 @@ async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
         return channel_id
 
 def normalize_real_name(real_name: str) -> str:
-    return real_name.strip().lower().replace(' ', '_').replace('.', '_')
+    normalized = real_name.strip().lower().replace(' ', '_').replace('.', '_')
+    # replace non latin characters
+    normalized = unidecode(normalized)
+    return normalized
 
 async def update_user_cache(app: AsyncApp):
     global user_id_cache, id_user_cache
@@ -149,11 +153,12 @@ async def update_user_cache(app: AsyncApp):
             response = await app.client.users_list()
             users = response['members']
             for user in users:
-                if not user.get('deleted'):
+                if not user.get('deleted') and not user.get('is_bot', False):
                     user_id = user.get('id', '')
                     user_name = user.get('name', '')
                     user_name_normalized = user_name.lower().replace('.', '').strip()
                     user_real_name = normalize_real_name(user.get('real_name', ''))
+                    user_real_name_normalized = user.get('profile', {}).get('real_name_normalized', '')
                     user_team = ''
                     if user_name in company_users:
                         user_team = company_users[user_name].get('group', '').strip()
@@ -169,7 +174,7 @@ async def update_user_cache(app: AsyncApp):
                         if user_team != '':
                             log(f"Found user {user_name} with real name {user_real_name} in company users.")
                         else:
-                            log(f"Could not find user {user_name} with real name {user_real_name} in company users.")
+                            log(f"Could not find user {user_name} with real name {user_real_name} and slack normalized {user_real_name_normalized} in company users.")
 
                     if user_team == '':
                         user_team = team_unknown
