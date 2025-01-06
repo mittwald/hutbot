@@ -30,6 +30,7 @@ scheduled_messages = {}
 
 user_id_cache = {}
 id_user_cache = {}
+team_cache = set()
 
 bot_user_id = None
 
@@ -43,6 +44,7 @@ ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'add\s+excluded[_-]?team\s+(.+)', re.IGN
 CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'clear\s+excluded[_-]?team', re.IGNORECASE)
 ADD_INCLUDED_TEAM_PATTERN = re.compile(r'add\s+included[_-]?team\s+(.+)', re.IGNORECASE)
 CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'clear\s+included[_-]?team', re.IGNORECASE)
+LIST_TEAMS_PATTERN = re.compile(r'list\s+teams', re.IGNORECASE)
 ENABLE_OPSGENIE_PATTERN = re.compile(r'enable\s+opsgenie', re.IGNORECASE)
 DISABLE_OPSGENIE_PATTERN = re.compile(r'disable\s+opsgenie', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
@@ -114,8 +116,9 @@ async def load_company_users() -> dict:
             users = json.loads(content)
             company_users = {}
             for user in users:
-                id = user.get('ad_name', None)
-                if id:
+                id = user.get('ad_name', '').strip()
+                is_deleted = user.get('is_deleted', False)
+                if not is_deleted and len(id) > 0:
                     company_users[id] = user
             log(f"{len(company_users)} company users loaded from disk.")
             return company_users
@@ -145,19 +148,29 @@ async def update_user_cache(app: AsyncApp):
                 if not user.get('deleted'):
                     user_id = user.get('id', '')
                     user_name = user.get('name', '')
-                    user_real_name = user.get('real_name', '')
+                    user_real_name = user.get('real_name', '').strip()
                     user_team = ''
                     if user_name in company_users:
-                        user_team = company_users[user_name].get('group', '')
+                        user_team = company_users[user_name].get('group', '').strip()
                     else:
                         # try with real name
-                        for _, value in user.items():
-                            company_real_name = value.get('real_name', '')
+                        for _, value in company_users.items():
+                            company_real_name = value.get('fullname', '').strip()
                             if company_real_name == user_real_name:
-                                user_team = value.get('group', '')
+                                user_team = value.get('group', '').strip()
                                 break
+                        if user_team != '':
+                            log(f"Found user {user_name} with real name {user_real_name} in company users.")
+                        else:
+                            log(f"Could not find user {user_name} with real name {user_real_name} in company users.")
+
+                    if user_team == '':
+                        user_team = '<unknown>'
+
                     user_id_cache[user_name] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
                     id_user_cache[user_id] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
+                    if user_team not in team_cache:
+                        team_cache.add(user_team)
         except SlackApiError as e:
             log_error(f"Failed to fetch user list: {e}")
 
@@ -188,6 +201,8 @@ async def handle_command(app, text, channel_id, user_id):
         await set_opsgenie(app, channel_id, True, user_id)
     elif DISABLE_OPSGENIE_PATTERN.match(text):
         await set_opsgenie(app, channel_id, False, user_id)
+    elif LIST_TEAMS_PATTERN.match(text):
+        await list_teams(app, channel_id, user_id)
     elif ADD_EXCLUDED_TEAM_PATTERN.match(text):
         match = ADD_EXCLUDED_TEAM_PATTERN.match(text)
         team = match.group(1)
@@ -257,9 +272,20 @@ async def process_mentions(app, message) -> tuple[bool, str, str]:
     return True, None, message
 
 async def add_excluded_team(app, channel_id, team, user_id):
-    # TODO CHECK INCLUDED IS NOT SET
+    update_user_cache(app)
+    if team not in team_cache:
+        await send_message(app, channel_id, user_id, f"Unknown team: {team}.")
+        return
     if channel_id not in channel_config:
         channel_config[channel_id] = default_config.copy()
+    if team in channel_config[channel_id]['excluded_teams']:
+        await send_message(app, channel_id, user_id, f"{team} is already excluded.")
+        return
+
+    if len(channel_config[channel_id]['included_teams']) > 0:
+        await send_message(app, channel_id, user_id, f"Either set included teams or excluded teams, not both.")
+        return
+
     channel_config[channel_id]['excluded_teams'].append(team)
     await save_configuration()
     await send_message(app, channel_id, user_id, f"Added {team} to excluded teams.")
@@ -272,9 +298,20 @@ async def clear_excluded_team(app, channel_id, user_id):
     await send_message(app, channel_id, user_id, "Cleared *excluded teams*.")
 
 async def add_included_team(app, channel_id, team, user_id):
-    # TODO CHECK EXCLUDED IS NOT SET
+    update_user_cache(app)
+    if team not in team_cache:
+        await send_message(app, channel_id, user_id, f"Unknown team: {team}.")
+        return
     if channel_id not in channel_config:
         channel_config[channel_id] = default_config.copy()
+    if team in channel_config[channel_id]['included_teams']:
+        await send_message(app, channel_id, user_id, f"{team} is already included.")
+        return
+
+    if len(channel_config[channel_id]['excluded_teams']) > 0:
+        await send_message(app, channel_id, user_id, f"Either set included teams or excluded teams, not both.")
+        return
+
     channel_config[channel_id]['included_teams'].append(team)
     await save_configuration()
     await send_message(app, channel_id, user_id, f"Added {team} to *included teams*.")
@@ -285,6 +322,13 @@ async def clear_included_team(app, channel_id, user_id):
     channel_config[channel_id]['included_teams'] = []
     await save_configuration()
     await send_message(app, channel_id, user_id, "Cleared *included teams*.")
+
+async def list_teams(app, channel_id, user_id):
+    update_user_cache(app)
+    if channel_id not in channel_config:
+        channel_config[channel_id] = default_config.copy()
+    message = f"*Available teams*:\n{'\n'.join(team_cache)}"
+    await send_message(app, channel_id, user_id, message)
 
 async def show_config(app, channel_id, user_id):
     config = channel_config.get(channel_id, default_config)
@@ -330,6 +374,10 @@ async def send_help_message(app, channel_id, user_id):
         "```/hutbot set wait-time [minutes]\n"
         "@Hutbot set wait-time [minutes]```\n"
         "Sets the wait time before I send a reminder. Replace `[minutes]` with the number of minutes you want.\n\n"
+        "*List Available Teams:*\n"
+        "```/hutbot list teams\n"
+        "@Hutbot list teams```\n"
+        "Lists the available teams.\n\n"
         "*Add Excluded Team:*\n"
         "```/hutbot add excluded-team [team]\n"
         "@Hutbot add excluded-team [team]```\n"
