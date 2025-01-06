@@ -140,7 +140,7 @@ async def load_company_users() -> dict:
 async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
     try:
         response = await app.client.conversations_info(channel=channel_id)
-        print(json.dumps(response))
+        print(json.dumps(response.get('channel', {})))
         channel_name = response.get('channel', {}).get('name', '')
         if channel_name:
             return channel_name
