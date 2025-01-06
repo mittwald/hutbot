@@ -138,6 +138,9 @@ async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
         log_error(f"Failed to get channel name: {e}")
         return channel_id
 
+def normalize_real_name(real_name: str) -> str:
+    return real_name.strip().lower().replace(' ', '_').replace('.', '_')
+
 async def update_user_cache(app: AsyncApp):
     global user_id_cache, id_user_cache
     if not user_id_cache or not id_user_cache:
@@ -149,14 +152,17 @@ async def update_user_cache(app: AsyncApp):
                 if not user.get('deleted'):
                     user_id = user.get('id', '')
                     user_name = user.get('name', '')
-                    user_real_name = user.get('real_name', '').strip()
+                    user_name_normalized = user_name.lower().replace('.', '').strip()
+                    user_real_name = normalize_real_name(user.get('real_name', ''))
                     user_team = ''
                     if user_name in company_users:
                         user_team = company_users[user_name].get('group', '').strip()
+                    elif user_name_normalized in company_users:
+                        user_team = company_users[user_name_normalized].get('group', '').strip()
                     else:
                         # try with real name
                         for _, value in company_users.items():
-                            company_real_name = value.get('fullname', '').strip()
+                            company_real_name = normalize_real_name(value.get('fullname', ''))
                             if company_real_name == user_real_name:
                                 user_team = value.get('group', '').strip()
                                 break
