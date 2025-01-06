@@ -289,7 +289,7 @@ async def process_mentions(app, message) -> tuple[bool, str, str]:
     return True, None, message
 
 async def add_excluded_team(app, channel_id, team, user_id):
-    update_user_cache(app)
+    await update_user_cache(app)
     if team not in team_cache:
         await send_message(app, channel_id, user_id, f"Unknown team: {team}.")
         return
@@ -315,7 +315,7 @@ async def clear_excluded_team(app, channel_id, user_id):
     await send_message(app, channel_id, user_id, "Cleared *excluded teams*.")
 
 async def add_included_team(app, channel_id, team, user_id):
-    update_user_cache(app)
+    await update_user_cache(app)
     if team not in team_cache:
         await send_message(app, channel_id, user_id, f"Unknown team: {team}.")
         return
@@ -341,10 +341,10 @@ async def clear_included_team(app, channel_id, user_id):
     await send_message(app, channel_id, user_id, "Cleared *included teams*.")
 
 async def list_teams(app, channel_id, user_id):
-    update_user_cache(app)
+    await update_user_cache(app)
     if channel_id not in channel_config:
         channel_config[channel_id] = default_config.copy()
-    message = f"*Available teams*:\n{'\n'.join(team_cache)}"
+    message = f"*Available teams*:\n{'\n'.join(sorted(team_cache))}"
     await send_message(app, channel_id, user_id, message)
 
 async def show_config(app, channel_id, user_id):
@@ -509,11 +509,11 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
     async def handle_thread_response(app, event, channel_id, user_id, thread_ts):
         key = (channel_id, thread_ts)
         if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
-            respond_user_id = scheduled_messages[key].user_id
             channel_name = await get_channel_name(app, channel_id)
-            user = await get_user_by_id(app, user_id)
-            respond_user = await get_user_by_id(app, respond_user_id)
-            log(f"Thread reply by user {respond_user.name} detected. Cancelling reminder for message {thread_ts} in channel {channel_name} by user {user.name}")
+            message_user_id = scheduled_messages[key].user_id
+            message_user = await get_user_by_id(app, message_user_id)
+            reply_user = await get_user_by_id(app, user_id)
+            log(f"Thread reply by user {reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel {channel_name} by user {message_user.name}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
 
@@ -526,7 +526,6 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
         scheduled_messages[(channel_id, ts)] = ScheduledReply(task, user_id)
 
     async def handle_message_deletion(app, event, channel_id, previous_message_user_id, previous_message_ts):
-        channel_name = await get_channel_name(app, channel_id)
         if previous_message_user_id == bot_user_id:
             log(f"Ignoring message deletion by bot from channel {channel_name}.")
             return
@@ -534,6 +533,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
         # Cancel the scheduled task if it exists
         key = (channel_id, previous_message_ts)
         if key in scheduled_messages:
+            channel_name = await get_channel_name(app, channel_id)
             previous_message_user = await get_user_by_id(app, previous_message_user_id)
             log(f"Message deleted. Cancelling reminder for message {previous_message_ts} in channel {channel_name} by user {previous_message_user.name}")
             scheduled_messages[key].task.cancel()
@@ -550,7 +550,11 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
         # Cancel the scheduled task if it exists
         key = (channel_id, ts)
         if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
-            log(f"Reaction added by different user. Cancelling reminder for message {ts} in channel {channel_id}")
+            channel_name = await get_channel_name(app, channel_id)
+            message_user_id = scheduled_messages[key].user_id
+            message_user = await get_user_by_id(app, message_user_id)
+            reaction_user = await get_user_by_id(app, user_id)
+            log(f"Reaction added by user {reaction_user.name}. Cancelling reminder for message {ts} in channel {channel_name} by user {message_user.name}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
 
