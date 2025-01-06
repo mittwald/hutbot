@@ -268,11 +268,11 @@ async def set_wait_time(app, channel_id, wait_time_minutes, user_id):
 async def set_reply_message(app, channel_id, message, user_id):
     # check message
     if not message or message.strip() == "":
-        await send_message(app, channel_id, user_id, "Invalid reply message. Must be non-empty.")
+        await send_message(app, channel_id, user_id, "Invalid *reply message*. Must be non-empty.")
         return
     ok, error, message = await process_mentions(app, message)
     if not ok:
-        await send_message(app, channel_id, user_id, "Invalid reply message: " + error + ".")
+        await send_message(app, channel_id, user_id, "Invalid *reply message*: " + error + ".")
         return
     if channel_id not in channel_config:
         channel_config[channel_id] = default_config.copy()
@@ -291,28 +291,28 @@ async def process_mentions(app, message) -> tuple[bool, str, str]:
             if user.id:
                 message = message.replace(f"@{username}", f"<@{user.id}>")
             else:
-                log_error(f"Invalid reply message: username {username} not found")
+                log_error(f"Invalid *reply message*: username `{username}` not found")
                 return False, f"{username} not found", None
     return True, None, message
 
 async def add_excluded_team(app, channel_id, team, user_id):
     await update_user_cache(app)
     if team not in team_cache:
-        await send_message(app, channel_id, user_id, f"Unknown team: {team}.")
+        await send_message(app, channel_id, user_id, f"Unknown team: `{team}`.")
         return
     if channel_id not in channel_config:
         channel_config[channel_id] = default_config.copy()
     if team in channel_config[channel_id]['excluded_teams']:
-        await send_message(app, channel_id, user_id, f"{team} is already excluded.")
+        await send_message(app, channel_id, user_id, f"`{team}` is already excluded.")
         return
 
     if len(channel_config[channel_id]['included_teams']) > 0:
-        await send_message(app, channel_id, user_id, f"Either set included teams or excluded teams, not both.")
+        await send_message(app, channel_id, user_id, f"Either set *included teams* or *excluded teams*, not both.")
         return
 
     channel_config[channel_id]['excluded_teams'].append(team)
     await save_configuration()
-    await send_message(app, channel_id, user_id, f"Added {team} to excluded teams.")
+    await send_message(app, channel_id, user_id, f"Added `{team}` to *excluded teams*.")
 
 async def clear_excluded_team(app, channel_id, user_id):
     if channel_id not in channel_config:
@@ -324,21 +324,21 @@ async def clear_excluded_team(app, channel_id, user_id):
 async def add_included_team(app, channel_id, team, user_id):
     await update_user_cache(app)
     if team not in team_cache:
-        await send_message(app, channel_id, user_id, f"Unknown team: {team}.")
+        await send_message(app, channel_id, user_id, f"Unknown team: `{team}`.")
         return
     if channel_id not in channel_config:
         channel_config[channel_id] = default_config.copy()
     if team in channel_config[channel_id]['included_teams']:
-        await send_message(app, channel_id, user_id, f"{team} is already included.")
+        await send_message(app, channel_id, user_id, f"`{team}` is already included.")
         return
 
     if len(channel_config[channel_id]['excluded_teams']) > 0:
-        await send_message(app, channel_id, user_id, f"Either set included teams or excluded teams, not both.")
+        await send_message(app, channel_id, user_id, f"Either set *included teams* or *excluded teams*, not both.")
         return
 
     channel_config[channel_id]['included_teams'].append(team)
     await save_configuration()
-    await send_message(app, channel_id, user_id, f"Added {team} to *included teams*.")
+    await send_message(app, channel_id, user_id, f"Added `{team}` to *included teams*.")
 
 async def clear_included_team(app, channel_id, user_id):
     if channel_id not in channel_config:
