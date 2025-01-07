@@ -492,6 +492,44 @@ async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User,
         except Exception as e:
             log_error(f"Exception while sending alert: {e}")
 
+async def handle_thread_response(app: AsyncApp, event: dict, channel: Channel, user_id: str, thread_ts: str):
+    key = (channel.name, thread_ts)
+    if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
+        message_user_id = scheduled_messages[key].user_id
+        message_user = await get_user_by_id(app, message_user_id)
+        reply_user = await get_user_by_id(app, user_id)
+        log(f"Thread reply by user {reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel #{channel.name} by user @{message_user.name}")
+        scheduled_messages[key].task.cancel()
+        del scheduled_messages[key]
+
+async def handle_channel_message(app: AsyncApp, opsgenie_token: str, event: dict, channel: Channel, user_id: str, text: str, ts: str):
+    user = await get_user_by_id(app, user_id)
+    included_teams = channel.config.get('included_teams')
+    excluded_teams = channel.config.get('excluded_teams')
+    if len(included_teams) > 0 and user.team not in included_teams:
+        log(f"Message from user @{user.name} in #{channel.name} will be ignored because team {user.team} is not included.")
+        return
+    if len(excluded_teams) > 0 and user.team in excluded_teams:
+        log(f"Message from user @{user.name} in #{channel.name} will be ignored because team {user.team} is excluded.")
+        return
+
+    log(f"Scheduling reminder for message {ts} in channel #{channel.name} by user @{user.name}")
+    task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, user, text, ts))
+    scheduled_messages[(channel.id, ts)] = ScheduledReply(task, user_id)
+
+async def handle_message_deletion(app: AsyncApp, event: str, channel: Channel, previous_message_user_id: str, previous_message_ts: str):
+    if previous_message_user_id == bot_user_id:
+        log(f"Ignoring message deletion by bot from channel #{channel.name}.")
+        return
+
+    # Cancel the scheduled task if it exists
+    key = (channel.id, previous_message_ts)
+    if key in scheduled_messages:
+        previous_message_user = await get_user_by_id(app, previous_message_user_id)
+        log(f"Message deleted. Cancelling reminder for message {previous_message_ts} in channel #{channel.name} by user @{previous_message_user.name}")
+        scheduled_messages[key].task.cancel()
+        del scheduled_messages[key]
+
 def register_app_handlers(app: AsyncApp, opsgenie_token: str = None) -> None:
 
     @app.event("message")
@@ -523,36 +561,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = None) -> None:
             await handle_thread_response(app, event, channel, user_id, thread_ts)
         elif user_id and ts:
             # channel message
-            await handle_channel_message(app, event, channel, user_id, text, ts)
-
-    async def handle_thread_response(app, event, channel, user_id, thread_ts):
-        key = (channel.name, thread_ts)
-        if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
-            message_user_id = scheduled_messages[key].user_id
-            message_user = await get_user_by_id(app, message_user_id)
-            reply_user = await get_user_by_id(app, user_id)
-            log(f"Thread reply by user {reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel #{channel.name} by user @{message_user.name}")
-            scheduled_messages[key].task.cancel()
-            del scheduled_messages[key]
-
-    async def handle_channel_message(app, event, channel, user_id, text, ts):
-        user = await get_user_by_id(app, user_id)
-        log(f"Scheduling reminder for message {ts} in channel #{channel.name} by user @{user.name}")
-        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, user, text, ts))
-        scheduled_messages[(channel.id, ts)] = ScheduledReply(task, user_id)
-
-    async def handle_message_deletion(app, event, channel, previous_message_user_id, previous_message_ts):
-        if previous_message_user_id == bot_user_id:
-            log(f"Ignoring message deletion by bot from channel #{channel.name}.")
-            return
-
-        # Cancel the scheduled task if it exists
-        key = (channel.id, previous_message_ts)
-        if key in scheduled_messages:
-            previous_message_user = await get_user_by_id(app, previous_message_user_id)
-            log(f"Message deleted. Cancelling reminder for message {previous_message_ts} in channel #{channel.name} by user @{previous_message_user.name}")
-            scheduled_messages[key].task.cancel()
-            del scheduled_messages[key]
+            await handle_channel_message(app, opsgenie_token, event, channel, user_id, text, ts)
 
     @app.event("reaction_added")
     async def handle_reaction_added_events(body, logger):
