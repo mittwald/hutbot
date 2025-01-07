@@ -263,7 +263,7 @@ async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: st
     elif HELP_PATTERN.match(text):
         await send_help_message(app, channel, user_id, thread_ts)
     else:
-        await send_message(app, channel, user_id, "Huh? :thinking_face: Maybe type `help` for a list of commands.", thread_ts)
+        await send_message(app, channel, user_id, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
 
 async def set_opsgenie(app: AsyncApp, channel: Channel, enabled: bool, user_id: str, thread_ts: str = None) -> None:
     channel.config['opsgenie'] = enabled
