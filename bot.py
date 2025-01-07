@@ -374,8 +374,8 @@ async def show_config(app, channel_id, user_id, thread_ts=None):
         f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
         f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
         f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
-        f"*Included teams*: {', '.join(included_teams) if included_teams else '<None>'}\n\n"
-        f"*Excluded teams*: {', '.join(excluded_teams) if excluded_teams else '<None>'}\n\n"
+        f"*Included teams*: {', '.join(f'`{team}`' for team in included_teams) if included_teams else '<None>'}\n\n"
+        f"*Excluded teams*: {', '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
         f"*Reply message*:\n{reply_message}"
     )
     await send_message(app, channel_id, user_id, message, thread_ts)
