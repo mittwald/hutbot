@@ -359,7 +359,7 @@ async def list_teams(app: AsyncApp, channel: Channel, user_id: str, thread_ts: s
 
 async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
     opsgenie_enabled = channel.config.get('opsgenie')
-    wait_time_minutes = channel.config.get('wait_time')
+    wait_time_minutes = channel.config.get('wait_time') // 60
     included_teams = channel.config.get('included_teams')
     excluded_teams = channel.config.get('excluded_teams')
     reply_message = channel.config.get('reply_message')
