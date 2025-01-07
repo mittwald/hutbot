@@ -201,7 +201,10 @@ async def update_user_cache(app: AsyncApp) -> None:
             response = await app.client.users_list()
             users = response['members']
             for user in users:
-                if not user.get('deleted') and not user.get('is_bot', False) and not user.get("is_restricted", False):
+                if not user.get('deleted') and \
+                   not user.get('is_bot', False) and \
+                   not user.get('is_restricted', False) and \
+                   user.get('id', '') != 'USLACKBOT':
                     user_id = user.get('id', '')
                     user_name = normalize_id(user.get('name', ''))
                     user_name_normalized = normalize_user_name(user_name)
