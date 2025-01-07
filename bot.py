@@ -487,11 +487,10 @@ async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User,
     }
     async with aiohttp.ClientSession() as session:
         try:
-            # example data: {"message": "Test 19:48","alias": "hutbot: Test Test","description":"Every alert needs a description","tags": ["Hutbot"],"details":{"channel":"#cloud-hosting-ks","sender":"Dave","bot":"hutbot"},"priority":"P4"}
             data = {
                 "message": f"{user_name}: {text}",
-                "alias": f"hutbot: {user_name} in #{channel.name} at {ts}",
-                "description": f"#{channel.name}: {user_name} at {ts}: {text}",
+                "alias": f"hutbot: {user_name} in #{channel.name} {ts}",
+                "description": f"{user_name} in #{channel.name}: {text}",
                 "tags": ["Hutbot"],
                 "details": {
                     "channel": f"#{channel.name}",
@@ -503,11 +502,11 @@ async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User,
             }
             async with session.post(url, headers=headers, data=json.dumps(data)) as response:
                 if response.status != 202:
-                    log_error(f"Failed to send alert: {response.status}")
+                    log_error(f"Failed to send alert for message {ts} in channel #{channel.name} by user @{user.name}: {response.status}")
                 else:
-                    log(f"Successfully sent OpsGenie alert for {user_name} in #{channel.name} at {ts} with status code {response.status}")
+                    log(f"Successfully sent OpsGenie alert for message {ts} in channel #{channel.name} by user @{user.name} with status code {response.status}")
         except Exception as e:
-            log_error(f"Exception while sending alert: {e}")
+            log_error(f"Failed to send alert for message {ts} in channel #{channel.name} by user @{user.name}: {e}")
 
 async def handle_thread_response(app: AsyncApp, event: dict, channel: Channel, user_id: str, thread_ts: str):
     key = (channel.name, thread_ts)
@@ -515,7 +514,7 @@ async def handle_thread_response(app: AsyncApp, event: dict, channel: Channel, u
         message_user_id = scheduled_messages[key].user_id
         message_user = await get_user_by_id(app, message_user_id)
         reply_user = await get_user_by_id(app, user_id)
-        log(f"Thread reply by user {reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel #{channel.name} by user @{message_user.name}")
+        log(f"Thread reply by user @{reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel #{channel.name} by user @{message_user.name}")
         scheduled_messages[key].task.cancel()
         del scheduled_messages[key]
 
@@ -524,10 +523,10 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, event: dict
     included_teams = channel.config.get('included_teams')
     excluded_teams = channel.config.get('excluded_teams')
     if len(included_teams) > 0 and user.team not in included_teams:
-        log(f"Message from user @{user.name} in #{channel.name} will be ignored because team {user.team} is not included.")
+        log(f"Message from user @{user.name} in #{channel.name} will be ignored because team '{user.team}' is not included.")
         return
     if len(excluded_teams) > 0 and user.team in excluded_teams:
-        log(f"Message from user @{user.name} in #{channel.name} will be ignored because team {user.team} is excluded.")
+        log(f"Message from user @{user.name} in #{channel.name} will be ignored because team '{user.team}' is excluded.")
         return
 
     log(f"Scheduling reminder for message {ts} in channel #{channel.name} by user @{user.name}")
@@ -595,7 +594,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = None) -> None:
             message_user_id = scheduled_messages[key].user_id
             message_user = await get_user_by_id(app, message_user_id)
             reaction_user = await get_user_by_id(app, user_id)
-            log(f"Reaction added by user {reaction_user.name}. Cancelling reminder for message {ts} in channel #{channel.name} by user @{message_user.name}")
+            log(f"Reaction added by user @{reaction_user.name}. Cancelling reminder for message {ts} in channel #{channel.name} by user @{message_user.name}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
 
