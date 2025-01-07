@@ -522,7 +522,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
             await handle_message_deletion(app, event, channel_id, previous_message.get('user'), previous_message.get('ts'))
         elif user_id and is_command(text):
             # command
-            await handle_command(app, text, channel_id, user_id, thread_ts)
+            await handle_command(app, text, channel_id, user_id, ts)
         elif user_id and thread_ts:
             # thread
             await handle_thread_response(app, event, channel_id, user_id, thread_ts)
