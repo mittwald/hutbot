@@ -88,6 +88,11 @@ def log_error(*args):
     prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} ERROR:"
     print(prefix, message, flush=True, file=sys.stderr)
 
+def log_warning(*args):
+    message = ' '.join([str(arg) for arg in args])
+    prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} WARNING:"
+    print(prefix, message, flush=True, file=sys.stderr)
+
 def apply_defaults(config):
     for _, channel_config in config.items():
         for key, value in default_config.items():
@@ -183,7 +188,7 @@ async def update_user_cache(app: AsyncApp):
                                 user_team = value.get('group', '').strip()
                                 break
                         if user_team == '':
-                            log_error(f"Failed to map user @{user_name} with real name {user_real_name} to a company user.")
+                            log_warning(f"Failed to map user @{user_name} with real name {user_real_name} to a company user.")
 
                     if user_team == '':
                         user_team = team_unknown
