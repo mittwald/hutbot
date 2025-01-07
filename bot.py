@@ -90,7 +90,7 @@ def log_error(*args):
 
 def log_warning(*args):
     message = ' '.join([str(arg) for arg in args])
-    prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} WARNING:"
+    prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} WARN: "
     print(prefix, message, flush=True, file=sys.stderr)
 
 def apply_defaults(config):
@@ -359,7 +359,7 @@ async def list_teams(app, channel_id, user_id):
     await update_user_cache(app)
     if channel_id not in channel_config:
         channel_config[channel_id] = default_config.copy()
-    message = f"*Available teams*:\n{'\n'.join(sorted(team_cache))}"
+    message = f"*Available teams*:\n{'\n'.join(team_cache.sort(key=lambda v: v.upper()))}"
     await send_message(app, channel_id, user_id, message)
 
 async def show_config(app, channel_id, user_id):
