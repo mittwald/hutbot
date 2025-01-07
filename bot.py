@@ -290,7 +290,7 @@ async def process_mentions(app, message) -> tuple[bool, str, str]:
     matches = mention_pattern.findall(message)
     if matches:
         for username in matches:
-            user = get_user_by_name(app, username)
+            user = await get_user_by_name(app, username)
             if user.id:
                 message = message.replace(f"@{username}", f"<@{user.id}>")
             else:
