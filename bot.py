@@ -364,7 +364,7 @@ async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: 
     excluded_teams = channel.config.get('excluded_teams')
     reply_message = channel.config.get('reply_message')
     message = (
-        "This is the configuration for #{channel.name}:\n\n"
+        f"This is the configuration for #{channel.name}:\n\n"
         f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
         f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
         f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
