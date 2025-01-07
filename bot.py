@@ -41,12 +41,12 @@ opsgenie_configured = False
 
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
-SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_-\s]?time\s+(\d+)', re.IGNORECASE)
+SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_ -]?time\s+(\d+)', re.IGNORECASE)
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
-ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'add\s+excluded?[_-\s]?teams?\s+(.+)', re.IGNORECASE)
-CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'clear\s+excluded?[_-\s]?teams?', re.IGNORECASE)
-ADD_INCLUDED_TEAM_PATTERN = re.compile(r'add\s+included?[_-\s]?teams?\s+(.+)', re.IGNORECASE)
-CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'clear\s+included?[_-\s]?teams?', re.IGNORECASE)
+ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'add\s+excluded?[_ -]?teams?\s+(.+)', re.IGNORECASE)
+CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'clear\s+excluded?[_ -]?teams?', re.IGNORECASE)
+ADD_INCLUDED_TEAM_PATTERN = re.compile(r'add\s+included?[_ -]?teams?\s+(.+)', re.IGNORECASE)
+CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'clear\s+included?[_ -]?teams?', re.IGNORECASE)
 LIST_TEAMS_PATTERN = re.compile(r'list\s+teams?', re.IGNORECASE)
 ENABLE_OPSGENIE_PATTERN = re.compile(r'enable\s+opsgenie', re.IGNORECASE)
 DISABLE_OPSGENIE_PATTERN = re.compile(r'disable\s+opsgenie', re.IGNORECASE)
