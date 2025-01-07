@@ -248,13 +248,13 @@ async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: st
         await list_teams(app, channel, user_id, thread_ts)
     elif ADD_EXCLUDED_TEAM_PATTERN.match(text):
         match = ADD_EXCLUDED_TEAM_PATTERN.match(text)
-        team = match.group(1)
+        team = match.group(1).strip('"').strip("'")
         await add_excluded_team(app, channel, team, user_id, thread_ts)
     elif CLEAR_EXCLUDED_TEAM_PATTERN.match(text):
         await clear_excluded_team(app, channel, user_id, thread_ts)
     elif ADD_INCLUDED_TEAM_PATTERN.match(text):
         match = ADD_INCLUDED_TEAM_PATTERN.match(text)
-        team = match.group(1)
+        team = match.group(1).strip('"').strip("'")
         await add_included_team(app, channel, team, user_id, thread_ts)
     elif CLEAR_INCLUDED_TEAM_PATTERN.match(text):
         await clear_included_team(app, channel, user_id, thread_ts)
