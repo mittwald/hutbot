@@ -446,7 +446,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user_id: str, threa
 async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str) -> None:
     opsgenie_enabled = channel.config.get('opsgenie')
     wait_time = channel.config.get('wait_time')
-    reply_message = channel.config('reply_message')
+    reply_message = channel.config.get('reply_message')
     try:
         await asyncio.sleep(wait_time)
         await app.client.chat_postMessage(
