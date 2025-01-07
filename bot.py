@@ -165,6 +165,20 @@ async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
 
     return channel_id
 
+async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str:
+    permalink = None
+    try:
+        response = await app.client.chat_getPermalink(
+            channel=channel.id,
+            message_ts=ts
+        )
+
+        permalink = response.get('permalink')
+    except SlackApiError as e:
+        log_error(f"Failed to get permalink for message {ts} in channel #{channel.name}: {e}")
+
+    return permalink
+
 def normalize_real_name(real_name: str) -> str:
     normalized = real_name.strip().lower().replace(' ', '_').replace('.', '_')
     # replace non latin characters
@@ -457,13 +471,14 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
             mrkdwn=True
         )
         if opsgenie_configured and opsgenie_enabled:
-            await post_opsgenie_alert(opsgenie_token, channel, user, text, ts)
+            permalink = await get_message_permalink(app, channel, ts)
+            await post_opsgenie_alert(opsgenie_token, channel, user, text, ts, permalink)
     except asyncio.CancelledError:
         pass  # Task was cancelled because a reaction or reply was detected
     except SlackApiError as e:
         log_error(f"Failed to send scheduled reply: {e}")
 
-async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User, text: str, ts: str) -> None:
+async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, permalink: str) -> None:
     user_name = user.real_name if user.real_name else user.name
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
@@ -482,6 +497,7 @@ async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User,
                     "channel": f"#{channel.name}",
                     "sender": user_name,
                     "bot": "hutbot",
+                    "permalink": permalink,
                 },
                 "priority": "P4",
             }
