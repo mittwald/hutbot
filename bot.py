@@ -95,6 +95,20 @@ def log_warning(*args: object) -> None:
     prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} WARN: "
     print(prefix, message, flush=True, file=sys.stderr)
 
+def normalize_id(id: str) -> str: return id.lower().strip()
+
+def normalize_user_name(user_name: str) -> str: return user_name.lower().strip().replace('.', '')
+
+def normalize_real_name(real_name: str) -> str:
+    normalized = real_name.lower().strip().replace(' ', '_').replace('.', '_')
+    # replace non latin characters
+    normalized = unidecode(normalized)
+    return normalized
+
+def normalize_real_name_with_diagraphs(real_name: str) -> str:
+    # don't ask, you wouldn't be able to grasp the extend...
+    return normalize_real_name(real_name.lower().replace('ae', 'ä').replace('oe', 'ö').replace('ue', 'ü'))
+
 def apply_defaults(config: dict) -> dict:
     for _, channel_config in config.items():
         for key, value in DEFAULT_CONFIG.items():
@@ -132,7 +146,7 @@ async def load_company_users() -> dict:
             users = json.loads(content)
             company_users = {}
             for user in users:
-                id = user.get('ad_name', '').strip()
+                id = normalize_id(user.get('ad_name', ''))
                 is_deleted = user.get('is_deleted', False)
                 if not is_deleted and len(id) > 0:
                     company_users[id] = user
@@ -179,12 +193,6 @@ async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str
 
     return permalink
 
-def normalize_real_name(real_name: str) -> str:
-    normalized = real_name.strip().lower().replace(' ', '_').replace('.', '_')
-    # replace non latin characters
-    normalized = unidecode(normalized)
-    return normalized
-
 async def update_user_cache(app: AsyncApp) -> None:
     global user_id_cache, id_user_cache
     if not user_id_cache or not id_user_cache:
@@ -195,28 +203,44 @@ async def update_user_cache(app: AsyncApp) -> None:
             for user in users:
                 if not user.get('deleted') and not user.get('is_bot', False) and not user.get("is_restricted", False):
                     user_id = user.get('id', '')
-                    user_name = user.get('name', '')
-                    user_name_normalized = user_name.lower().replace('.', '').strip()
+                    user_name = normalize_id(user.get('name', ''))
+                    user_name_normalized = normalize_user_name(user_name)
+                    user_email = normalize_id(user.get('profile', {}).get('email', ''))
+                    user_email_alias = normalize_id(user_email.split('@')[0])
+                    user_email_alias_normalized = normalize_user_name(user_email_alias)
                     user_real_name = user.get('real_name', '').strip()
                     user_real_name_normalized = normalize_real_name(user_real_name)
                     user_team = ''
-                    if user_name in company_users:
-                        user_team = company_users[user_name].get('group', '').strip()
-                    elif user_name_normalized in company_users:
-                        user_team = company_users[user_name_normalized].get('group', '').strip()
-                    else:
-                        # try with real name
-                        for _, value in company_users.items():
-                            company_real_name_normalized = normalize_real_name(value.get('fullname', ''))
-                            # hackidy hack for slack, actually for AD fullnames with umlauts replaced
-                            company_real_name_super_normalized = normalize_real_name(value.get('fullname', '').lower().replace('ae', 'ä').replace('oe', 'ö').replace('ue', 'ü').strip())
-                            if company_real_name_normalized == user_real_name_normalized or company_real_name_super_normalized == user_real_name_normalized:
-                                user_team = value.get('group', '').strip()
+
+                    # Try different variations of the username to find a match in company users
+                    user_key_candidates = [
+                        user_name,
+                        user_name_normalized,
+                        user_email_alias,
+                        user_email_alias_normalized
+                    ]
+                    user_key = next((k for k in user_key_candidates if k in company_users), None)
+
+                    if not user_key:
+                        # loop through all company users and try to match some form of the real name
+                        for company_user_key, company_user in company_users.items():
+                            company_real_name = company_user.get('fullname', '').strip()
+                            company_real_name_normalized = normalize_real_name(company_real_name)
+                            company_real_name_super_normalized = normalize_real_name_with_diagraphs(company_real_name)
+                            user_real_name_super_normalized = normalize_real_name_with_diagraphs(user_real_name)
+                            if company_real_name_normalized == user_real_name_normalized or \
+                               company_real_name_super_normalized == user_real_name_normalized or \
+                               company_real_name_super_normalized == user_real_name_super_normalized:
+                                user_key = company_user_key
+                                # finally!
                                 break
-                        if user_team == '':
+                        if not user_key:
                             log_warning(f"Failed to map user @{user_name} to a company user: {json.dumps(user)}")
 
-                    if user_team == '':
+                    if user_key:
+                        user_team = company_users[user_key].get('group', '').strip()
+                    else:
+                        # well we tried
                         user_team = TEAM_UNKNOWN
 
                     user_id_cache[user_name] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
