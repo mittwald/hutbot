@@ -140,7 +140,6 @@ async def load_company_users() -> dict:
 async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
     try:
         response = await app.client.conversations_info(channel=channel_id)
-        print(json.dumps(response.get('channel', {})))
         channel_name = response.get('channel', {}).get('name', '')
         if channel_name:
             return channel_name
@@ -167,7 +166,8 @@ async def update_user_cache(app: AsyncApp):
                     user_id = user.get('id', '')
                     user_name = user.get('name', '')
                     user_name_normalized = user_name.lower().replace('.', '').strip()
-                    user_real_name = normalize_real_name(user.get('real_name', ''))
+                    user_real_name = user.get('real_name', '').strip()
+                    user_real_name_normalized = normalize_real_name(user_real_name)
                     user_team = ''
                     if user_name in company_users:
                         user_team = company_users[user_name].get('group', '').strip()
@@ -179,11 +179,11 @@ async def update_user_cache(app: AsyncApp):
                             company_real_name_normalized = normalize_real_name(value.get('fullname', ''))
                             # hackidy hack for slack, actually for AD fullnames with umlauts replaced
                             company_real_name_super_normalized = normalize_real_name(value.get('fullname', '').lower().replace('ae', 'ä').replace('oe', 'ö').replace('ue', 'ü').strip())
-                            if company_real_name_normalized == user_real_name or company_real_name_super_normalized == user_real_name:
+                            if company_real_name_normalized == user_real_name_normalized or company_real_name_super_normalized == user_real_name_normalized:
                                 user_team = value.get('group', '').strip()
                                 break
                         if user_team == '':
-                            log(f"ERROR: Failed to map user {user_name} with real name {user_real_name} to a company user.")
+                            log_error(f"Failed to map user @{user_name} with real name {user_real_name} to a company user.")
 
                     if user_team == '':
                         user_team = team_unknown
@@ -436,7 +436,7 @@ async def send_help_message(app, channel_id, user_id):
     )
     await send_message(app, channel_id, user_id, help_text)
 
-async def schedule_reply(app, opsgenie_token, channel_id, channel_name, user_id, user_name, text, ts):
+async def schedule_reply(app, opsgenie_token, channel_id, channel_name, user, text, ts):
     config = channel_config.get(channel_id, default_config)
     opsgenie_enabled = config.get('opsgenie', False)
     wait_time = config['wait_time']
@@ -450,13 +450,14 @@ async def schedule_reply(app, opsgenie_token, channel_id, channel_name, user_id,
             mrkdwn=True
         )
         if opsgenie_configured and opsgenie_enabled:
-            await post_opsgenie_alert(opsgenie_token, channel_name, user_name, text, ts)
+            await post_opsgenie_alert(opsgenie_token, channel_name, user, text, ts)
     except asyncio.CancelledError:
         pass  # Task was cancelled because a reaction or reply was detected
     except SlackApiError as e:
         log_error(f"Failed to send scheduled reply: {e}")
 
-async def post_opsgenie_alert(opsgenie_token, channel_name, user_name, text, ts):
+async def post_opsgenie_alert(opsgenie_token: str, channel_name: str, user: User, text: str, ts):
+    user_name = user.real_name if user.real_name else user.name
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
         'Content-Type': 'application/json',
@@ -467,11 +468,11 @@ async def post_opsgenie_alert(opsgenie_token, channel_name, user_name, text, ts)
             # example data: {"message": "Test 19:48","alias": "hutbot: Test Test","description":"Every alert needs a description","tags": ["Hutbot"],"details":{"channel":"#cloud-hosting-ks","sender":"Dave","bot":"hutbot"},"priority":"P4"}
             data = {
                 "message": f"{user_name}: {text}",
-                "alias": f"hutbot: {user_name} in {channel_name} at {ts}",
+                "alias": f"hutbot: {user_name} in #{channel_name} at {ts}",
                 "description": f"#{channel_name}: {user_name} at {ts}: {text}",
                 "tags": ["Hutbot"],
                 "details": {
-                    "channel": channel_name,
+                    "channel": f"#{channel_name}",
                     "sender": user_name,
                     "bot": "hutbot",
                 },
@@ -481,7 +482,7 @@ async def post_opsgenie_alert(opsgenie_token, channel_name, user_name, text, ts)
                 if response.status != 202:
                     log_error(f"Failed to send alert: {response.status}")
                 else:
-                    log(f"Successfully sent OpsGenie alert for {user_name} in {channel_name} at {ts} with status code {response.status}")
+                    log(f"Successfully sent OpsGenie alert for {user_name} in #{channel_name} at {ts} with status code {response.status}")
         except Exception as e:
             log_error(f"Exception while sending alert: {e}")
 
@@ -523,7 +524,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
             message_user_id = scheduled_messages[key].user_id
             message_user = await get_user_by_id(app, message_user_id)
             reply_user = await get_user_by_id(app, user_id)
-            log(f"Thread reply by user {reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel {channel_name} by user {message_user.name}")
+            log(f"Thread reply by user {reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel #{channel_name} by user @{message_user.name}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
 
@@ -531,13 +532,13 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
         # Schedule a reminder
         channel_name = await get_channel_name(app, channel_id)
         user = await get_user_by_id(app, user_id)
-        log(f"Scheduling reminder for message {ts} in channel {channel_name} by user {user.name}")
-        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel_id, channel_name, user_id, user.name, text, ts))
+        log(f"Scheduling reminder for message {ts} in channel #{channel_name} by user @{user.name}")
+        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel_id, channel_name, user, text, ts))
         scheduled_messages[(channel_id, ts)] = ScheduledReply(task, user_id)
 
     async def handle_message_deletion(app, event, channel_id, previous_message_user_id, previous_message_ts):
         if previous_message_user_id == bot_user_id:
-            log(f"Ignoring message deletion by bot from channel {channel_name}.")
+            log(f"Ignoring message deletion by bot from channel #{channel_name}.")
             return
 
         # Cancel the scheduled task if it exists
@@ -545,7 +546,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
         if key in scheduled_messages:
             channel_name = await get_channel_name(app, channel_id)
             previous_message_user = await get_user_by_id(app, previous_message_user_id)
-            log(f"Message deleted. Cancelling reminder for message {previous_message_ts} in channel {channel_name} by user {previous_message_user.name}")
+            log(f"Message deleted. Cancelling reminder for message {previous_message_ts} in channel #{channel_name} by user @{previous_message_user.name}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
 
@@ -564,7 +565,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token=None):
             message_user_id = scheduled_messages[key].user_id
             message_user = await get_user_by_id(app, message_user_id)
             reaction_user = await get_user_by_id(app, user_id)
-            log(f"Reaction added by user {reaction_user.name}. Cancelling reminder for message {ts} in channel {channel_name} by user {message_user.name}")
+            log(f"Reaction added by user {reaction_user.name}. Cancelling reminder for message {ts} in channel #{channel_name} by user @{message_user.name}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
 
