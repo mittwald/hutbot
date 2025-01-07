@@ -16,19 +16,19 @@ ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
 User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
 Channel = collections.namedtuple('Channel', ['id', 'name', 'config'])
 
-default_config = {
+
+DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
     "excluded_teams": [],
     "included_teams": [],
 }
 
-company_users_file = 'company_users.json'  # Path to the users retrieved from https://lb.mittwald.it/api/users
-config_file = 'hutmensch.json'  # Path to the configuration file
-channel_config = {}             # Will be loaded from disk
-team_unknown = '<unknown>'
+COMPANY_USERS_FILE_NAME = 'company_users.json'  # Path to the users retrieved from https://lb.mittwald.it/api/users
+CONFIG_FILE_NAME = 'hutmensch.json'  # Path to the configuration file
+TEAM_UNKNOWN = '<unknown>'
 
-# Dictionary to keep track of scheduled tasks
+channel_config = {}
 scheduled_messages = {}
 
 user_id_cache = {}
@@ -96,7 +96,7 @@ def log_warning(*args: object) -> None:
 
 def apply_defaults(config: dict) -> dict:
     for _, channel_config in config.items():
-        for key, value in default_config.items():
+        for key, value in DEFAULT_CONFIG.items():
             if key not in channel_config:
                 channel_config[key] = value
     return config
@@ -104,7 +104,7 @@ def apply_defaults(config: dict) -> dict:
 async def load_configuration() -> None:
     global channel_config
     try:
-        async with aiofiles.open(config_file, 'r') as f:
+        async with aiofiles.open(CONFIG_FILE_NAME, 'r') as f:
             content = await f.read()
             channel_config = apply_defaults(json.loads(content))
             log("Configuration loaded from disk.")
@@ -117,7 +117,7 @@ async def load_configuration() -> None:
 
 async def save_configuration() -> None:
     try:
-        async with aiofiles.open(config_file, 'w') as f:
+        async with aiofiles.open(CONFIG_FILE_NAME, 'w') as f:
             content = json.dumps(channel_config)
             await f.write(content)
     except Exception as e:
@@ -126,7 +126,7 @@ async def save_configuration() -> None:
 async def load_company_users() -> dict:
     # TODO: use the API directly
     try:
-        async with aiofiles.open(company_users_file, 'r') as f:
+        async with aiofiles.open(COMPANY_USERS_FILE_NAME, 'r') as f:
             content = await f.read()
             users = json.loads(content)
             company_users = {}
@@ -146,7 +146,7 @@ async def load_company_users() -> dict:
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     global channel_config
     if channel_id not in channel_config:
-        channel_config[channel_id] = default_config.copy()
+        channel_config[channel_id] = DEFAULT_CONFIG.copy()
 
     name = await get_channel_name(app, channel_id)
     config = channel_config[channel_id]
@@ -202,7 +202,7 @@ async def update_user_cache(app: AsyncApp) -> None:
                             log_warning(f"Failed to map user @{user_name} with real name {user_real_name} to a company user.")
 
                     if user_team == '':
-                        user_team = team_unknown
+                        user_team = TEAM_UNKNOWN
 
                     user_id_cache[user_name] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
                     id_user_cache[user_id] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
@@ -215,14 +215,14 @@ async def get_user_by_id(app: AsyncApp, id: str) -> User:
     await update_user_cache(app)
     user = id_user_cache.get(id, None)
     if not user:
-        user = User(id=id, name=id, team=team_unknown, real_name='')
+        user = User(id=id, name=id, team=TEAM_UNKNOWN, real_name='')
     return user
 
 async def get_user_by_name(app: AsyncApp, name: str) -> User:
     await update_user_cache(app)
     user = user_id_cache.get(name, None)
     if not user:
-        user = User(id=None, name=name, team=team_unknown, real_name='')
+        user = User(id=None, name=name, team=TEAM_UNKNOWN, real_name='')
     return user
 
 def is_command(text: str) -> bool:
@@ -358,11 +358,11 @@ async def list_teams(app: AsyncApp, channel: Channel, user_id: str, thread_ts: s
     await send_message(app, channel, user_id, message, thread_ts)
 
 async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
-    opsgenie_enabled = channel.config.get('opsgenie', False)
-    wait_time_minutes = channel.config.get('wait_time', 60)
-    included_teams = channel.config.get('included_teams', [])
-    excluded_teams = channel.config.get('excluded_teams', [])
-    reply_message = channel.config.get('reply_message', '')
+    opsgenie_enabled = channel.config.get('opsgenie')
+    wait_time_minutes = channel.config.get('wait_time')
+    included_teams = channel.config.get('included_teams')
+    excluded_teams = channel.config.get('excluded_teams')
+    reply_message = channel.config.get('reply_message')
     message = (
         "This is the configuration for #{channel.name}:\n\n"
         f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
@@ -444,9 +444,9 @@ async def send_help_message(app: AsyncApp, channel: Channel, user_id: str, threa
     await send_message(app, channel, user_id, help_text, thread_ts)
 
 async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str) -> None:
-    opsgenie_enabled = channel.config.get('opsgenie', False)
-    wait_time = channel.config.get('wait_time', 60)
-    reply_message = channel.config('reply_message', '')
+    opsgenie_enabled = channel.config.get('opsgenie')
+    wait_time = channel.config.get('wait_time')
+    reply_message = channel.config('reply_message')
     try:
         await asyncio.sleep(wait_time)
         await app.client.chat_postMessage(
