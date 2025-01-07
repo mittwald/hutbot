@@ -214,7 +214,7 @@ async def update_user_cache(app: AsyncApp) -> None:
                                 user_team = value.get('group', '').strip()
                                 break
                         if user_team == '':
-                            log_warning(f"Failed to map user @{user_name} with real name {user_real_name} to a company user.")
+                            log_warning(f"Failed to map user @{user_name} to a company user: {json.dumps(user)}")
 
                     if user_team == '':
                         user_team = TEAM_UNKNOWN
