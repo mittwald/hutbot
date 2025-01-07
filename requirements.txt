@@ -3,3 +3,4 @@ slack_bolt
 asyncio
 aiohttp
 aiofiles
+unidecode
