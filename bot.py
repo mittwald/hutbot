@@ -20,6 +20,7 @@ Channel = collections.namedtuple('Channel', ['id', 'name', 'config'])
 DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
+    "opsgenie": False,
     "excluded_teams": [],
     "included_teams": [],
 }
