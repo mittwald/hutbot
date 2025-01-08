@@ -536,7 +536,7 @@ async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User,
             log_error(f"Failed to send alert for message {ts} in channel #{channel.name} by user @{user.name}: {e}")
 
 async def handle_thread_response(app: AsyncApp, event: dict, channel: Channel, user_id: str, thread_ts: str):
-    key = (channel.name, thread_ts)
+    key = (channel.id, thread_ts)
     if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
         message_user_id = scheduled_messages[key].user_id
         message_user = await get_user_by_id(app, message_user_id)
