@@ -146,40 +146,44 @@ async def load_employees() -> dict:
     employee_auth_url = 'https://identity.prod.mittwald.systems/authenticate'
     employee_url = 'https://lb.mittwald.it/api/users'
 
-    async with aiohttp.ClientSession() as session:
-        auth_payload = {
-            "username": username,
-            "password": password,
-            "providers": ["service"]
-        }
+    try:
+        async with aiohttp.ClientSession() as session:
+            auth_payload = {
+                "username": username,
+                "password": password,
+                "providers": ["service"]
+            }
 
-        async with session.post(employee_auth_url, json=auth_payload) as auth_response:
-            if auth_response.status != 200:
-                log(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
-                return {}
+            async with session.post(employee_auth_url, json=auth_payload) as auth_response:
+                if auth_response.status != 200:
+                    log(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
+                    return {}
 
-            auth_data = await auth_response.json()
-            token = auth_data.get("token")
+                auth_data = await auth_response.json()
+                token = auth_data.get("token")
 
-            if not token:
-                log(f"Failed to authenticate to retrieve employees, no token received: {json.dumps(auth_data)}")
-                return {}
+                if not token:
+                    log(f"Failed to authenticate to retrieve employees, no token received: {json.dumps(auth_data)}")
+                    return {}
 
-        headers = {"jwt": token}
-        async with session.get(employee_url, headers=headers) as users_response:
-            if users_response.status != 200:
-                log(f"Failed to fetch employees: {await users_response.text()}")
-                return {}
+            headers = {"jwt": token}
+            async with session.get(employee_url, headers=headers) as users_response:
+                if users_response.status != 200:
+                    log(f"Failed to fetch employees: {await users_response.text()}")
+                    return {}
 
-            users = await users_response.json()
-            employees = {}
-            for user in users:
-                id = normalize_id(user.get('ad_name', ''))
-                is_deleted = user.get('is_deleted', False)
-                if not is_deleted and len(id) > 0:
-                    employees[id] = user
-            log(f"{len(employees)} employees retrieved from {employee_url}.")
-            return employees
+                users = await users_response.json()
+                employees = {}
+                for user in users:
+                    id = normalize_id(user.get('ad_name', ''))
+                    is_deleted = user.get('is_deleted', False)
+                    if not is_deleted and len(id) > 0:
+                        employees[id] = user
+                log(f"{len(employees)} employees retrieved from {employee_url}.")
+                return employees
+    except Exception as e:
+        log(f"Failed to retrieve employees: {e}")
+        return {}
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     global channel_config
