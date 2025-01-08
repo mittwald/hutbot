@@ -25,7 +25,6 @@ DEFAULT_CONFIG = {
     "included_teams": [],
 }
 
-COMPANY_USERS_FILE_NAME = 'company_users.json'  # Path to the users retrieved from https://lb.mittwald.it/api/users
 CONFIG_FILE_NAME = 'hutmensch.json'  # Path to the configuration file
 TEAM_UNKNOWN = '<unknown>'
 
@@ -138,25 +137,49 @@ async def save_configuration() -> None:
     except Exception as e:
         log_error(f"Failed to save configuration: {e}")
 
-async def load_company_users() -> dict:
-    # TODO: use the API directly
-    try:
-        async with aiofiles.open(COMPANY_USERS_FILE_NAME, 'r') as f:
-            content = await f.read()
-            users = json.loads(content)
-            company_users = {}
+async def load_employees() -> dict:
+    username = os.environ.get("EMPLOYEE_LIST_USERNAME")
+    password = os.environ.get("EMPLOYEE_LIST_PASSWORD")
+    if not username or not password:
+        return {}
+
+    employee_auth_url = 'https://identity.prod.mittwald.systems/authenticate'
+    employee_url = 'https://lb.mittwald.it/api/users'
+
+    async with aiohttp.ClientSession() as session:
+        auth_payload = {
+            "username": username,
+            "password": password,
+            "providers": ["service"]
+        }
+
+        async with session.post(employee_auth_url, json=auth_payload) as auth_response:
+            if auth_response.status != 200:
+                log(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
+                return {}
+
+            auth_data = await auth_response.json()
+            token = auth_data.get("token")
+
+            if not token:
+                log(f"Failed to authenticate to retrieve employees, no token received: {json.dumps(auth_data)}")
+                return {}
+
+        headers = {"jwt": token}
+        async with session.get(employee_url, headers=headers) as users_response:
+            if users_response.status != 200:
+                log(f"Failed to fetch employees: {await users_response.text()}")
+                return {}
+
+            users = await users_response.json()
+            employees = {}
             for user in users:
                 id = normalize_id(user.get('ad_name', ''))
                 is_deleted = user.get('is_deleted', False)
                 if not is_deleted and len(id) > 0:
-                    company_users[id] = user
-            log(f"{len(company_users)} company users loaded from disk.")
-            return company_users
-    except FileNotFoundError:
-        log("No company users file found. Will not be able to do team mapping.")
-    except json.JSONDecodeError as e:
-        log(f"Failed to decode company users JSON: {e}. Will not be able to do team mapping.")
-    return {}
+                    employees[id] = user
+            log(f"{len(employees)} employees retrieved from {employee_url}.")
+            return employees
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     global channel_config
@@ -196,7 +219,7 @@ async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str
 async def update_user_cache(app: AsyncApp) -> None:
     global user_id_cache, id_user_cache
     if not user_id_cache or not id_user_cache:
-        company_users = await load_company_users()
+        employees = await load_employees()
         try:
             response = await app.client.users_list()
             users = response['members']
@@ -213,38 +236,36 @@ async def update_user_cache(app: AsyncApp) -> None:
                     user_email_alias_normalized = normalize_user_name(user_email_alias)
                     user_real_name = user.get('real_name', '').strip()
                     user_real_name_normalized = normalize_real_name(user_real_name)
-                    user_team = ''
+                    user_team = TEAM_UNKNOWN
 
-                    # Try different variations of the username to find a match in company users
-                    user_key_candidates = [
-                        user_name,
-                        user_name_normalized,
-                        user_email_alias,
-                        user_email_alias_normalized
-                    ]
-                    user_key = next((k for k in user_key_candidates if k in company_users), None)
+                    if len(employees) > 0:
+                        # Try different variations of the username to find a match in employees
+                        user_key_candidates = [
+                            user_name,
+                            user_name_normalized,
+                            user_email_alias,
+                            user_email_alias_normalized
+                        ]
+                        user_key = next((k for k in user_key_candidates if k in employees), None)
 
-                    if not user_key:
-                        # loop through all company users and try to match some form of the real name
-                        for company_user_key, company_user in company_users.items():
-                            company_real_name = company_user.get('fullname', '').strip()
-                            company_real_name_normalized = normalize_real_name(company_real_name)
-                            company_real_name_super_normalized = normalize_real_name_with_diagraphs(company_real_name)
-                            user_real_name_super_normalized = normalize_real_name_with_diagraphs(user_real_name)
-                            if company_real_name_normalized == user_real_name_normalized or \
-                               company_real_name_super_normalized == user_real_name_normalized or \
-                               company_real_name_super_normalized == user_real_name_super_normalized:
-                                user_key = company_user_key
-                                # finally!
-                                break
                         if not user_key:
-                            log_warning(f"Failed to map user @{user_name} to a company user: {json.dumps(user)}")
+                            # loop through all employees and try to match some form of the real name
+                            for employee_key, employee in employees.items():
+                                employee_real_name = employee.get('fullname', '').strip()
+                                employee_real_name_normalized = normalize_real_name(employee_real_name)
+                                employee_real_name_super_normalized = normalize_real_name_with_diagraphs(employee_real_name)
+                                user_real_name_super_normalized = normalize_real_name_with_diagraphs(user_real_name)
+                                if employee_real_name_normalized == user_real_name_normalized or \
+                                employee_real_name_super_normalized == user_real_name_normalized or \
+                                employee_real_name_super_normalized == user_real_name_super_normalized:
+                                    user_key = employee_key
+                                    # finally!
+                                    break
+                            if not user_key:
+                                log_warning(f"Failed to map user @{user_name} to a employee: {json.dumps(user)}")
 
-                    if user_key:
-                        user_team = company_users[user_key].get('group', '').strip()
-                    else:
-                        # well we tried
-                        user_team = TEAM_UNKNOWN
+                        if user_key:
+                            user_team = employees[user_key].get('group', '').strip()
 
                     user_id_cache[user_name] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
                     id_user_cache[user_id] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
