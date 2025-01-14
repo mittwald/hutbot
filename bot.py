@@ -349,8 +349,6 @@ async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: st
         username = match.group("user").strip('"').strip("'")
         await get_team_of(app, channel, username, user_id, thread_ts)
     elif ADD_EXCLUDED_TEAM_PATTERN.match(text):
-        match = SET_REPLY_MESSAGE_PATTERN.match(text)
-        message = match.group("message").strip('"').strip("'")
         match = ADD_EXCLUDED_TEAM_PATTERN.match(text)
         team = match.group("team").strip('"').strip("'")
         await add_excluded_team(app, channel, team, user_id, thread_ts)
