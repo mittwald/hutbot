@@ -96,7 +96,7 @@ def __log(file, prefix, *args: object) -> None:
     parts = []
     for arg in args:
         part = str(arg)
-        if arg is Exception:
+        if isinstance(arg, Exception):
             error_type = type(arg).__name__
             error_message = str(arg)
             part = f"{error_type}{': ' + error_message if error_message else ''}"
