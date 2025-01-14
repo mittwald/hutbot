@@ -25,8 +25,8 @@ DEFAULT_CONFIG = {
     "included_teams": [],
 }
 
-EMPLOYEE_CACHE_FILE_NAME = 'company_users.json'
-CONFIG_FILE_NAME = 'hutmensch.json'  # Path to the configuration file
+EMPLOYEE_CACHE_FILE_NAME = 'employees.json'
+CONFIG_FILE_NAME = 'bot.json'  # Path to the configuration file
 TEAM_UNKNOWN = '<unknown>'
 
 channel_config = {}
@@ -467,7 +467,7 @@ async def get_team_of(app: AsyncApp, channel: Channel, username: str, user_id: s
         for user in matches:
             u = await get_user_by_name(app, user)
             if u.id:
-                msg = f"*<@{u.id}|{u.real_name}>*: {u.team}"
+                msg = f"*{u.real_name}* (<@{u.id}>): {u.team}"
                 if message is None:
                     message = msg
                 else:
