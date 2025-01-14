@@ -25,6 +25,7 @@ DEFAULT_CONFIG = {
     "included_teams": [],
 }
 
+EMPLOYEE_CACHE_FILE_NAME = 'company_users.json'
 CONFIG_FILE_NAME = 'hutmensch.json'  # Path to the configuration file
 TEAM_UNKNOWN = '<unknown>'
 
@@ -140,17 +141,36 @@ async def save_configuration() -> None:
     except Exception as e:
         log_error(f"Failed to save configuration: {e}")
 
+async def load_employees_from_disk() -> dict:
+    try:
+        async with aiofiles.open(EMPLOYEE_CACHE_FILE_NAME, 'r') as f:
+            content = await f.read()
+            users = json.loads(content)
+            employees = {}
+            for user in users:
+                id = normalize_id(user.get('ad_name', ''))
+                is_deleted = user.get('is_deleted', False)
+                if not is_deleted and len(id) > 0:
+                    employees[id] = user
+            log(f"{len(employees)} company users loaded from disk.")
+            return employees
+    except FileNotFoundError:
+        log("No employee file found. Will not be able to do team mapping.")
+    except json.JSONDecodeError as e:
+        log(f"Failed to decode employee JSON: {e}. Will not be able to do team mapping.")
+    return {}
+
 async def load_employees() -> dict:
     username = os.environ.get("EMPLOYEE_LIST_USERNAME")
     password = os.environ.get("EMPLOYEE_LIST_PASSWORD")
     if not username or not password:
-        return {}
+        return load_employees_from_disk()
 
     employee_auth_url = 'https://identity.prod.mittwald.systems/authenticate'
     employee_url = 'https://lb.mittwald.it/api/users'
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(conn_timeout=5, read_timeout=5) as session:
             auth_payload = {
                 "username": username,
                 "password": password,
@@ -160,20 +180,20 @@ async def load_employees() -> dict:
             async with session.post(employee_auth_url, json=auth_payload) as auth_response:
                 if auth_response.status != 200:
                     log(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
-                    return {}
+                    return load_employees_from_disk()
 
                 auth_data = await auth_response.json()
                 token = auth_data.get("token")
 
                 if not token:
                     log(f"Failed to authenticate to retrieve employees, no token received: {json.dumps(auth_data)}")
-                    return {}
+                    return load_employees_from_disk()
 
             headers = {"jwt": token}
             async with session.get(employee_url, headers=headers) as users_response:
                 if users_response.status != 200:
                     log(f"Failed to fetch employees: {await users_response.text()}")
-                    return {}
+                    return load_employees_from_disk()
 
                 users = await users_response.json()
                 employees = {}
@@ -186,7 +206,7 @@ async def load_employees() -> dict:
                 return employees
     except Exception as e:
         log(f"Failed to retrieve employees: {e}")
-        return {}
+        return load_employees_from_disk()
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     global channel_config
