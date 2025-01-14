@@ -39,18 +39,21 @@ bot_user_id = None
 
 opsgenie_configured = False
 
+MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
+
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
-SET_WAIT_TIME_PATTERN = re.compile(r'set\s+wait[_ -]?time\s+(\d+)', re.IGNORECASE)
-SET_REPLY_MESSAGE_PATTERN = re.compile(r'set\s+message\s+(.+)', re.IGNORECASE)
-ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'add\s+excluded?[_ -]?teams?\s+(.+)', re.IGNORECASE)
-CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'clear\s+excluded?[_ -]?teams?', re.IGNORECASE)
-ADD_INCLUDED_TEAM_PATTERN = re.compile(r'add\s+included?[_ -]?teams?\s+(.+)', re.IGNORECASE)
-CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'clear\s+included?[_ -]?teams?', re.IGNORECASE)
-LIST_TEAMS_PATTERN = re.compile(r'list\s+teams?', re.IGNORECASE)
-ENABLE_OPSGENIE_PATTERN = re.compile(r'enable\s+opsgenie', re.IGNORECASE)
-DISABLE_OPSGENIE_PATTERN = re.compile(r'disable\s+opsgenie', re.IGNORECASE)
-SHOW_CONFIG_PATTERN = re.compile(r'show\s+config', re.IGNORECASE)
+SET_WAIT_TIME_PATTERN = re.compile(r'^(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>\d+)$', re.IGNORECASE)
+SET_REPLY_MESSAGE_PATTERN = re.compile(r'^(set\s+)?message\s+(?P<message>.+)$', re.IGNORECASE)
+ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'^(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)$', re.IGNORECASE)
+CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'^clear\s+excluded?([_ -]?teams?)?$', re.IGNORECASE)
+ADD_INCLUDED_TEAM_PATTERN = re.compile(r'^(add\s+)?included?([_ -]?teams?)?\s+(?P<team>.+)$', re.IGNORECASE)
+CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'^clear\s+)?included?([_ -]?teams?)?$', re.IGNORECASE)
+LIST_TEAMS_PATTERN = re.compile(r'^list\s+teams?$', re.IGNORECASE)
+EMPLOYEE_TEAM_PATTERN = re.compile(r'^team(\s+of)?\s+(?P<user>.+)$', re.IGNORECASE)
+ENABLE_OPSGENIE_PATTERN = re.compile(r'^enable\s+(opsgenie|alerts?)$', re.IGNORECASE)
+DISABLE_OPSGENIE_PATTERN = re.compile(r'^disable\s+(opsgenie|alerts?)$', re.IGNORECASE)
+SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 
 def load_env_file() -> None:
     env_file_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -301,11 +304,11 @@ async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: st
     # Parse commands
     if SET_WAIT_TIME_PATTERN.match(text):
         match = SET_WAIT_TIME_PATTERN.match(text)
-        wait_time_minutes = int(match.group(1))
+        wait_time_minutes = int(match.group("wait_time"))
         await set_wait_time(app, channel, wait_time_minutes, user_id, thread_ts)
     elif SET_REPLY_MESSAGE_PATTERN.match(text):
         match = SET_REPLY_MESSAGE_PATTERN.match(text)
-        message = match.group(1).strip('"').strip("'")
+        message = match.group("message").strip('"').strip("'")
         await set_reply_message(app, channel, message, user_id, thread_ts)
     elif ENABLE_OPSGENIE_PATTERN.match(text):
         await set_opsgenie(app, channel, True, user_id, thread_ts)
@@ -313,15 +316,21 @@ async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: st
         await set_opsgenie(app, channel, False, user_id, thread_ts)
     elif LIST_TEAMS_PATTERN.match(text):
         await list_teams(app, channel, user_id, thread_ts)
+    elif EMPLOYEE_TEAM_PATTERN.match(text):
+        match = EMPLOYEE_TEAM_PATTERN.match(text)
+        username = match.group("user").strip('"').strip("'")
+        await get_team_of(app, channel, username, user_id, thread_ts)
     elif ADD_EXCLUDED_TEAM_PATTERN.match(text):
+        match = SET_REPLY_MESSAGE_PATTERN.match(text)
+        message = match.group("message").strip('"').strip("'")
         match = ADD_EXCLUDED_TEAM_PATTERN.match(text)
-        team = match.group(1).strip('"').strip("'")
+        team = match.group("team").strip('"').strip("'")
         await add_excluded_team(app, channel, team, user_id, thread_ts)
     elif CLEAR_EXCLUDED_TEAM_PATTERN.match(text):
         await clear_excluded_team(app, channel, user_id, thread_ts)
     elif ADD_INCLUDED_TEAM_PATTERN.match(text):
         match = ADD_INCLUDED_TEAM_PATTERN.match(text)
-        team = match.group(1).strip('"').strip("'")
+        team = match.group("team").strip('"').strip("'")
         await add_included_team(app, channel, team, user_id, thread_ts)
     elif CLEAR_INCLUDED_TEAM_PATTERN.match(text):
         await clear_included_team(app, channel, user_id, thread_ts)
@@ -363,8 +372,7 @@ async def set_reply_message(app: AsyncApp, channel: Channel, message: str, user_
 
 async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]:
     # Regular expression to find @username patterns
-    mention_pattern = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
-    matches = mention_pattern.findall(message)
+    matches = MENTION_PATTERN.findall(message)
     if matches:
         for username in matches:
             user = await get_user_by_name(app, username)
@@ -424,6 +432,25 @@ async def list_teams(app: AsyncApp, channel: Channel, user_id: str, thread_ts: s
     message = f"*Available teams*:\n{'\n'.join(sorted(team_cache, key=lambda v: v.upper()))}"
     await send_message(app, channel, user_id, message, thread_ts)
 
+async def get_team_of(app: AsyncApp, channel: Channel, username: str, user_id: str, thread_ts: str = None) -> None:
+    matches = MENTION_PATTERN.findall(username)
+    message = None
+    if matches:
+        for user in matches:
+            u = await get_user_by_name(app, user)
+            if u.id:
+                msg = f"**{u.name}**': {u.team}"
+                if message is None:
+                    message = msg
+                else:
+                    message += f"\n{msg}"
+            else:
+                log_error(f"Invalid request: username `{username}` not found")
+    if message:
+        await send_message(app, channel, user_id, message, thread_ts)
+    else:
+        await send_message(app, channel, user_id, f"Unknown user: `{username}`.", thread_ts)
+
 async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
     opsgenie_enabled = channel.config.get('opsgenie')
     wait_time_minutes = channel.config.get('wait_time') // 60
@@ -479,6 +506,10 @@ async def send_help_message(app: AsyncApp, channel: Channel, user_id: str, threa
         "```/hutbot list teams\n"
         "@Hutbot list teams```\n"
         "Lists the available teams.\n\n"
+        "*Team of User:*\n"
+        "```/hutbot team of [user]\n"
+        "@Hutbot team of [user]```\n"
+        "Lists the team of a user. Replace `[user]` with @<user>.\n\n"
         "*Add Excluded Team:*\n"
         "```/hutbot add excluded-team [team]\n"
         "@Hutbot add excluded-team [team]```\n"
