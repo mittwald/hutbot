@@ -142,6 +142,7 @@ async def save_configuration() -> None:
         log_error(f"Failed to save configuration: {e}")
 
 async def load_employees_from_disk() -> dict:
+    log(f"Attempting to load employees from disk.")
     try:
         async with aiofiles.open(EMPLOYEE_CACHE_FILE_NAME, 'r') as f:
             content = await f.read()
@@ -155,9 +156,9 @@ async def load_employees_from_disk() -> dict:
             log(f"{len(employees)} employees loaded from disk.")
             return employees
     except FileNotFoundError:
-        log("No employee file found. Will not be able to do team mapping.")
+        log_error("No employee file found. Will not be able to do team mapping.")
     except json.JSONDecodeError as e:
-        log(f"Failed to decode employee JSON: {e}. Will not be able to do team mapping.")
+        log_error(f"Failed to decode employee JSON: {e}. Will not be able to do team mapping.")
     return {}
 
 async def load_employees() -> dict:
@@ -205,7 +206,7 @@ async def load_employees() -> dict:
                 log(f"{len(employees)} employees retrieved from {employee_url}.")
                 return employees
     except Exception as e:
-        log(f"Failed to retrieve employees from {employee_url}: {str(e)}")
+        log_error(f"Failed to retrieve employees from {employee_url}: {type(e)}{e}")
         return await load_employees_from_disk()
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
