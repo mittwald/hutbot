@@ -467,7 +467,7 @@ async def get_team_of(app: AsyncApp, channel: Channel, username: str, user_id: s
         for user in matches:
             u = await get_user_by_name(app, user)
             if u.id:
-                msg = f"**{u.name}**': {u.team}"
+                msg = f"*{u.real_name}* (@<{u.id}>): {u.team}"
                 if message is None:
                     message = msg
                 else:
