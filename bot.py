@@ -84,19 +84,26 @@ def load_env_file() -> None:
             os.environ[key] = value
 
 def log(*args: object) -> None:
-    message = ' '.join([str(arg) for arg in args])
-    prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} INFO: "
-    print(prefix, message, flush=True)
-
-def log_error(*args: object) -> None:
-    message = ' '.join([str(arg) for arg in args])
-    prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} ERROR:"
-    print(prefix, message, flush=True, file=sys.stderr)
+    __log(sys.stdout, 'INFO', *args)
 
 def log_warning(*args: object) -> None:
-    message = ' '.join([str(arg) for arg in args])
-    prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} WARN: "
-    print(prefix, message, flush=True, file=sys.stderr)
+    __log(sys.stderr, 'WARN', *args)
+
+def log_error(*args: object) -> None:
+    __log(sys.stderr, 'ERROR', *args)
+
+def __log(file, prefix, *args: object) -> None:
+    parts = []
+    for arg in args:
+        part = str(arg)
+        if arg is Exception:
+            error_type = type(arg).__name__
+            error_message = str(arg)
+            part = f"{error_type}{': ' + error_message if error_message else ''}"
+        parts.append(part)
+    message = ' '.join(parts)
+    prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} {prefix}:"
+    print(prefix, message, flush=True, file=file)
 
 def normalize_id(id: str) -> str: return id.lower().strip()
 
@@ -127,10 +134,10 @@ async def load_configuration() -> None:
             channel_config = apply_defaults(json.loads(content))
             log("Configuration loaded from disk.")
     except FileNotFoundError:
-        log("No configuration file found. Using default settings.")
+        log_warning("No configuration file found. Using default settings.")
         channel_config = {}
     except json.JSONDecodeError as e:
-        log(f"Failed to decode JSON configuration: {e} Using default settings.")
+        log_error(f"Failed to decode JSON configuration:", e)
         channel_config = {}
 
 async def save_configuration() -> None:
@@ -139,7 +146,7 @@ async def save_configuration() -> None:
             content = json.dumps(channel_config)
             await f.write(content)
     except Exception as e:
-        log_error(f"Failed to save configuration: {e}")
+        log_error("Failed to save configuration:", e)
 
 async def load_employees_from_disk() -> dict:
     log(f"Attempting to load employees from disk.")
@@ -158,7 +165,7 @@ async def load_employees_from_disk() -> dict:
     except FileNotFoundError:
         log_error("No employee file found. Will not be able to do team mapping.")
     except json.JSONDecodeError as e:
-        log_error(f"Failed to decode employee JSON: {e}. Will not be able to do team mapping.")
+        log_error(f"Failed to decode employee JSON:", e, "Will not be able to do team mapping.")
     return {}
 
 async def load_employees() -> dict:
@@ -180,20 +187,20 @@ async def load_employees() -> dict:
 
             async with session.post(employee_auth_url, json=auth_payload) as auth_response:
                 if auth_response.status != 200:
-                    log(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
+                    log_error(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
                     return await load_employees_from_disk()
 
                 auth_data = await auth_response.json()
                 token = auth_data.get("token")
 
                 if not token:
-                    log(f"Failed to authenticate to retrieve employees, no token received: {json.dumps(auth_data)}")
+                    log_error(f"Failed to authenticate to retrieve employees, no token received: {json.dumps(auth_data)}")
                     return await load_employees_from_disk()
 
             headers = {"jwt": token}
             async with session.get(employee_url, headers=headers) as users_response:
                 if users_response.status != 200:
-                    log(f"Failed to fetch employees: {await users_response.text()}")
+                    log_error(f"Failed to fetch employees: {await users_response.text()}")
                     return await load_employees_from_disk()
 
                 users = await users_response.json()
@@ -206,7 +213,7 @@ async def load_employees() -> dict:
                 log(f"{len(employees)} employees retrieved from {employee_url}.")
                 return employees
     except Exception as e:
-        log_error(f"Failed to retrieve employees from {employee_url}: {type(e)}{e}")
+        log_error(f"Failed to retrieve employees from {employee_url}:", e)
         return await load_employees_from_disk()
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
@@ -226,7 +233,7 @@ async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
         if channel_name:
             return channel_name
     except SlackApiError as e:
-        log_error(f"Failed to get channel name: {e}")
+        log_error(f"Failed to get channel name", e)
 
     return channel_id
 
@@ -240,7 +247,7 @@ async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str
 
         permalink = response.get('permalink')
     except SlackApiError as e:
-        log_error(f"Failed to get permalink for message {ts} in channel #{channel.name}: {e}")
+        log_error(f"Failed to get permalink for message {ts} in channel #{channel.name}:", e)
 
     return permalink
 
@@ -300,7 +307,7 @@ async def update_user_cache(app: AsyncApp) -> None:
                     if user_team not in team_cache:
                         team_cache.add(user_team)
         except SlackApiError as e:
-            log_error(f"Failed to fetch user list: {e}")
+            log_error(f"Failed to fetch user list:", e)
 
 async def get_user_by_id(app: AsyncApp, id: str) -> User:
     await update_user_cache(app)
@@ -506,7 +513,7 @@ async def send_message(app: AsyncApp, channel: Channel, user_id: str, text: str,
                 mrkdwn=True  # Enable Markdown formatting
             )
     except SlackApiError as e:
-        log_error(f"Failed to send message in channel #{channel.name} for user @{user_id}: {e}")
+        log_error(f"Failed to send message in channel #{channel.name} for user @{user_id}:", e)
 
 async def send_help_message(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
     help_text = (
@@ -580,7 +587,7 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
     except asyncio.CancelledError:
         pass  # Task was cancelled because a reaction or reply was detected
     except SlackApiError as e:
-        log_error(f"Failed to send scheduled reply: {e}")
+        log_error(f"Failed to send scheduled reply:", e)
 
 async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, permalink: str) -> None:
     user_name = user.real_name if user.real_name else user.name
@@ -610,7 +617,7 @@ async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User,
                 else:
                     log(f"Successfully sent OpsGenie alert for message {ts} in channel #{channel.name} by user @{user.name} with status code {response.status}")
         except Exception as e:
-            log_error(f"Failed to send alert for message {ts} in channel #{channel.name} by user @{user.name}: {e}")
+            log_error(f"Failed to send alert for message {ts} in channel #{channel.name} by user @{user.name}:", e)
 
 async def handle_thread_response(app: AsyncApp, event: dict, channel: Channel, user_id: str, thread_ts: str):
     key = (channel.id, thread_ts)
@@ -725,7 +732,7 @@ async def send_heartbeat(opsgenie_token: str, opsgenie_heartbeat_name: str) -> N
                     if response.status != 202:
                         log_error(f"Failed to send heartbeat: {response.status}")
             except Exception as e:
-                log_error(f"Exception while sending heartbeat: {e}")
+                log_error(f"Exception while sending heartbeat:", e)
             await asyncio.sleep(60)
 
 async def main() -> None:
