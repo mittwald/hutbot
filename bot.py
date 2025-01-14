@@ -152,7 +152,7 @@ async def load_employees_from_disk() -> dict:
                 is_deleted = user.get('is_deleted', False)
                 if not is_deleted and len(id) > 0:
                     employees[id] = user
-            log(f"{len(employees)} company users loaded from disk.")
+            log(f"{len(employees)} employees loaded from disk.")
             return employees
     except FileNotFoundError:
         log("No employee file found. Will not be able to do team mapping.")
@@ -205,7 +205,7 @@ async def load_employees() -> dict:
                 log(f"{len(employees)} employees retrieved from {employee_url}.")
                 return employees
     except Exception as e:
-        log(f"Failed to retrieve employees: {e}")
+        log(f"Failed to retrieve employees from {employee_url}: {str(e)}")
         return await load_employees_from_disk()
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
