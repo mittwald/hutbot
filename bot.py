@@ -41,7 +41,8 @@ bot_user_id = None
 
 opsgenie_configured = False
 
-MENTION_PATTERN = re.compile(r'(?<![|<])@([A-Za-z0-9-_.]+)(?!>)')
+MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
+ID_PATTERN = re.compile(r'<[#@!]([a-zA-Z0-9^]+)([|]([^>]+))?>')
 
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
@@ -601,22 +602,33 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
     except Exception as e:
         log_error(f"Failed to send scheduled reply:", e)
 
-async def replace_mentions(app: AsyncApp, channel: Channel, text: str) -> str:
-    matches = MENTION_PATTERN.findall(text)
+async def replace_ids(app: AsyncApp, channel: Channel, text: str) -> str:
+    matches = ID_PATTERN.findall(text)
     if matches:
-        for username in matches:
-            log_debug(channel, f"Attempting to find {username}...")
-            user = await get_user_by_name(app, username)
-            if user.id:
-                log_debug(channel, f"Attempting to replace <@{username}> with {user.real_name}")
-                text = text.replace(f"<@{username}>", f"{user.real_name}")
-            else:
-                log_debug(channel, f"Failed to retieve user info for {username}")
-                continue
+        for match in matches:
+            full_match = match.group(0)
+            log_debug(channel, f"Found ID match: {full_match}...")
+            id = match.group(1)
+            handled = False
+            if id and id[0] == '@':
+                user = await get_user_by_id(app, id[1:])
+                if user.id:
+                    text = text.replace(full_match, user.real_name)
+                    handled = True
+            elif id and id[0] == '#':
+                ch = await get_channel_by_id(app, id[1:])
+                if ch.id:
+                    text = text.replace(full_match, f"#{ch.name}")
+                    handled = True
+            if not handled:
+                if match.group(3):
+                    text = text.replace(full_match, match.group(3))
+                else:
+                    log_debug(channel, f"Failed to replace ID: {full_match}")
     return text
 
 async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
-    text = await replace_mentions(app, channel, text)
+    text = await replace_ids(app, channel, text)
 
     # Step 1: Unescape any escaped formatting characters (like \*, \_, etc.)
     text = re.sub(r'\\([*_~`])', r'\1', text)
