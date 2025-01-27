@@ -503,7 +503,7 @@ async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: 
     await send_message(app, channel, user_id, message, thread_ts)
 
 async def send_message(app: AsyncApp, channel: Channel, user_id: str, text: str, thread_ts: str = None) -> None:
-    log_debug(channel, f"Sending message to #{channel.name} for user @{user_id}: {text}")
+    log_debug(channel, f"Sending message to #{channel.name} for user @{user_id}: {text.replace('\n', '\\n')}")
     try:
         if thread_ts:
             await app.client.chat_postMessage(
@@ -598,19 +598,21 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
     except Exception as e:
         log_error(f"Failed to send scheduled reply:", e)
 
-async def replace_mentions(app: AsyncApp, text: str) -> str:
+async def replace_mentions(app: AsyncApp, channel: Channel, text: str) -> str:
     matches = MENTION_PATTERN.findall(text)
     if matches:
         for username in matches:
             user = await get_user_by_name(app, username)
             if user.id:
+                log_debug(channel, f"Attempting to replace <@{username}> with {user.real_name}")
                 text = text.replace(f"<@{username}>", f"{user.real_name}")
             else:
+                log_debug(channel, f"Failed to retieve user info for {username}")
                 continue
     return text
 
-async def clean_slack_text(app: AsyncApp, text: str):
-    text = await replace_mentions(app, text)
+async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
+    text = await replace_mentions(app, channel, text)
 
     # Step 1: Unescape any escaped formatting characters (like \*, \_, etc.)
     text = re.sub(r'\\([*_~`])', r'\1', text)
@@ -620,18 +622,18 @@ async def clean_slack_text(app: AsyncApp, text: str):
         parts = match.group(1).split('|', 1)
         if len(parts) == 1 and parts[0].startswith('http'):
             return "[L]"
-        return parts[1] if len(parts) > 1 else parts[0]
+        return parts[1] if len(parts) > 1 and len(parts[1]) > 0 else parts[0]
 
     text = re.sub(r'<([^>]+)>', replace_link, text)
 
-    # Step 3: Remove all remaining formatting characters
-    text = re.sub(r'[*_~`]', '', text)
+    # Step 3: Remove all remaining formatting characters and new lines
+    text = re.sub(r'[*_~`]', '', text).replace('\n', ' ')
 
     return text
 
 async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, permalink: str) -> None:
-    log_debug(channel, f"> {text}")
-    text = await clean_slack_text(app, text)
+    log_debug(channel, f"> {text.replace('\n', '\\n')}")
+    text = await clean_slack_text(app, channel, text)
     log_debug(channel, f"< {text}")
     user_name = user.real_name if user.real_name else user.name
     first_name = user_name.split(' ', 1)[0]
