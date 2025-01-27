@@ -571,7 +571,7 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
     opsgenie_enabled = channel.config.get('opsgenie')
     wait_time = channel.config.get('wait_time')
     reply_message = channel.config.get('reply_message')
-    log(f"Scheduling reminder for message {ts} in channel #{channel.name}, user @{user.name}, wait time {wait_time} minutes, opsgenie integration {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
+    log(f"Scheduling reminder for message {ts} in channel #{channel.name}, user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
     try:
         await asyncio.sleep(wait_time)
         await app.client.chat_postMessage(
@@ -621,7 +621,7 @@ async def clean_slack_text(app: AsyncApp, text: str):
 
 async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, permalink: str) -> None:
     log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name} by user @{user.name}...")
-    text = clean_slack_text(app, text)
+    text = await clean_slack_text(app, text)
     user_name = user.real_name if user.real_name else user.name
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
