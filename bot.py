@@ -41,7 +41,7 @@ bot_user_id = None
 
 opsgenie_configured = False
 
-MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
+MENTION_PATTERN = re.compile(r'(?<![|<])@([A-Za-z0-9-_.]+)(?!>)')
 
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
