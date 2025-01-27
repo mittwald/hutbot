@@ -21,6 +21,7 @@ DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
     "opsgenie": False,
+    "debug": False,
     "excluded_teams": [],
     "included_teams": [],
 }
@@ -92,11 +93,15 @@ def log_warning(*args: object) -> None:
 def log_error(*args: object) -> None:
     __log(sys.stderr, 'ERROR', *args)
 
+def log_debug(channel: Channel, *args: object) -> None:
+    if channel.config.get('debug'):
+        __log(sys.stderr, 'DEBUG', *args)
+
 def __log(file, prefix, *args: object) -> None:
     parts = []
     for arg in args:
         part = str(arg)
-        if isinstance(arg, Exception):
+        if isinstance(arg, BaseException):
             error_type = type(arg).__name__
             error_message = str(arg)
             part = f"{error_type}{': ' + error_message if error_message else ''}"
@@ -329,6 +334,8 @@ def is_command(text: str) -> bool:
 async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: str, thread_ts: str = None) -> None:
     text = text.replace(f"<@{bot_user_id}>", "").strip()
 
+    log_debug(channel, f"Received command for channel #{channel.name}: {text}")
+
     # Parse commands
     if SET_WAIT_TIME_PATTERN.match(text):
         match = SET_WAIT_TIME_PATTERN.match(text)
@@ -379,6 +386,7 @@ async def set_wait_time(app: AsyncApp, channel: Channel, wait_time_minutes: int,
         return
 
     channel.config['wait_time'] = wait_time_minutes * 60  # Convert to seconds
+    log_debug(channel, f"Wait time for #{channel.name} set to {wait_time_minutes} minutes")
     await save_configuration()
     await send_message(app, channel, user_id, f"*Wait time* set to `{wait_time_minutes}` minutes.", thread_ts)
 
@@ -495,6 +503,7 @@ async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: 
     await send_message(app, channel, user_id, message, thread_ts)
 
 async def send_message(app: AsyncApp, channel: Channel, user_id: str, text: str, thread_ts: str = None) -> None:
+    log_debug(channel, f"Sending message to #{channel.name} for user @{user_id}: {text}")
     try:
         if thread_ts:
             await app.client.chat_postMessage(
@@ -621,8 +630,11 @@ async def clean_slack_text(app: AsyncApp, text: str):
     return text
 
 async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, permalink: str) -> None:
+    log_debug(channel, f"> {text}")
     text = await clean_slack_text(app, text)
+    log_debug(channel, f"< {text}")
     user_name = user.real_name if user.real_name else user.name
+    first_name = user_name.split(' ', 1)[0]
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
         'Content-Type': 'application/json',
@@ -631,7 +643,7 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Chann
     async with aiohttp.ClientSession() as session:
         try:
             data = {
-                "message": f"{user_name}: {text}",
+                "message": f"{first_name}: {text}",
                 "alias": f"hutbot: {user_name} in #{channel.name} {ts}",
                 "description": f"{user_name} in #{channel.name}: {text}",
                 "tags": ["Hutbot"],
