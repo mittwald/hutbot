@@ -587,7 +587,39 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
     except SlackApiError as e:
         log_error(f"Failed to send scheduled reply:", e)
 
-async def post_opsgenie_alert(opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, permalink: str) -> None:
+async def replace_mentions(app: AsyncApp, text: str) -> str:
+    matches = MENTION_PATTERN.findall(text)
+    if matches:
+        for username in matches:
+            user = await get_user_by_name(app, username)
+            if user.id:
+                text = text.replace(f"<@{username}>", f"{user.real_name}")
+            else:
+                continue
+    return text
+
+async def clean_slack_text(app: AsyncApp, text: str):
+    text = await replace_mentions(app, text)
+
+    # Step 1: Unescape any escaped formatting characters (like \*, \_, etc.)
+    text = re.sub(r'\\([*_~`])', r'\1', text)
+
+    # Step 2: Process all <...> elements to extract display text or URL
+    def replace_link(match):
+        parts = match.group(1).split('|', 1)
+        if len(parts) == 1 and parts[0].startswith('http'):
+            return "[L]"
+        return parts[1] if len(parts) > 1 else parts[0]
+
+    text = re.sub(r'<([^>]+)>', replace_link, text)
+
+    # Step 3: Remove all remaining formatting characters
+    text = re.sub(r'[*_~`]', '', text)
+
+    return text
+
+async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, permalink: str) -> None:
+    text = clean_slack_text(app, text)
     user_name = user.real_name if user.real_name else user.name
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
