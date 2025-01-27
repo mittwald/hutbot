@@ -583,9 +583,9 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
         if opsgenie_configured and opsgenie_enabled:
             log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name} by user @{user.name}...")
             permalink = await get_message_permalink(app, channel, ts)
-            await post_opsgenie_alert(opsgenie_token, channel, user, text, ts, permalink)
+            await post_opsgenie_alert(app, opsgenie_token, channel, user, text, ts, permalink)
     except asyncio.CancelledError as e:
-        log(f"Canceling scheduled reply for message {ts} in channel #{channel.name}:", e)
+        log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name}:", e)
     except Exception as e:
         log_error(f"Failed to send scheduled reply:", e)
 
