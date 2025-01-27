@@ -605,6 +605,7 @@ async def replace_mentions(app: AsyncApp, channel: Channel, text: str) -> str:
     matches = MENTION_PATTERN.findall(text)
     if matches:
         for username in matches:
+            log_debug(channel, f"Attempting to find {username}...")
             user = await get_user_by_name(app, username)
             if user.id:
                 log_debug(channel, f"Attempting to replace <@{username}> with {user.real_name}")
