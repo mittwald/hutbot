@@ -14,6 +14,7 @@ from slack_sdk.errors import SlackApiError
 
 ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
 User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
+Usergroup = collections.namedtuple('Usergroup', ['id', 'handle', 'name'])
 Channel = collections.namedtuple('Channel', ['id', 'name', 'config'])
 
 
@@ -35,6 +36,8 @@ scheduled_messages = {}
 
 user_id_cache = {}
 id_user_cache = {}
+usergroup_id_cache = {}
+id_usergroup_cache = {}
 team_cache = set()
 
 bot_user_id = None
@@ -42,7 +45,7 @@ bot_user_id = None
 opsgenie_configured = False
 
 MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
-ID_PATTERN = re.compile(r'<[#@!]([a-zA-Z0-9^]+)([|]([^>]+))?>')
+ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
@@ -95,7 +98,7 @@ def log_error(*args: object) -> None:
     __log(sys.stderr, 'ERROR', *args)
 
 def log_debug(channel: Channel, *args: object) -> None:
-    if channel.config.get('debug'):
+    if channel and channel.config.get('debug'):
         __log(sys.stderr, 'DEBUG', *args)
 
 def __log(file, prefix, *args: object) -> None:
@@ -257,6 +260,22 @@ async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str
 
     return permalink
 
+async def update_usergroup_cache(app: AsyncApp) -> None:
+  global usergroup_id_cache, id_usergroup_cache
+  if not usergroup_id_cache or not id_usergroup_cache:
+      try:
+          response = await app.client.usergroups_list()
+          usergroups = response['usergroups']
+          for usergroup in usergroups:
+              if usergroup.get('date_deleted', 0) == 0:
+                  usergroup_id = usergroup.get('id', '')
+                  usergroup_handle = usergroup.get('handle', '')
+                  usergroup_name = usergroup.get('name', '')
+                  usergroup_id_cache[usergroup_handle] = Usergroup(id=usergroup_id, handle=usergroup_handle, name=usergroup_name)
+                  id_user_cache[usergroup_id] = Usergroup(id=usergroup_id, handle=usergroup_handle, name=usergroup_name)
+      except SlackApiError as e:
+          log_error(f"Failed to fetch usergroup list:", e)
+
 async def update_user_cache(app: AsyncApp) -> None:
     global user_id_cache, id_user_cache
     if not user_id_cache or not id_user_cache:
@@ -331,6 +350,20 @@ async def get_user_by_name(app: AsyncApp, name: str) -> User:
     if not user:
         user = User(id=None, name=name, team=TEAM_UNKNOWN, real_name='')
     return user
+
+async def get_usergroup_by_id(app: AsyncApp, id: str) -> Usergroup:
+    await update_usergroup_cache(app)
+    usergroup = id_usergroup_cache.get(id, None)
+    if not usergroup:
+        usergroup = Usergroup(id=id, handle=id, name=id)
+    return usergroup
+
+async def get_usergroup_by_handle(app: AsyncApp, handle: str) -> Usergroup:
+    await update_usergroup_cache(app)
+    usergroup = usergroup_id_cache.get(handle, None)
+    if not usergroup:
+        usergroup = Usergroup(id=None, handle=handle, name=handle)
+    return usergroup
 
 def is_command(text: str) -> bool:
     return f"<@{bot_user_id}>" in text
@@ -603,28 +636,31 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
         log_error(f"Failed to send scheduled reply:", e)
 
 async def replace_ids(app: AsyncApp, channel: Channel, text: str) -> str:
-    matches = ID_PATTERN.findall(text)
-    if matches:
-        for match in matches:
-            full_match = match.group(0)
-            log_debug(channel, f"Found ID match: {full_match}...")
-            id = match.group(1)
-            handled = False
-            if id and id[0] == '@':
-                user = await get_user_by_id(app, id[1:])
-                if user.id:
-                    text = text.replace(full_match, user.real_name)
-                    handled = True
-            elif id and id[0] == '#':
-                ch = await get_channel_by_id(app, id[1:])
-                if ch.id:
-                    text = text.replace(full_match, f"#{ch.name}")
-                    handled = True
-            if not handled:
-                if match.group(3):
-                    text = text.replace(full_match, match.group(3))
-                else:
-                    log_debug(channel, f"Failed to replace ID: {full_match}")
+    for match in ID_PATTERN.finditer(text):
+        full_match = match.group(0)
+        log_debug(channel, f"Found ID match: {full_match}...")
+        id = match.group(1)
+        handled = False
+        if id and id[0] == '@':
+            user = await get_user_by_id(app, id[1:])
+            if user.id:
+                text = text.replace(full_match, user.real_name)
+                handled = True
+        elif id and id[0] == '#':
+            ch = await get_channel_by_id(app, id[1:])
+            if ch.id:
+                text = text.replace(full_match, f"#{ch.name}")
+                handled = True
+        elif id and id.startswith('!subteam^'):
+            ug = await get_usergroup_by_id(app, id[9:])
+            if ug.id:
+                text = text.replace(full_match, f"@{ug.handle}")
+                handled = True
+        if not handled:
+            if match.group(3):
+                text = text.replace(full_match, match.group(3))
+            else:
+                text = text.replace(full_match, id)
     return text
 
 async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
