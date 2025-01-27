@@ -302,7 +302,10 @@ async def update_user_cache(app: AsyncApp) -> None:
                                     # finally!
                                     break
                             if not user_key:
-                                log_warning(f"Failed to map user @{user_name} to a employee: {json.dumps(user)}")
+                                user_json = json.dumps(user)
+                                if len(user_json) > 100:
+                                    user_json = user_json[:97] + '...'
+                                log_warning(f"Failed to map user @{user_name} to a employee: {user_json}")
 
                         if user_key:
                             user_team = employees[user_key].get('group', '').strip()
