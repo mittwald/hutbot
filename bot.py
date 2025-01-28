@@ -642,24 +642,36 @@ async def replace_ids(app: AsyncApp, channel: Channel, text: str) -> str:
         id = match.group(1)
         handled = False
         if id and id[0] == '@':
-            user = await get_user_by_id(app, id[1:])
+            user_id = id[1:]
+            log_debug(channel, f"Looking up user with ID {user_id}...")
+            user = await get_user_by_id(app, user_id)
             if user.id:
+                log_debug(channel, f"Found user {user}")
                 text = text.replace(full_match, user.real_name)
                 handled = True
         elif id and id[0] == '#':
-            ch = await get_channel_by_id(app, id[1:])
+            ch_id = id[1:]
+            log_debug(channel, f"Looking up channel with ID {ch_id}...")
+            ch = await get_channel_by_id(app, ch_id)
             if ch.id:
+                log_debug(channel, f"Found channel {ch}")
                 text = text.replace(full_match, f"#{ch.name}")
                 handled = True
         elif id and id.startswith('!subteam^'):
-            ug = await get_usergroup_by_id(app, id[9:])
+            ug_id = id[9:]
+            log_debug(channel, f"Looking up usergroup with ID {ug_id}...")
+            ug = await get_usergroup_by_id(app, ug_id)
             if ug.id:
+                log_debug(channel, f"Found usergroup {ug}")
                 text = text.replace(full_match, f"@{ug.handle}")
                 handled = True
         if not handled:
-            if match.group(3):
-                text = text.replace(full_match, match.group(3))
+            alias = match.group(3)
+            if alias:
+                log_debug(channel, f"Fallback, replacing {full_match} with alias {alias}.")
+                text = text.replace(full_match, alias)
             else:
+                log_debug(channel, f"Fallback, replacing {full_match} with {id}.")
                 text = text.replace(full_match, id)
     return text
 
