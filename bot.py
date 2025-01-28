@@ -157,18 +157,42 @@ async def save_configuration() -> None:
     except Exception as e:
         log_error("Failed to save configuration:", e)
 
+def generate_employee_list(users: list) -> dict:
+    employees = {}
+    for user in users:
+        id = normalize_id(user.get('ad_name', ''))
+        is_deleted = user.get('is_deleted', False)
+        if not is_deleted and len(id) > 0:
+            employees[id] = user
+    return employees
+
+def load_employee_mappings() -> dict:
+    result = {}
+    log(f"Attempting to load employees mappings from environment variable.")
+    employee_mappings = os.environ.get("EMPLOYEE_LIST_MAPPINGS", "").strip()
+    if employee_mappings:
+        mappings = employee_mappings.split(',')
+        for mapping in mappings:
+            items = mapping.split('=')
+            if items and len(items) == 2 and len(items[0]) > 0 and len(items[1]) > 0:
+                key = normalize_id(items[0])
+                value = normalize_id(items[1])
+                if key in result:
+                    log_warning(f"Failed to parse employee mapping '{key}' is already mapped, skipping")
+                else:
+                    result[key] = value
+            else:
+                log_warning(f"Failed to parse employee mapping '{mapping}', skipping")
+    log(f"{len(result)} employee mappings loaded from environment variable.")
+    return result
+
 async def load_employees_from_disk() -> dict:
     log(f"Attempting to load employees from disk.")
     try:
         async with aiofiles.open(EMPLOYEE_CACHE_FILE_NAME, 'r') as f:
             content = await f.read()
             users = json.loads(content)
-            employees = {}
-            for user in users:
-                id = normalize_id(user.get('ad_name', ''))
-                is_deleted = user.get('is_deleted', False)
-                if not is_deleted and len(id) > 0:
-                    employees[id] = user
+            employees = generate_employee_list(users)
             log(f"{len(employees)} employees loaded from disk.")
             return employees
     except FileNotFoundError:
@@ -213,12 +237,7 @@ async def load_employees() -> dict:
                     return await load_employees_from_disk()
 
                 users = await users_response.json()
-                employees = {}
-                for user in users:
-                    id = normalize_id(user.get('ad_name', ''))
-                    is_deleted = user.get('is_deleted', False)
-                    if not is_deleted and len(id) > 0:
-                        employees[id] = user
+                employees = generate_employee_list(users)
                 log(f"{len(employees)} employees retrieved from {employee_url}.")
                 return employees
     except Exception as e:
@@ -280,6 +299,7 @@ async def update_user_cache(app: AsyncApp) -> None:
     global user_id_cache, id_user_cache
     if not user_id_cache or not id_user_cache:
         employees = await load_employees()
+        mappings = load_employee_mappings()
         try:
             response = await app.client.users_list()
             users = response['members']
@@ -290,6 +310,9 @@ async def update_user_cache(app: AsyncApp) -> None:
                    user.get('id', '') != 'USLACKBOT':
                     user_id = user.get('id', '')
                     user_name = normalize_id(user.get('name', ''))
+                    if user_name in mappings:
+                        log(f"Applying employee mapping: {user_name} -> {mappings[user_name]}")
+                        user_name = mappings[user_name]
                     user_name_normalized = normalize_user_name(user_name)
                     user_email = normalize_id(user.get('profile', {}).get('email', ''))
                     user_email_alias = normalize_id(user_email.split('@')[0])
