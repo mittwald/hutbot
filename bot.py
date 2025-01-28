@@ -49,12 +49,12 @@ ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
-SET_WAIT_TIME_PATTERN = re.compile(r'^(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>\d+)$', re.IGNORECASE)
+SET_WAIT_TIME_PATTERN = re.compile(r'^(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)$', re.IGNORECASE)
 SET_REPLY_MESSAGE_PATTERN = re.compile(r'^(set\s+)?message\s+(?P<message>.+)$', re.IGNORECASE)
 ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'^(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)$', re.IGNORECASE)
 CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'^clear\s+excluded?([_ -]?teams?)?$', re.IGNORECASE)
 ADD_INCLUDED_TEAM_PATTERN = re.compile(r'^(add\s+)?included?([_ -]?teams?)?\s+(?P<team>.+)$', re.IGNORECASE)
-CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'^clear\s+?included?([_ -]?teams?)?$', re.IGNORECASE)
+CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'^clear\s+included?([_ -]?teams?)?$', re.IGNORECASE)
 LIST_TEAMS_PATTERN = re.compile(r'^(list\s+)?teams?$', re.IGNORECASE)
 EMPLOYEE_TEAM_PATTERN = re.compile(r'^team(\s+of)?\s+(?P<user>.+)$', re.IGNORECASE)
 ENABLE_OPSGENIE_PATTERN = re.compile(r'^enable\s+(opsgenie|alerts?)$', re.IGNORECASE)
@@ -376,7 +376,7 @@ async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: st
     # Parse commands
     if SET_WAIT_TIME_PATTERN.match(text):
         match = SET_WAIT_TIME_PATTERN.match(text)
-        wait_time_minutes = int(match.group("wait_time"))
+        wait_time_minutes = int(match.group("wait_time").strip('"').strip("'"))
         await set_wait_time(app, channel, wait_time_minutes, user_id, thread_ts)
     elif SET_REPLY_MESSAGE_PATTERN.match(text):
         match = SET_REPLY_MESSAGE_PATTERN.match(text)
