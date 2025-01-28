@@ -39,6 +39,7 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
      - `mpim:write`
      - `groups:history`
      - `groups:read`
+     - `usergroups:read`
      - `team:read`
      - `users.read`
      - `commands`
