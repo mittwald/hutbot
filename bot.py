@@ -688,7 +688,6 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Chann
     text = await clean_slack_text(app, channel, text)
     log_debug(channel, f"< {text}")
     user_name = user.real_name if user.real_name else user.name
-    first_name = user_name.split(' ', 1)[0]
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
         'Content-Type': 'application/json',
@@ -697,7 +696,7 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Chann
     async with aiohttp.ClientSession() as session:
         try:
             data = {
-                "message": f"{first_name}: {text}",
+                "message": f"#{channel.name}: {text}",
                 "alias": f"hutbot: {user_name} in #{channel.name} {ts}",
                 "description": f"{user_name} in #{channel.name}: {text}",
                 "tags": ["Hutbot"],
