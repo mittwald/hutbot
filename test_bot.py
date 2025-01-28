@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, patch
-from bot import replace_ids, Channel, User, Usergroup, get_team_of, handle_command, bot_user_id
+from bot import replace_ids, Channel, User, Usergroup, get_team_of, handle_command, clean_slack_text
 
 @pytest.mark.asyncio
 async def test_replace_ids_user_id():
@@ -276,3 +276,70 @@ async def test_handle_command_unknown():
     with patch('bot.send_message') as mock_send_message:
         await handle_command(app, text, channel, user_id, thread_ts)
         mock_send_message.assert_called_once_with(app, channel, user_id, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
+
+@pytest.mark.asyncio
+async def test_clean_slack_text_unescape_formatting():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    text = r"Hello \*world\*!"
+
+    result = await clean_slack_text(app, channel, text)
+
+    assert result == "Hello world!"
+
+@pytest.mark.asyncio
+async def test_clean_slack_text_replace_ids():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    text = "Hello <@U12345>!"
+
+    with patch('bot.replace_ids', return_value="Hello John Doe!"):
+        result = await clean_slack_text(app, channel, text)
+
+    assert result == "Hello John Doe!"
+
+@pytest.mark.asyncio
+async def test_clean_slack_text_replace_links():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    text = "Check this link: <http://example.com|example>"
+
+    result = await clean_slack_text(app, channel, text)
+
+    assert result == "Check this link: example"
+
+@pytest.mark.asyncio
+async def test_clean_slack_text_replace_links_no_text():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    text = "Check this link: <http://example.com>"
+
+    result = await clean_slack_text(app, channel, text)
+
+    assert result == "Check this link: [URL]"
+
+@pytest.mark.asyncio
+async def test_clean_slack_text_remove_formatting():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    text = """
+    *bold* _italic_ ~strikethrough~ `code`
+    ```
+    code
+    block
+    ```
+    """
+
+    result = await clean_slack_text(app, channel, text)
+
+    assert result == "bold italic strikethrough code code block"
+
+@pytest.mark.asyncio
+async def test_clean_slack_text_remove_newlines():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    text = "Hello\nworld!"
+
+    result = await clean_slack_text(app, channel, text)
+
+    assert result == "Hello world!"

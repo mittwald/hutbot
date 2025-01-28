@@ -676,12 +676,13 @@ async def replace_ids(app: AsyncApp, channel: Channel, text: str) -> str:
     return text
 
 async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
+    # replace all kinds of <@ID> mentions
     text = await replace_ids(app, channel, text)
 
-    # Step 1: Unescape any escaped formatting characters (like \*, \_, etc.)
+    # unescape any escaped formatting characters (like \*, \_, etc.)
     text = re.sub(r'\\([*_~`])', r'\1', text)
 
-    # Step 2: Process all <...> elements to extract display text or URL
+    # process all <...> elements to extract display text or URL
     def replace_link(match):
         parts = match.group(1).split('|', 1)
         if len(parts) == 1 and parts[0].startswith('http'):
@@ -690,8 +691,11 @@ async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
 
     text = re.sub(r'<([^>]+)>', replace_link, text)
 
-    # Step 3: Remove all remaining formatting characters and new lines
+    # remove all remaining formatting characters and new lines
     text = re.sub(r'[*_~`]', '', text).replace('\n', ' ')
+
+    # reduce duplicate spaces ands trim
+    text = re.sub(r'\s{2,}', ' ', text).strip()
 
     return text
 
