@@ -168,9 +168,9 @@ def generate_employee_list(users: list) -> dict:
 
 def load_employee_mappings() -> dict:
     result = {}
-    log(f"Attempting to load employees mappings from environment variable.")
     employee_mappings = os.environ.get("EMPLOYEE_LIST_MAPPINGS", "").strip()
     if employee_mappings:
+        log(f"Attempting to load employee mappings from environment variable.")
         mappings = employee_mappings.split(',')
         for mapping in mappings:
             items = mapping.split('=')
@@ -183,7 +183,8 @@ def load_employee_mappings() -> dict:
                     result[key] = value
             else:
                 log_warning(f"Failed to parse employee mapping '{mapping}', skipping")
-    log(f"{len(result)} employee mappings loaded from environment variable.")
+
+        log(f"{len(result)} employee mappings loaded from environment variable.")
     return result
 
 async def load_employees_from_disk() -> dict:
