@@ -272,7 +272,7 @@ async def update_usergroup_cache(app: AsyncApp) -> None:
                   usergroup_handle = usergroup.get('handle', '')
                   usergroup_name = usergroup.get('name', '')
                   usergroup_id_cache[usergroup_handle] = Usergroup(id=usergroup_id, handle=usergroup_handle, name=usergroup_name)
-                  id_user_cache[usergroup_id] = Usergroup(id=usergroup_id, handle=usergroup_handle, name=usergroup_name)
+                  id_usergroup_cache[usergroup_id] = Usergroup(id=usergroup_id, handle=usergroup_handle, name=usergroup_name)
       except SlackApiError as e:
           log_error(f"Failed to fetch usergroup list:", e)
 
