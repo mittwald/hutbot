@@ -685,7 +685,7 @@ async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
     def replace_link(match):
         parts = match.group(1).split('|', 1)
         if len(parts) == 1 and parts[0].startswith('http'):
-            return "[L]"
+            return "[URL]"
         return parts[1] if len(parts) > 1 and len(parts[1]) > 0 else parts[0]
 
     text = re.sub(r'<([^>]+)>', replace_link, text)
