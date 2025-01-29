@@ -583,6 +583,7 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
                     text=text,
                     mrkdwn=True
                 )
+            log_debug(channel, f"Successfully sent message to #{channel.name}, user @{user.name}")
             return  # Exit if successful
         except SlackApiError as e:
             if attempt < retries - 1:
