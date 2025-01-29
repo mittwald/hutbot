@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
-from bot import replace_ids, Channel, User, Usergroup, get_team_of, handle_command, clean_slack_text
+from bot import replace_ids, Channel, User, Usergroup, get_team_of, handle_command, clean_slack_text, send_message
+from slack_sdk.errors import SlackApiError
 
 @pytest.mark.asyncio
 async def test_replace_ids_user_id():
@@ -343,3 +344,87 @@ async def test_clean_slack_text_remove_newlines():
     result = await clean_slack_text(app, channel, text)
 
     assert result == "Hello world!"
+
+@pytest.mark.asyncio
+async def test_send_message_success():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User(id="U12345", name="johndoe", real_name="John Doe", team="team1")
+    text = "Hello, world!"
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.log_debug') as mock_log_debug:
+        await send_message(app, channel, user, text, thread_ts)
+        app.client.chat_postMessage.assert_called_once_with(
+            channel=channel.id,
+            thread_ts=thread_ts,
+            text=text,
+            mrkdwn=True
+        )
+        mock_log_debug.assert_called()
+
+@pytest.mark.asyncio
+async def test_send_message_ephemeral_success():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User(id="U12345", name="johndoe", real_name="John Doe", team="team1")
+    text = "Hello, world!"
+
+    with patch('bot.log_debug') as mock_log_debug:
+        await send_message(app, channel, user, text)
+        app.client.chat_postEphemeral.assert_called_once_with(
+            channel=channel.id,
+            user=user.id,
+            text=text,
+            mrkdwn=True
+        )
+        mock_log_debug.assert_called()
+
+@pytest.mark.asyncio
+async def test_send_message_retry():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User(id="U12345", name="johndoe", real_name="John Doe", team="team1")
+    text = "Hello, world!"
+    thread_ts = "1234567890.123456"
+
+    app.client.chat_postMessage.side_effect = [SlackApiError("error", "error"), None]
+
+    with patch('bot.log_warning') as mock_log_warning, patch('bot.log_debug') as mock_log_debug:
+        await send_message(app, channel, user, text, thread_ts)
+        assert app.client.chat_postMessage.call_count == 2
+        mock_log_warning.assert_called()
+        mock_log_debug.assert_called()
+
+@pytest.mark.asyncio
+async def test_send_message_fail():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User(id="U12345", name="johndoe", real_name="John Doe", team="team1")
+    text = "Hello, world!"
+    thread_ts = "1234567890.123456"
+
+    app.client.chat_postMessage.side_effect = SlackApiError("error", "error")
+
+    with patch('bot.log_error') as mock_log_error, patch('bot.log_warning') as mock_log_warning, patch('bot.log_debug') as mock_log_debug:
+        await send_message(app, channel, user, text, thread_ts)
+        assert app.client.chat_postMessage.call_count == 3
+        mock_log_warning.assert_called()
+        mock_log_error.assert_called()
+        mock_log_debug.assert_called()
+
+@pytest.mark.asyncio
+async def test_send_message_ephemeral_fail():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User(id="U12345", name="johndoe", real_name="John Doe", team="team1")
+    text = "Hello, world!"
+
+    app.client.chat_postEphemeral.side_effect = SlackApiError("error", "error")
+
+    with patch('bot.log_error') as mock_log_error, patch('bot.log_warning') as mock_log_warning, patch('bot.log_debug') as mock_log_debug:
+        await send_message(app, channel, user, text)
+        assert app.client.chat_postEphemeral.call_count == 3
+        mock_log_warning.assert_called()
+        mock_log_error.assert_called()
+        mock_log_debug.assert_called()

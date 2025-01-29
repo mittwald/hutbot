@@ -392,7 +392,7 @@ async def get_usergroup_by_handle(app: AsyncApp, handle: str) -> Usergroup:
 def is_command(text: str) -> bool:
     return f"<@{bot_user_id}>" in text
 
-async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: str, thread_ts: str = None) -> None:
+async def handle_command(app: AsyncApp, text: str, channel: Channel, user: User, thread_ts: str = None) -> None:
     text = text.replace(f"<@{bot_user_id}>", "").strip()
 
     log_debug(channel, f"Received command for channel #{channel.name}: {text}")
@@ -401,69 +401,69 @@ async def handle_command(app: AsyncApp, text: str, channel: Channel, user_id: st
     if SET_WAIT_TIME_PATTERN.match(text):
         match = SET_WAIT_TIME_PATTERN.match(text)
         wait_time_minutes = int(match.group("wait_time").strip('"').strip("'"))
-        await set_wait_time(app, channel, wait_time_minutes, user_id, thread_ts)
+        await set_wait_time(app, channel, wait_time_minutes, user, thread_ts)
     elif SET_REPLY_MESSAGE_PATTERN.match(text):
         match = SET_REPLY_MESSAGE_PATTERN.match(text)
         message = match.group("message").strip('"').strip("'")
-        await set_reply_message(app, channel, message, user_id, thread_ts)
+        await set_reply_message(app, channel, message, user, thread_ts)
     elif ENABLE_OPSGENIE_PATTERN.match(text):
-        await set_opsgenie(app, channel, True, user_id, thread_ts)
+        await set_opsgenie(app, channel, True, user, thread_ts)
     elif DISABLE_OPSGENIE_PATTERN.match(text):
-        await set_opsgenie(app, channel, False, user_id, thread_ts)
+        await set_opsgenie(app, channel, False, user, thread_ts)
     elif LIST_TEAMS_PATTERN.match(text):
-        await list_teams(app, channel, user_id, thread_ts)
+        await list_teams(app, channel, user, thread_ts)
     elif EMPLOYEE_TEAM_PATTERN.match(text):
         match = EMPLOYEE_TEAM_PATTERN.match(text)
         username = match.group("user").strip('"').strip("'")
-        await get_team_of(app, channel, username, user_id, thread_ts)
+        await get_team_of(app, channel, username, user, thread_ts)
     elif ADD_EXCLUDED_TEAM_PATTERN.match(text):
         match = ADD_EXCLUDED_TEAM_PATTERN.match(text)
         team = match.group("team").strip('"').strip("'")
-        await add_excluded_team(app, channel, team, user_id, thread_ts)
+        await add_excluded_team(app, channel, team, user, thread_ts)
     elif CLEAR_EXCLUDED_TEAM_PATTERN.match(text):
-        await clear_excluded_team(app, channel, user_id, thread_ts)
+        await clear_excluded_team(app, channel, user, thread_ts)
     elif ADD_INCLUDED_TEAM_PATTERN.match(text):
         match = ADD_INCLUDED_TEAM_PATTERN.match(text)
         team = match.group("team").strip('"').strip("'")
-        await add_included_team(app, channel, team, user_id, thread_ts)
+        await add_included_team(app, channel, team, user, thread_ts)
     elif CLEAR_INCLUDED_TEAM_PATTERN.match(text):
-        await clear_included_team(app, channel, user_id, thread_ts)
+        await clear_included_team(app, channel, user, thread_ts)
     elif SHOW_CONFIG_PATTERN.match(text):
-        await show_config(app, channel, user_id, thread_ts)
+        await show_config(app, channel, user, thread_ts)
     elif HELP_PATTERN.match(text):
-        await send_help_message(app, channel, user_id, thread_ts)
+        await send_help_message(app, channel, user, thread_ts)
     else:
-        await send_message(app, channel, user_id, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
+        await send_message(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
 
-async def set_opsgenie(app: AsyncApp, channel: Channel, enabled: bool, user_id: str, thread_ts: str = None) -> None:
+async def set_opsgenie(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = None) -> None:
     channel.config['opsgenie'] = enabled
     await save_configuration()
-    await send_message(app, channel, user_id, f"OpsGenie integration {'enabled' if enabled else 'disabled'}{', but not configured' if enabled and not opsgenie_configured else ''}.", thread_ts)
+    await send_message(app, channel, user, f"OpsGenie integration {'enabled' if enabled else 'disabled'}{', but not configured' if enabled and not opsgenie_configured else ''}.", thread_ts)
 
-async def set_wait_time(app: AsyncApp, channel: Channel, wait_time_minutes: int, user_id: str, thread_ts: str = None) -> None:
+async def set_wait_time(app: AsyncApp, channel: Channel, wait_time_minutes: int, user: User, thread_ts: str = None) -> None:
     # check if number and in range 0-1440
     if not wait_time_minutes or wait_time_minutes < 0 or wait_time_minutes > 1440:
-        await send_message(app, channel, user_id, "Invalid wait time. Must be a number between 0 and 1440.", thread_ts)
+        await send_message(app, channel, user, "Invalid wait time. Must be a number between 0 and 1440.", thread_ts)
         return
 
     channel.config['wait_time'] = wait_time_minutes * 60  # Convert to seconds
     log_debug(channel, f"Wait time for #{channel.name} set to {wait_time_minutes} minutes")
     await save_configuration()
-    await send_message(app, channel, user_id, f"*Wait time* set to `{wait_time_minutes}` minutes.", thread_ts)
+    await send_message(app, channel, user, f"*Wait time* set to `{wait_time_minutes}` minutes.", thread_ts)
 
-async def set_reply_message(app: AsyncApp, channel: Channel, message: str, user_id: str, thread_ts: str = None) -> None:
+async def set_reply_message(app: AsyncApp, channel: Channel, message: str, user: User, thread_ts: str = None) -> None:
     # check message
     if not message or message.strip() == "":
-        await send_message(app, channel, user_id, "Invalid *reply message*. Must be non-empty.", thread_ts)
+        await send_message(app, channel, user, "Invalid *reply message*. Must be non-empty.", thread_ts)
         return
     ok, error, message = await process_mentions(app, message)
     if not ok:
-        await send_message(app, channel, user_id, "Invalid *reply message*: " + error + ".", thread_ts)
+        await send_message(app, channel, user, "Invalid *reply message*: " + error + ".", thread_ts)
         return
 
     channel.config['reply_message'] = message
     await save_configuration()
-    await send_message(app, channel, user_id, f"*Reply message* set to: {message}", thread_ts)
+    await send_message(app, channel, user, f"*Reply message* set to: {message}", thread_ts)
 
 async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]:
     # Regular expression to find @username patterns
@@ -478,56 +478,56 @@ async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]
                 return False, f"{username} not found", None
     return True, None, message
 
-async def add_excluded_team(app: AsyncApp, channel: Channel, team: str, user_id: str, thread_ts: str = None) -> None:
+async def add_excluded_team(app: AsyncApp, channel: Channel, team: str, user: User, thread_ts: str = None) -> None:
     await update_user_cache(app)
     if team not in team_cache:
-        await send_message(app, channel, user_id, f"Unknown team: `{team}`.", thread_ts)
+        await send_message(app, channel, user, f"Unknown team: `{team}`.", thread_ts)
         return
     if team in channel.config['excluded_teams']:
-        await send_message(app, channel, user_id, f"`{team}` is already excluded.", thread_ts)
+        await send_message(app, channel, user, f"`{team}` is already excluded.", thread_ts)
         return
 
     if len(channel.config['included_teams']) > 0:
-        await send_message(app, channel, user_id, f"Either set *included teams* or *excluded teams*, not both.", thread_ts)
+        await send_message(app, channel, user, f"Either set *included teams* or *excluded teams*, not both.", thread_ts)
         return
 
     channel.config['excluded_teams'].append(team)
     await save_configuration()
-    await send_message(app, channel, user_id, f"Added `{team}` to *excluded teams*.", thread_ts)
+    await send_message(app, channel, user, f"Added `{team}` to *excluded teams*.", thread_ts)
 
-async def clear_excluded_team(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
+async def clear_excluded_team(app: AsyncApp, channel: Channel, user: User, thread_ts: str = None) -> None:
     channel.config['excluded_teams'] = []
     await save_configuration()
-    await send_message(app, channel, user_id, "Cleared *excluded teams*.", thread_ts)
+    await send_message(app, channel, user, "Cleared *excluded teams*.", thread_ts)
 
-async def add_included_team(app: AsyncApp, channel: Channel, team: str, user_id: str, thread_ts: str = None) -> None:
+async def add_included_team(app: AsyncApp, channel: Channel, team: str, user: User, thread_ts: str = None) -> None:
     await update_user_cache(app)
     if team not in team_cache:
-        await send_message(app, channel, user_id, f"Unknown team: `{team}`.", thread_ts)
+        await send_message(app, channel, user, f"Unknown team: `{team}`.", thread_ts)
         return
     if team in channel.config['included_teams']:
-        await send_message(app, channel, user_id, f"`{team}` is already included.", thread_ts)
+        await send_message(app, channel, user, f"`{team}` is already included.", thread_ts)
         return
 
     if len(channel.config['excluded_teams']) > 0:
-        await send_message(app, channel, user_id, f"Either set *included teams* or *excluded teams*, not both.", thread_ts)
+        await send_message(app, channel, user, f"Either set *included teams* or *excluded teams*, not both.", thread_ts)
         return
 
     channel.config['included_teams'].append(team)
     await save_configuration()
-    await send_message(app, channel, user_id, f"Added `{team}` to *included teams*.", thread_ts)
+    await send_message(app, channel, user, f"Added `{team}` to *included teams*.", thread_ts)
 
-async def clear_included_team(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
+async def clear_included_team(app: AsyncApp, channel: Channel, user: User, thread_ts: str = None) -> None:
     channel.config['included_teams'] = []
     await save_configuration()
-    await send_message(app, channel, user_id, "Cleared *included teams*.", thread_ts)
+    await send_message(app, channel, user, "Cleared *included teams*.", thread_ts)
 
-async def list_teams(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
+async def list_teams(app: AsyncApp, channel: Channel, user: User, thread_ts: str = None) -> None:
     await update_user_cache(app)
     message = f"*Available teams*:\n{'\n'.join(sorted(team_cache, key=lambda v: v.upper()))}"
-    await send_message(app, channel, user_id, message, thread_ts)
+    await send_message(app, channel, user, message, thread_ts)
 
-async def get_team_of(app: AsyncApp, channel: Channel, username: str, user_id: str, thread_ts: str = None) -> None:
+async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User, thread_ts: str = None) -> None:
     matches = MENTION_PATTERN.findall(username)
     message = None
     if matches:
@@ -542,11 +542,11 @@ async def get_team_of(app: AsyncApp, channel: Channel, username: str, user_id: s
             else:
                 log_error(f"Invalid request: username `{username}` not found")
     if message:
-        await send_message(app, channel, user_id, message, thread_ts)
+        await send_message(app, channel, user, message, thread_ts)
     else:
-        await send_message(app, channel, user_id, f"Unknown user: `{username}`.", thread_ts)
+        await send_message(app, channel, user, f"Unknown user: `{username}`.", thread_ts)
 
-async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
+async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: str = None) -> None:
     opsgenie_enabled = channel.config.get('opsgenie')
     wait_time_minutes = channel.config.get('wait_time') // 60
     included_teams = channel.config.get('included_teams')
@@ -561,10 +561,10 @@ async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: 
         f"*Excluded teams*: {' '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
         f"*Reply message*:\n{reply_message}"
     )
-    await send_message(app, channel, user_id, message, thread_ts)
+    await send_message(app, channel, user, message, thread_ts)
 
-async def send_message(app: AsyncApp, channel: Channel, user_id: str, text: str, thread_ts: str = None) -> None:
-    log_debug(channel, f"Attempting to send message to #{channel.name}, user @{user_id}: {text.replace('\n', '\\n')}")
+async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = None) -> None:
+    log_debug(channel, f"Attempting to send message to #{channel.name}, user @{user.name}: {text.replace('\n', '\\n')}")
     retries = 3
     delay = 1
     for attempt in range(retries):
@@ -579,20 +579,20 @@ async def send_message(app: AsyncApp, channel: Channel, user_id: str, text: str,
             else:
                 await app.client.chat_postEphemeral(
                     channel=channel.id,
-                    user=user_id,
+                    user=user.id,
                     text=text,
                     mrkdwn=True
                 )
             return  # Exit if successful
         except SlackApiError as e:
             if attempt < retries - 1:
-                log_warning(f"Failed to send message in channel #{channel.name}, user @{user_id}, retrying in {delay} seconds ({attempt + 1}/{retries})...", e)
+                log_warning(f"Failed to send message in channel #{channel.name}, user @{user.name}, retrying in {delay} seconds ({attempt + 1}/{retries})...", e)
                 await asyncio.sleep(delay)
                 delay *= 2  # Exponential backoff
             else:
-                log_error(f"Failed to send message in channel #{channel.name}, user @{user_id} after {retries} attempts:", e)
+                log_error(f"Failed to send message in channel #{channel.name}, user @{user.name} after {retries} attempts:", e)
 
-async def send_help_message(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
+async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = None) -> None:
     help_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's how you can configure me via command or @mention:\n\n"
         "*Enable OpsGenie Integration:*\n"
@@ -644,7 +644,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user_id: str, threa
         "@Hutbot help```\n"
         "Displays this help message.\n"
     )
-    await send_message(app, channel, user_id, help_text, thread_ts)
+    await send_message(app, channel, user, help_text, thread_ts)
 
 async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str) -> None:
     opsgenie_enabled = channel.config.get('opsgenie')
@@ -653,9 +653,9 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
     log(f"Scheduling reply for message {ts} in channel #{channel.name}, user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
     try:
         await asyncio.sleep(wait_time)
-        await send_message(app, channel, None, reply_message, ts)
+        await send_message(app, channel, user, reply_message, ts)
         if opsgenie_configured and opsgenie_enabled:
-            log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name} by user @{user.name}...")
+            log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name}...")
             permalink = await get_message_permalink(app, channel, ts)
             await post_opsgenie_alert(app, opsgenie_token, channel, user, text, ts, permalink)
     except asyncio.CancelledError as e:
@@ -760,18 +760,16 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Chann
         except Exception as e:
             log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}:", e)
 
-async def handle_thread_response(app: AsyncApp, event: dict, channel: Channel, user_id: str, thread_ts: str):
+async def handle_thread_response(app: AsyncApp, event: dict, channel: Channel, reply_user: User, thread_ts: str):
     key = (channel.id, thread_ts)
-    if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
+    if key in scheduled_messages and scheduled_messages[key].user_id != reply_user.id:
         message_user_id = scheduled_messages[key].user_id
         message_user = await get_user_by_id(app, message_user_id)
-        reply_user = await get_user_by_id(app, user_id)
-        log(f"Thread reply by user @{reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel #{channel.name} by user @{message_user.name}")
+        log(f"Thread reply by user @{reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel #{channel.name}, user @{message_user.name}")
         scheduled_messages[key].task.cancel()
         del scheduled_messages[key]
 
-async def handle_channel_message(app: AsyncApp, opsgenie_token: str, event: dict, channel: Channel, user_id: str, text: str, ts: str):
-    user = await get_user_by_id(app, user_id)
+async def handle_channel_message(app: AsyncApp, opsgenie_token: str, event: dict, channel: Channel, user: User, text: str, ts: str):
     included_teams = channel.config.get('included_teams')
     excluded_teams = channel.config.get('excluded_teams')
     if len(included_teams) > 0 and user.team not in included_teams:
@@ -782,18 +780,17 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, event: dict
         return
 
     task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, user, text, ts))
-    scheduled_messages[(channel.id, ts)] = ScheduledReply(task, user_id)
+    scheduled_messages[(channel.id, ts)] = ScheduledReply(task, user.id)
 
-async def handle_message_deletion(app: AsyncApp, event: str, channel: Channel, previous_message_user_id: str, previous_message_ts: str):
-    if previous_message_user_id == bot_user_id:
+async def handle_message_deletion(app: AsyncApp, event: str, channel: Channel, previous_message_user: User, previous_message_ts: str):
+    if previous_message_user.id == bot_user_id:
         log(f"Ignoring message deletion by bot from channel #{channel.name}.")
         return
 
     # Cancel the scheduled task if it exists
     key = (channel.id, previous_message_ts)
     if key in scheduled_messages:
-        previous_message_user = await get_user_by_id(app, previous_message_user_id)
-        log(f"Message deleted. Cancelling reminder for message {previous_message_ts} in channel #{channel.name} by user @{previous_message_user.name}")
+        log(f"Message deleted. Cancelling reply for message {previous_message_ts} in channel #{channel.name}, user @{previous_message_user.name}")
         scheduled_messages[key].task.cancel()
         del scheduled_messages[key]
 
@@ -816,19 +813,22 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = None) -> None:
         if user_id == bot_user_id:
             log(f"Ignoring message from the bot from channel #{channel.name}.")
             return
+        
+        user = await get_user_by_id(app, user_id)
 
         if subtype == 'message_deleted' and previous_message:
             # deleted message
-            await handle_message_deletion(app, event, channel, previous_message.get('user'), previous_message.get('ts'))
+            previous_user = await get_user_by_id(previous_message.get('user'))
+            await handle_message_deletion(app, event, channel, previous_user, previous_message.get('ts'))
         elif user_id and is_command(text):
             # command
-            await handle_command(app, text, channel, user_id, ts)
+            await handle_command(app, text, channel, user, ts)
         elif user_id and thread_ts:
             # thread
-            await handle_thread_response(app, event, channel, user_id, thread_ts)
+            await handle_thread_response(app, event, channel, user, thread_ts)
         elif user_id and ts:
             # channel message
-            await handle_channel_message(app, opsgenie_token, event, channel, user_id, text, ts)
+            await handle_channel_message(app, opsgenie_token, event, channel, user, text, ts)
 
     @app.event("reaction_added")
     async def handle_reaction_added_events(body, logger):
@@ -845,7 +845,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = None) -> None:
             message_user_id = scheduled_messages[key].user_id
             message_user = await get_user_by_id(app, message_user_id)
             reaction_user = await get_user_by_id(app, user_id)
-            log(f"Reaction added by user @{reaction_user.name}. Cancelling reminder for message {ts} in channel #{channel.name} by user @{message_user.name}")
+            log(f"Reaction added by user @{reaction_user.name}. Cancelling reminder for message {ts} in channel #{channel.name}, user @{message_user.name}")
             scheduled_messages[key].task.cancel()
             del scheduled_messages[key]
 
