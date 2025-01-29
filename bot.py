@@ -262,7 +262,7 @@ async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
         if channel_name:
             return channel_name
     except SlackApiError as e:
-        log_error(f"Failed to get channel name", e)
+        log_error(f"Failed to get channel name for {channel_id}", e)
 
     return channel_id
 
@@ -641,7 +641,7 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
     opsgenie_enabled = channel.config.get('opsgenie')
     wait_time = channel.config.get('wait_time')
     reply_message = channel.config.get('reply_message')
-    log(f"Scheduling reminder for message {ts} in channel #{channel.name}, user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
+    log(f"Scheduling reply for message {ts} in channel #{channel.name}, user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
     try:
         await asyncio.sleep(wait_time)
         await app.client.chat_postMessage(
@@ -655,9 +655,9 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
             permalink = await get_message_permalink(app, channel, ts)
             await post_opsgenie_alert(app, opsgenie_token, channel, user, text, ts, permalink)
     except asyncio.CancelledError as e:
-        log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name}:", e)
+        log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name}, user @{user.name}:", e)
     except Exception as e:
-        log_error(f"Failed to send scheduled reply:", e)
+        log_error(f"Failed to send scheduled reply for message {ts} in channel #{channel.name}, user @{user.name}:", e)
 
 async def replace_ids(app: AsyncApp, channel: Channel, text: str) -> str:
     for match in ID_PATTERN.finditer(text):
@@ -750,11 +750,11 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Chann
             }
             async with session.post(url, headers=headers, data=json.dumps(data)) as response:
                 if response.status != 202:
-                    log_error(f"Failed to send alert for message {ts} in channel #{channel.name} by user @{user.name}: {response.status}")
+                    log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}: {response.status}")
                 else:
-                    log(f"Successfully sent OpsGenie alert for message {ts} in channel #{channel.name} by user @{user.name} with status code {response.status}")
+                    log(f"Successfully sent OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name} with status code {response.status}")
         except Exception as e:
-            log_error(f"Failed to send alert for message {ts} in channel #{channel.name} by user @{user.name}:", e)
+            log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}:", e)
 
 async def handle_thread_response(app: AsyncApp, event: dict, channel: Channel, user_id: str, thread_ts: str):
     key = (channel.id, thread_ts)
