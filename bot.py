@@ -564,24 +564,33 @@ async def show_config(app: AsyncApp, channel: Channel, user_id: str, thread_ts: 
     await send_message(app, channel, user_id, message, thread_ts)
 
 async def send_message(app: AsyncApp, channel: Channel, user_id: str, text: str, thread_ts: str = None) -> None:
-    log_debug(channel, f"Sending message to #{channel.name} for user @{user_id}: {text.replace('\n', '\\n')}")
-    try:
-        if thread_ts:
-            await app.client.chat_postMessage(
-                channel=channel.id,
-                thread_ts=thread_ts,
-                text=text,
-                mrkdwn=True
-            )
-        else:
-            await app.client.chat_postEphemeral(
-                channel=channel.id,
-                user=user_id,
-                text=text,
-                mrkdwn=True  # Enable Markdown formatting
-            )
-    except SlackApiError as e:
-        log_error(f"Failed to send message in channel #{channel.name} for user @{user_id}:", e)
+    log_debug(channel, f"Attempting to send message to #{channel.name}, user @{user_id}: {text.replace('\n', '\\n')}")
+    retries = 3
+    delay = 1
+    for attempt in range(retries):
+        try:
+            if thread_ts:
+                await app.client.chat_postMessage(
+                    channel=channel.id,
+                    thread_ts=thread_ts,
+                    text=text,
+                    mrkdwn=True
+                )
+            else:
+                await app.client.chat_postEphemeral(
+                    channel=channel.id,
+                    user=user_id,
+                    text=text,
+                    mrkdwn=True
+                )
+            return  # Exit if successful
+        except SlackApiError as e:
+            if attempt < retries - 1:
+                log_warning(f"Failed to send message in channel #{channel.name}, user @{user_id}, retrying in {delay} seconds ({attempt + 1}/{retries})...", e)
+                await asyncio.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                log_error(f"Failed to send message in channel #{channel.name}, user @{user_id} after {retries} attempts:", e)
 
 async def send_help_message(app: AsyncApp, channel: Channel, user_id: str, thread_ts: str = None) -> None:
     help_text = (
@@ -644,12 +653,7 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
     log(f"Scheduling reply for message {ts} in channel #{channel.name}, user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
     try:
         await asyncio.sleep(wait_time)
-        await app.client.chat_postMessage(
-            channel=channel.id,
-            thread_ts=ts,
-            text=reply_message,
-            mrkdwn=True
-        )
+        await send_message(app, channel, None, reply_message, ts)
         if opsgenie_configured and opsgenie_enabled:
             log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name} by user @{user.name}...")
             permalink = await get_message_permalink(app, channel, ts)
