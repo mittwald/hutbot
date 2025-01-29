@@ -71,20 +71,20 @@ async def test_get_team_of_single_user():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
     username = "@johndoe"
-    user_id = "U12345"
+    user = User(id="U12345", name="test", real_name="Test User", team="Testers")
     thread_ts = "1234567890.123456"
 
     with patch('bot.get_user_by_name', return_value=User(id="U12345", name="johndoe", real_name="John Doe", team="team1")):
         with patch('bot.send_message') as mock_send_message:
-            await get_team_of(app, channel, username, user_id, thread_ts)
-            mock_send_message.assert_called_once_with(app, channel, user_id, "*John Doe* (<@U12345>): team1", thread_ts)
+            await get_team_of(app, channel, username, user, thread_ts)
+            mock_send_message.assert_called_once_with(app, channel, user, "*John Doe* (<@U12345>): team1", thread_ts)
 
 @pytest.mark.asyncio
 async def test_get_team_of_multiple_users():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
     username = "@johndoe @janedoe"
-    user_id = "U12345"
+    user = User(id="U12345", name="test", real_name="Test User", team="Testers")
     thread_ts = "1234567890.123456"
 
     with patch('bot.get_user_by_name', side_effect=[
@@ -92,33 +92,33 @@ async def test_get_team_of_multiple_users():
         User(id="U67890", name="janedoe", real_name="Jane Doe", team="team2")
     ]):
         with patch('bot.send_message') as mock_send_message:
-            await get_team_of(app, channel, username, user_id, thread_ts)
-            mock_send_message.assert_called_once_with(app, channel, user_id, "*John Doe* (<@U12345>): team1\n*Jane Doe* (<@U67890>): team2", thread_ts)
+            await get_team_of(app, channel, username, user, thread_ts)
+            mock_send_message.assert_called_once_with(app, channel, user, "*John Doe* (<@U12345>): team1\n*Jane Doe* (<@U67890>): team2", thread_ts)
 
 @pytest.mark.asyncio
 async def test_get_team_of_unknown_user():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
     username = "@unknownuser"
-    user_id = "U12345"
+    user = User(id="U12345", name="test", real_name="Test User", team="Testers")
     thread_ts = "1234567890.123456"
 
     with patch('bot.get_user_by_name', return_value=User(id=None, name="unknownuser", real_name="", team="")):
         with patch('bot.send_message') as mock_send_message:
-            await get_team_of(app, channel, username, user_id, thread_ts)
-            mock_send_message.assert_called_once_with(app, channel, user_id, "Unknown user: `@unknownuser`.", thread_ts)
+            await get_team_of(app, channel, username, user, thread_ts)
+            mock_send_message.assert_called_once_with(app, channel, user, "Unknown user: `@unknownuser`.", thread_ts)
 
 @pytest.mark.asyncio
 async def test_get_team_of_no_mentions():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
     username = "no mentions here"
-    user_id = "U12345"
+    user = User(id="U12345", name="test", real_name="Test User", team="Testers")
     thread_ts = "1234567890.123456"
 
     with patch('bot.send_message') as mock_send_message:
-        await get_team_of(app, channel, username, user_id, thread_ts)
-        mock_send_message.assert_called_once_with(app, channel, user_id, "Unknown user: `no mentions here`.", thread_ts)
+        await get_team_of(app, channel, username, user, thread_ts)
+        mock_send_message.assert_called_once_with(app, channel, user, "Unknown user: `no mentions here`.", thread_ts)
 
 @pytest.mark.asyncio
 async def test_handle_command_set_wait_time():

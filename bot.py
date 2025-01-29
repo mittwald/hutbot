@@ -531,8 +531,8 @@ async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User
     matches = MENTION_PATTERN.findall(username)
     message = None
     if matches:
-        for user in matches:
-            u = await get_user_by_name(app, user)
+        for user_match in matches:
+            u = await get_user_by_name(app, user_match)
             if u.id:
                 msg = f"*{u.real_name}* (<@{u.id}>): {u.team}"
                 if message is None:
@@ -813,7 +813,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = None) -> None:
         if user_id == bot_user_id:
             log(f"Ignoring message from the bot from channel #{channel.name}.")
             return
-        
+
         user = await get_user_by_id(app, user_id)
 
         if subtype == 'message_deleted' and previous_message:
