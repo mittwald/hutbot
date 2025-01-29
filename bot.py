@@ -857,7 +857,8 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = None) -> None:
         user_id = body.get('user_id')
 
         channel = await get_channel_by_id(app, channel_id)
-        await handle_command(app, text, channel, user_id)
+        user = await get_user_by_id(app, user_id)
+        await handle_command(app, text, channel, user)
 
 async def send_heartbeat(opsgenie_token: str, opsgenie_heartbeat_name: str) -> None:
     url = 'https://api.opsgenie.com/v2/heartbeats/' + opsgenie_heartbeat_name + '/ping'
