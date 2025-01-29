@@ -469,13 +469,13 @@ async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]
     # Regular expression to find @username patterns
     matches = MENTION_PATTERN.findall(message)
     if matches:
-        for username in matches:
-            user = await get_user_by_name(app, username)
+        for user_match in matches:
+            user = await get_user_by_name(app, user_match)
             if user.id:
-                message = message.replace(f"@{username}", f"<@{user.id}>")
+                message = message.replace(f"@{user_match}", f"<@{user.id}>")
             else:
-                log_error(f"Invalid *reply message*: username `{username}` not found")
-                return False, f"{username} not found", None
+                log_error(f"Invalid *reply message*: username `{user_match}` not found")
+                return False, f"{user_match} not found", None
     return True, None, message
 
 async def add_excluded_team(app: AsyncApp, channel: Channel, team: str, user: User, thread_ts: str = None) -> None:
