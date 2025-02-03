@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, patch
-from bot import replace_ids, Channel, User, Usergroup, get_team_of, handle_command, clean_slack_text, send_message
+from bot import replace_ids, Channel, User, Usergroup, get_team_of, process_command, clean_slack_text, send_message
 from slack_sdk.errors import SlackApiError
 
 @pytest.mark.asyncio
@@ -121,162 +121,162 @@ async def test_get_team_of_no_mentions():
         mock_send_message.assert_called_once_with(app, channel, user, "Unknown user: `no mentions here`.", thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_set_wait_time():
+async def test_process_command_set_wait_time():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "set wait-time 10", "wait-time 10", "set wait_time 10", "set waittime 10", "waittime   \"10\"", "waittime   '10'" ]:
         with patch('bot.set_wait_time') as mock_set_wait_time:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_set_wait_time.assert_called_once_with(app, channel, 10, user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_set_wait_time.assert_called_once_with(app, channel, 10, user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_set_reply_message():
+async def test_process_command_set_reply_message():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "set message \"Hello, world!\"", "message  \"Hello, world!\"", "message  'Hello, world!'", "message  Hello, world!" ]:
         with patch('bot.set_reply_message') as mock_set_reply_message:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_set_reply_message.assert_called_once_with(app, channel, "Hello, world!", user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_set_reply_message.assert_called_once_with(app, channel, "Hello, world!", user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_enable_opsgenie():
+async def test_process_command_enable_opsgenie():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
     text = f"enable opsgenie"
 
     for text in [ "enable opsgenie", "enable  alerts", "enable alert" ]:
         with patch('bot.set_opsgenie') as mock_set_opsgenie:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_set_opsgenie.assert_called_once_with(app, channel, True, user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_set_opsgenie.assert_called_once_with(app, channel, True, user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_disable_opsgenie():
+async def test_process_command_disable_opsgenie():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "disable opsgenie", "disable alerts", "disable alert" ]:
         with patch('bot.set_opsgenie') as mock_set_opsgenie:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_set_opsgenie.assert_called_once_with(app, channel, False, user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_set_opsgenie.assert_called_once_with(app, channel, False, user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_list_teams():
+async def test_process_command_list_teams():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "list teams", "list  team", "teams", "team" ]:
         with patch('bot.list_teams') as mock_list_teams:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_list_teams.assert_called_once_with(app, channel, user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_list_teams.assert_called_once_with(app, channel, user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_get_team_of():
+async def test_process_command_get_team_of():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "team of @johndoe", "team @johndoe", "team   @johndoe", "team  of   @johndoe", "team  of   \"@johndoe\"", "team  of   '@johndoe'" ]:
         with patch('bot.get_team_of') as mock_get_team_of:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_get_team_of.assert_called_once_with(app, channel, "@johndoe", user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_get_team_of.assert_called_once_with(app, channel, "@johndoe", user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_add_excluded_team():
+async def test_process_command_add_excluded_team():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
     text = f"add excluded-team team1"
 
     for text in [ "add excluded-teams team1", "add exclude  team1", "add excluded   team1", "add excluded-team team1", "add exclude_team team1", "add exclude_team \"team1\"", "add exclude_team 'team1'" ]:
         with patch('bot.add_excluded_team') as mock_add_excluded_team:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_add_excluded_team.assert_called_once_with(app, channel, "team1", user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_add_excluded_team.assert_called_once_with(app, channel, "team1", user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_clear_excluded_team():
+async def test_process_command_clear_excluded_team():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "clear excluded-teams", "clear exclude", "clear excluded", "clear excluded-team", "clear exclude_team" ]:
         with patch('bot.clear_excluded_team') as mock_clear_excluded_team:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_clear_excluded_team.assert_called_once_with(app, channel, user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_clear_excluded_team.assert_called_once_with(app, channel, user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_add_included_team():
+async def test_process_command_add_included_team():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "add included-teams team1", "add include  team1", "add included   team1", "add included-team team1", "add include_team team1", "add include_team \"team1\"", "add include_team 'team1'" ]:
         with patch('bot.add_included_team') as mock_add_included_team:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_add_included_team.assert_called_once_with(app, channel, "team1", user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_add_included_team.assert_called_once_with(app, channel, "team1", user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_clear_included_team():
+async def test_process_command_clear_included_team():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "clear included-teams", "clear include", "clear included", "clear included-team", "clear include_team" ]:
         with patch('bot.clear_included_team') as mock_clear_included_team:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_clear_included_team.assert_called_once_with(app, channel, user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_clear_included_team.assert_called_once_with(app, channel, user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_show_config():
+async def test_process_command_show_config():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
     for text in [ "show config", "config", "show configuration", "configuration" ]:
         with patch('bot.show_config') as mock_show_config:
-            await handle_command(app, text, channel, user_id, thread_ts)
-            mock_show_config.assert_called_once_with(app, channel, user_id, thread_ts)
+            await process_command(app, text, channel, user, thread_ts)
+            mock_show_config.assert_called_once_with(app, channel, user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_help():
+async def test_process_command_help():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
     text = f"help"
 
     with patch('bot.send_help_message') as mock_send_help_message:
-        await handle_command(app, text, channel, user_id, thread_ts)
-        mock_send_help_message.assert_called_once_with(app, channel, user_id, thread_ts)
+        await process_command(app, text, channel, user, thread_ts)
+        mock_send_help_message.assert_called_once_with(app, channel, user, thread_ts)
 
 @pytest.mark.asyncio
-async def test_handle_command_unknown():
+async def test_process_command_unknown():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    user_id = "U12345"
+    user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
     text = f"unknown command"
 
     with patch('bot.send_message') as mock_send_message:
-        await handle_command(app, text, channel, user_id, thread_ts)
-        mock_send_message.assert_called_once_with(app, channel, user_id, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
+        await process_command(app, text, channel, user, thread_ts)
+        mock_send_message.assert_called_once_with(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
 
 @pytest.mark.asyncio
 async def test_clean_slack_text_unescape_formatting():
