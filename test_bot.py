@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, patch
-from bot import replace_ids, Channel, User, Usergroup, get_team_of, process_command, clean_slack_text, send_message
+from bot import replace_ids, Channel, User, Usergroup, get_team_of, process_command, clean_slack_text, send_message, route_message
 from slack_sdk.errors import SlackApiError
 
 @pytest.mark.asyncio
@@ -428,3 +428,92 @@ async def test_send_message_ephemeral_fail():
         mock_log_warning.assert_called()
         mock_log_error.assert_called()
         mock_log_debug.assert_called()
+
+@pytest.mark.asyncio
+async def test_route_message_ignore_subtype():
+    app = AsyncMock()
+    opsgenie_token = "dummy_token"
+    event = {
+        "channel": "C12345",
+        "user": "U67890",
+        "subtype": "channel_join",
+        "text": "Hello, world!",
+        "ts": "1234567890.123456"
+    }
+
+    with patch('bot.get_channel_name', return_value="general"), patch('bot.log') as mock_log:
+        await route_message(app, opsgenie_token, event)
+        mock_log.assert_called_with("Ignoring message with subtype 'channel_join' for channel #general.")
+
+@pytest.mark.asyncio
+async def test_route_message_deleted_message():
+    app = AsyncMock()
+    opsgenie_token = "dummy_token"
+    event = {
+        "channel": "C12345",
+        "user": "U67890",
+        "subtype": "message_deleted",
+        "previous_message": {
+            "user": "U12345",
+            "ts": "1234567890.123456"
+        }
+    }
+
+    with patch('bot.get_channel_by_id', return_value=Channel(id="C12345", name="general", config={})), \
+            patch('bot.get_user_by_id', side_effect=[User(id="U67890", name="test", real_name="Test User", team="Testers"), User(id="U12345", name="johndoe", real_name="John Doe", team="team1")]), \
+            patch('bot.handle_message_deletion') as mock_handle_message_deletion:
+        await route_message(app, opsgenie_token, event)
+        mock_handle_message_deletion.assert_called_once_with(app, Channel(id="C12345", name="general", config={}), User(id="U12345", name="johndoe", real_name="John Doe", team="team1"), "1234567890.123456")
+
+@pytest.mark.asyncio
+async def test_route_message_command():
+    app = AsyncMock()
+    opsgenie_token = "dummy_token"
+    event = {
+        "channel": "C12345",
+        "user": "U67890",
+        "text": "set wait-time 10",
+        "ts": "1234567890.123456"
+    }
+
+    with patch('bot.get_channel_by_id', return_value=Channel(id="C12345", name="general", config={})), \
+            patch('bot.get_user_by_id', return_value=User(id="U67890", name="test", real_name="Test User", team="Testers")), \
+            patch('bot.is_command', return_value=True), \
+            patch('bot.process_command') as mock_process_command:
+        await route_message(app, opsgenie_token, event)
+        mock_process_command.assert_called_once_with(app, "set wait-time 10", Channel(id="C12345", name="general", config={}), User(id="U67890", name="test", real_name="Test User", team="Testers"), "1234567890.123456")
+
+@pytest.mark.asyncio
+async def test_route_message_thread_response():
+    app = AsyncMock()
+    opsgenie_token = "dummy_token"
+    event = {
+        "channel": "C12345",
+        "user": "U67890",
+        "text": "Hello, world!",
+        "ts": "1234567890.123456",
+        "thread_ts": "1234567890.123456"
+    }
+
+    with patch('bot.get_channel_by_id', return_value=Channel(id="C12345", name="general", config={})), \
+            patch('bot.get_user_by_id', return_value=User(id="U67890", name="test", real_name="Test User", team="Testers")), \
+            patch('bot.handle_thread_response') as mock_handle_thread_response:
+        await route_message(app, opsgenie_token, event)
+        mock_handle_thread_response.assert_called_once_with(app, Channel(id="C12345", name="general", config={}), User(id="U67890", name="test", real_name="Test User", team="Testers"), "1234567890.123456")
+
+@pytest.mark.asyncio
+async def test_route_message_channel_message():
+    app = AsyncMock()
+    opsgenie_token = "dummy_token"
+    event = {
+        "channel": "C12345",
+        "user": "U67890",
+        "text": "Hello, world!",
+        "ts": "1234567890.123456"
+    }
+
+    with patch('bot.get_channel_by_id', return_value=Channel(id="C12345", name="general", config={})), \
+            patch('bot.get_user_by_id', return_value=User(id="U67890", name="test", real_name="Test User", team="Testers")), \
+            patch('bot.handle_channel_message') as mock_handle_channel_message:
+        await route_message(app, opsgenie_token, event)
+        mock_handle_channel_message.assert_called_once_with(app, opsgenie_token, Channel(id="C12345", name="general", config={}), User(id="U67890", name="test", real_name="Test User", team="Testers"), "Hello, world!", "1234567890.123456")
