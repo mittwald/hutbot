@@ -534,19 +534,24 @@ async def list_teams(app: AsyncApp, channel: Channel, user: User, thread_ts: str
     await send_message(app, channel, user, message, thread_ts)
 
 async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User, thread_ts: str = "") -> None:
-    matches = ID_PATTERN.findall(username)
     message = None
-    if matches:
-        for user_match in matches:
-            u = await get_user_by_id(app, user_match)
+    for match in ID_PATTERN.finditer(username):
+        full_match = match.group(0)
+        log_debug(channel, f"Found ID match: {full_match}...")
+        id = match.group(1)
+        if id and id[0] == '@':
+            user_id = id[1:]
+            log_debug(channel, f"Looking up user with ID {user_id}...")
+            u = await get_user_by_id(app, user_id)
             if u.id:
+                log_debug(channel, f"Found user {u}")
                 msg = f"*{u.real_name}* (<@{u.id}>): {u.team}"
                 if message is None:
                     message = msg
                 else:
                     message += f"\n{msg}"
             else:
-                log_error(f"Invalid request: username `{username}` not found")
+                log_error(f"Invalid request: username `{full_match}` not found")
     if message:
         await send_message(app, channel, user, message, thread_ts)
     else:
