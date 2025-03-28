@@ -534,11 +534,11 @@ async def list_teams(app: AsyncApp, channel: Channel, user: User, thread_ts: str
     await send_message(app, channel, user, message, thread_ts)
 
 async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User, thread_ts: str = "") -> None:
-    matches = MENTION_PATTERN.findall(username)
+    matches = ID_PATTERN.findall(username)
     message = None
     if matches:
         for user_match in matches:
-            u = await get_user_by_name(app, user_match)
+            u = await get_user_by_id(app, user_match)
             if u.id:
                 msg = f"*{u.real_name}* (<@{u.id}>): {u.team}"
                 if message is None:
