@@ -545,7 +545,7 @@ async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User
             u = await get_user_by_id(app, user_id)
             if u.id:
                 log_debug(channel, f"Found user {u}")
-                msg = f"*{u.real_name}* (<@{u.id}>): {u.team}"
+                msg = f"*{u.real_name}* (<@{u.id}>): `{u.team}`"
                 if message is None:
                     message = msg
                 else:
