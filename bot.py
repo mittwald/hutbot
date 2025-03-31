@@ -62,7 +62,7 @@ ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = re.compile(r'^(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)$', re.IGNORECASE)
-SET_REPLY_MESSAGE_PATTERN = re.compile(r'^(set\s+)?message\s+(?P<message>.+)$', re.IGNORECASE)
+SET_REPLY_MESSAGE_PATTERN = re.compile(r'^(set\s+)?(message|reply)\s+(?P<message>.+)$', re.IGNORECASE)
 ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'^(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)$', re.IGNORECASE)
 CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'^clear\s+excluded?([_ -]?teams?)?$', re.IGNORECASE)
 ADD_INCLUDED_TEAM_PATTERN = re.compile(r'^(add\s+)?included?([_ -]?teams?)?\s+(?P<team>.+)$', re.IGNORECASE)
