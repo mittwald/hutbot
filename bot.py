@@ -71,8 +71,8 @@ LIST_TEAMS_PATTERN = re.compile(r'^(list\s+)?teams?$', re.IGNORECASE)
 EMPLOYEE_TEAM_PATTERN = re.compile(r'^team(\s+of)?\s+(?P<user>.+)$', re.IGNORECASE)
 ENABLE_OPSGENIE_PATTERN = re.compile(r'^enable\s+(opsgenie|alerts?)$', re.IGNORECASE)
 DISABLE_OPSGENIE_PATTERN = re.compile(r'^disable\s+(opsgenie|alerts?)$', re.IGNORECASE)
-ENABLE_BOTS_PATTERN = re.compile(r'^enable\s+bots?$', re.IGNORECASE)
-DISABLE_BOTS_PATTERN = re.compile(r'^disable\s+bots?$', re.IGNORECASE)
+ENABLE_BOTS_PATTERN = re.compile(r'^(enable|include|set)?\s+bots?$', re.IGNORECASE)
+DISABLE_BOTS_PATTERN = re.compile(r'^(disable|exclude)\s+bots?$', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 
 def load_env_file() -> None:
