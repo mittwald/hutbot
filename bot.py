@@ -800,6 +800,7 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
     previous_message = event.get('previous_message', {})
     channel_id = event.get('channel', '')
     user_id = event.get('user', '')
+    bot_id = event.get('bot_id', '')
     ts = event.get('ts', '')
     thread_ts = event.get('thread_ts', '')
     text = event.get('text', '')
@@ -808,7 +809,7 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
     log_debug(channel, f"Received message event from #{channel.name}: {json.dumps(event)}")
 
     # Ignore messages from the bot itself
-    if user_id == bot_user_id:
+    if user_id == bot_user_id or bot_id == bot_user_id:
         log(f"Ignoring message from the bot from channel #{channel.name}.")
         return
 
@@ -816,19 +817,23 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
         log(f"Ignoring message with subtype '{subtype}' for channel #{channel.name}.")
         return
 
-    user = await get_user_by_id(app, user_id)
+    user = None
+    if user_id:
+        user = await get_user_by_id(app, user_id)
+    elif bot_id and channel.config.get('include_bots', False):
+        user = await get_user_by_id(app, bot_id)
 
     if subtype == 'message_deleted' and previous_message:
         # deleted message
         previous_user = await get_user_by_id(app, previous_message.get('user'))
         await handle_message_deletion(app, channel, previous_user, previous_message.get('ts'))
-    elif user_id and is_command(text):
+    elif user and is_command(text):
         # command
         await process_command(app, text, channel, user, ts)
-    elif user_id and thread_ts:
+    elif user and thread_ts:
         # thread
         await handle_thread_response(app, channel, user, thread_ts)
-    elif user_id and ts:
+    elif user and ts:
         # channel message
         await handle_channel_message(app, opsgenie_token, channel, user, text, ts)
 
