@@ -452,12 +452,12 @@ async def process_command(app: AsyncApp, text: str, channel: Channel, user: User
 async def set_bots(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
     channel.config['include_bots'] = enabled
     await save_configuration()
-    await send_message(app, channel, user, f"Include bots {'enabled' if enabled else 'disabled'}.", thread_ts)
+    await send_message(app, channel, user, f"*Bot messages* will {'also be *handled*' if enabled else 'be *ignored*'}.", thread_ts)
 
 async def set_opsgenie(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
     channel.config['opsgenie'] = enabled
     await save_configuration()
-    await send_message(app, channel, user, f"OpsGenie integration {'enabled' if enabled else 'disabled'}{', but not configured' if enabled and not opsgenie_configured else ''}.", thread_ts)
+    await send_message(app, channel, user, f"*OpsGenie integration* {'*enabled*' if enabled else '*disabled*'}{', but not configured' if enabled and not opsgenie_configured else ''}.", thread_ts)
 
 async def set_wait_time(app: AsyncApp, channel: Channel, wait_time_minutes: int, user: User, thread_ts: str = "") -> None:
     # check if number and in range 0-1440
