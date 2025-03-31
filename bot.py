@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     "reply_message": "Anybody?",
     "opsgenie": False,
     "debug": False,
+    "include_bots": False,
     "excluded_teams": [],
     "included_teams": [],
 }
@@ -70,6 +71,8 @@ LIST_TEAMS_PATTERN = re.compile(r'^(list\s+)?teams?$', re.IGNORECASE)
 EMPLOYEE_TEAM_PATTERN = re.compile(r'^team(\s+of)?\s+(?P<user>.+)$', re.IGNORECASE)
 ENABLE_OPSGENIE_PATTERN = re.compile(r'^enable\s+(opsgenie|alerts?)$', re.IGNORECASE)
 DISABLE_OPSGENIE_PATTERN = re.compile(r'^disable\s+(opsgenie|alerts?)$', re.IGNORECASE)
+ENABLE_BOTS_PATTERN = re.compile(r'^enable\s+bots?$', re.IGNORECASE)
+DISABLE_BOTS_PATTERN = re.compile(r'^disable\s+bots?$', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 
 def load_env_file() -> None:
@@ -419,6 +422,10 @@ async def process_command(app: AsyncApp, text: str, channel: Channel, user: User
         await set_opsgenie(app, channel, True, user, thread_ts)
     elif DISABLE_OPSGENIE_PATTERN.match(text):
         await set_opsgenie(app, channel, False, user, thread_ts)
+    elif ENABLE_BOTS_PATTERN.match(text):
+        await set_bots(app, channel, True, user, thread_ts)
+    elif DISABLE_BOTS_PATTERN.match(text):
+        await set_bots(app, channel, False, user, thread_ts)
     elif LIST_TEAMS_PATTERN.match(text):
         await list_teams(app, channel, user, thread_ts)
     elif (match := EMPLOYEE_TEAM_PATTERN.match(text)):
@@ -440,6 +447,11 @@ async def process_command(app: AsyncApp, text: str, channel: Channel, user: User
         await send_help_message(app, channel, user, thread_ts)
     else:
         await send_message(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
+
+async def set_bots(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
+    channel.config['include_bots'] = enabled
+    await save_configuration()
+    await send_message(app, channel, user, f"Include bots {'enabled' if enabled else 'disabled'}.", thread_ts)
 
 async def set_opsgenie(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
     channel.config['opsgenie'] = enabled
@@ -562,6 +574,7 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
     wait_time_minutes = channel.config.get('wait_time') // 60
     included_teams = channel.config.get('included_teams')
     excluded_teams = channel.config.get('excluded_teams')
+    include_bots = channel.config.get('include_bots')
     reply_message = channel.config.get('reply_message')
     message = (
         f"This is the configuration for #{channel.name}:\n\n"
@@ -570,6 +583,7 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
         f"*Included teams*: {' '.join(f'`{team}`' for team in included_teams) if included_teams else '<None>'}\n\n"
         f"*Excluded teams*: {' '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
+        f"*Include bots*: {'enabled' if include_bots else 'disabled'}\n\n"
         f"*Reply message*:\n{reply_message}"
     )
     await send_message(app, channel, user, message, thread_ts)
@@ -643,6 +657,14 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "```/hutbot clear included-teams\n"
         "@Hutbot clear included-teams```\n"
         "Clears the list of included teams.\n\n"
+        "*Include Bot Messages:*\n"
+        "```/hutbot enable bots\n"
+        "@Hutbot enable bots```\n"
+        "Also responds to messages from bots.\n\n"
+        "*Exclude Bot Messages:*\n"
+        "```/hutbot disable bots\n"
+        "@Hutbot disable bots```\n"
+        "Don't respond to messages from bots.\n\n"
         "*Set Reply Message:*\n"
         "```/hutbot set message \"Your reminder message\"\n"
         "@Hutbot set message \"Your reminder message\"```\n"
