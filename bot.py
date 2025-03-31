@@ -142,19 +142,20 @@ def normalize_real_name_with_diagraphs(real_name: str) -> str:
     # don't ask, you wouldn't be able to grasp the extend...
     return normalize_real_name(real_name.lower().replace('ae', 'ä').replace('oe', 'ö').replace('ue', 'ü'))
 
-def apply_defaults(config: dict) -> dict:
-    for _, channel_config in config.items():
+async def apply_defaults(app: AsyncApp, config: dict) -> dict:
+    for channel_id, channel_config in config.items():
+        channel_config['name'] = await get_channel_name(app, channel_id)
         for key, value in DEFAULT_CONFIG.items():
             if key not in channel_config:
                 channel_config[key] = value
     return config
 
-async def load_configuration() -> None:
+async def load_configuration(app: AsyncApp) -> None:
     global channel_config
     try:
         async with aiofiles.open(CONFIG_FILE_NAME, 'r') as f:
             content = await f.read()
-            channel_config = apply_defaults(json.loads(content))
+            channel_config = await apply_defaults(app, json.loads(content))
             log("Configuration loaded from disk.")
     except FileNotFoundError:
         log_warning("No configuration file found. Using default settings.")
@@ -166,7 +167,7 @@ async def load_configuration() -> None:
 async def save_configuration() -> None:
     try:
         async with aiofiles.open(CONFIG_FILE_NAME, 'w') as f:
-            content = json.dumps(channel_config)
+            content = json.dumps(channel_config, indent=2)
             await f.write(content)
     except Exception as e:
         log_error("Failed to save configuration:", e)
@@ -935,8 +936,8 @@ async def main() -> None:
     handler = None
     heartbeat_task = None
     try:
-        await load_configuration()
         app = AsyncApp(token=slack_bot_token)
+        await load_configuration(app)
         global bot_user_id
         bot_user_id = (await app.client.auth_test())["user_id"]
         await update_user_cache(app)
