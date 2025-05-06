@@ -17,7 +17,6 @@ User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
 Usergroup = collections.namedtuple('Usergroup', ['id', 'handle', 'name'])
 Channel = collections.namedtuple('Channel', ['id', 'name', 'config'])
 
-
 DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
@@ -26,6 +25,8 @@ DEFAULT_CONFIG = {
     "include_bots": False,
     "excluded_teams": [],
     "included_teams": [],
+    "only_work_days": False,
+    "hours": []
 }
 
 EMPLOYEE_CACHE_FILE_NAME = 'employees.json'
@@ -58,6 +59,7 @@ opsgenie_configured = False
 
 MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
 ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
+TIME_HOUR_PATTERN = re.compile(r"^[0-9]{1,2}$")
 
 # Regex patterns for command parsing
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
@@ -73,6 +75,9 @@ ENABLE_OPSGENIE_PATTERN = re.compile(r'^enable\s+(opsgenie|alerts?)$', re.IGNORE
 DISABLE_OPSGENIE_PATTERN = re.compile(r'^disable\s+(opsgenie|alerts?)$', re.IGNORECASE)
 ENABLE_BOTS_PATTERN = re.compile(r'^(enable|include|set)?\s+bots?$', re.IGNORECASE)
 DISABLE_BOTS_PATTERN = re.compile(r'^(disable|exclude)\s+bots?$', re.IGNORECASE)
+SET_WORK_HOURS_PATTERN = re.compile(r'^(set\s+)?(work[_ -]?)?hours\s+(?P<start>.+)\s+(?P<end>.+)$', re.IGNORECASE)
+ENABLE_ONLY_WORK_DAYS_PATTERN = re.compile(r'^enable\s+(only[_ -]?)?work[_ -]?days$', re.IGNORECASE)
+DISABLE_ONLY_WORK_DAYS_PATTERN = re.compile(r'^disable\s+(only[_ -]?)?work[_ -]?days$', re.IGNORECASE)
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 
 def load_env_file() -> None:
@@ -404,6 +409,22 @@ async def get_usergroup_by_handle(app: AsyncApp, handle: str) -> Usergroup:
         usergroup = Usergroup(id=None, handle=handle, name=handle)
     return usergroup
 
+def is_work_day() -> bool:
+    today = datetime.date.today()
+    # TODO: add holidays
+    return today.weekday() < 5
+
+def is_work_time(start_time_str: str, end_time_str: str) -> bool:
+    now = datetime.datetime.now()
+    start = parse_time(start_time_str)
+    end = parse_time(end_time_str)
+    if not start or not end:
+        log_error(f"Invalid time format {start_time_str} - {end_time_str}")
+        return True
+    start_today = datetime.datetime.combine(now.date(), start)
+    end_today = datetime.datetime.combine(now.date(), end)
+    return start_today < now < end_today
+
 def is_command(text: str) -> bool:
     return f"<@{bot_user_id}>" in text
 
@@ -427,6 +448,14 @@ async def process_command(app: AsyncApp, text: str, channel: Channel, user: User
         await set_bots(app, channel, True, user, thread_ts)
     elif DISABLE_BOTS_PATTERN.match(text):
         await set_bots(app, channel, False, user, thread_ts)
+    elif ENABLE_ONLY_WORK_DAYS_PATTERN.match(text):
+        await set_only_work_days(app, channel, True, user, thread_ts)
+    elif DISABLE_ONLY_WORK_DAYS_PATTERN.match(text):
+        await set_only_work_days(app, channel, False, user, thread_ts)
+    elif (match := SET_WORK_HOURS_PATTERN.match(text)):
+        start = match.group("start").strip('"').strip("'")
+        end = match.group("end").strip('"').strip("'")
+        await set_work_hours(app, channel, start, end, user, thread_ts)
     elif LIST_TEAMS_PATTERN.match(text):
         await list_teams(app, channel, user, thread_ts)
     elif (match := EMPLOYEE_TEAM_PATTERN.match(text)):
@@ -453,6 +482,39 @@ async def set_bots(app: AsyncApp, channel: Channel, enabled: bool, user: User, t
     channel.config['include_bots'] = enabled
     await save_configuration()
     await send_message(app, channel, user, f"*Bot messages* will {'also be *handled*' if enabled else 'be *ignored*'}.", thread_ts)
+
+async def set_only_work_days(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
+    channel.config['only_work_days'] = enabled
+    await save_configuration()
+    await send_message(app, channel, user, f"Messages will be handled {'*only on work days*' if enabled else '*on all days*'}.", thread_ts)
+
+def parse_time(time_str) -> datetime.time | None:
+    if TIME_HOUR_PATTERN.match(time_str):
+        time_str = f"{time_str}:00"
+
+    time = None
+    try:
+        time = datetime.datetime.strptime(time_str, "%H:%M").time()
+    except ValueError:
+        pass
+
+    return time
+
+async def set_work_hours(app: AsyncApp, channel: Channel, start: str, end: str, user: User, thread_ts: str = "") -> None:
+    start_time = parse_time(start)
+    end_time = parse_time(end)
+    if not start_time:
+        await send_message(app, channel, user, f"Invalid time format `{start}`.", thread_ts)
+        return
+    if not end_time:
+        await send_message(app, channel, user, f"Invalid time format `{end}`.", thread_ts)
+        return
+    hours = [start_time.strftime("%H:%M"), end_time.strftime("%H:%M")]
+    if hours[0] == "00:00" and hours[1] == "00:00":
+        hours = []
+    channel.config['hours'] = hours
+    await save_configuration()
+    await send_message(app, channel, user, f"*Work hours* set to {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'}", thread_ts)
 
 async def set_opsgenie(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
     channel.config['opsgenie'] = enabled
@@ -576,6 +638,8 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
     included_teams = channel.config.get('included_teams')
     excluded_teams = channel.config.get('excluded_teams')
     include_bots = channel.config.get('include_bots')
+    only_work_days = channel.config.get('only_work_days')
+    hours = channel.config.get('hours')
     reply_message = channel.config.get('reply_message')
     message = (
         f"This is the configuration for #{channel.name}:\n\n"
@@ -585,6 +649,8 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         f"*Included teams*: {' '.join(f'`{team}`' for team in included_teams) if included_teams else '<None>'}\n\n"
         f"*Excluded teams*: {' '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
         f"*Include bots*: {'enabled' if include_bots else 'disabled'}\n\n"
+        f"*Only work days*: {'enabled' if only_work_days else 'disabled'}\n\n"
+        f"*Work hours*: {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'}\n\n"
         f"*Reply message*:\n{reply_message}"
     )
     await send_message(app, channel, user, message, thread_ts)
@@ -666,6 +732,18 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "```/hutbot disable bots\n"
         "@Hutbot disable bots```\n"
         "Don't respond to messages from bots.\n\n"
+        "*Only Work Days:*\n"
+        "```/hutbot enable only-work-days\n"
+        "@Hutbot enable only-work-days```\n"
+        "Only respond to messages on work days.\n\n"
+        "*All Days:*\n"
+        "```/hutbot disable only-work-days\n"
+        "@Hutbot disable only-work-days```\n"
+        "Respond to messages on all days.\n\n"
+        "*Set Work Hours:*\n"
+        "```/hutbot set work-hours [start-time] [end-time]\n"
+        "@Hutbot set work-hours [start-time] [end-time]```\n"
+        "Respond to messages during these hours. Set `0:00` `0:00` for all day.\n\n"
         "*Set Reply Message:*\n"
         "```/hutbot set message \"Your reminder message\"\n"
         "@Hutbot set message \"Your reminder message\"```\n"
@@ -757,7 +835,7 @@ async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
     # remove all remaining formatting characters and new lines
     text = re.sub(r'[*_~`]', '', text).replace('\n', ' ')
 
-    # reduce duplicate spaces ands trim
+    # reduce duplicate spaces and trim
     text = re.sub(r'\s{2,}', ' ', text).strip()
 
     return text
@@ -847,8 +925,16 @@ async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: Us
         del scheduled_messages[key]
 
 async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str):
+    only_work_days = channel.config.get('only_work_days')
+    hours = channel.config.get('hours')
     included_teams = channel.config.get('included_teams')
     excluded_teams = channel.config.get('excluded_teams')
+    if only_work_days and not is_work_day():
+        log(f"Message from user @{user.name} in #{channel.name} will be ignored because of a non work day.")
+        return
+    if len(hours) == 2 and not is_work_time(hours[0], hours[1]):
+        log(f"Message from user @{user.name} in #{channel.name} will be ignored because it was sent outside work time.")
+        return
     if len(included_teams) > 0 and user.team not in included_teams:
         log(f"Message from user @{user.name} in #{channel.name} will be ignored because team '{user.team}' is not included.")
         return

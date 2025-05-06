@@ -1,6 +1,7 @@
 import pytest
+import datetime
 from unittest.mock import AsyncMock, patch
-from bot import replace_ids, Channel, User, Usergroup, get_team_of, process_command, clean_slack_text, send_message, route_message
+from bot import replace_ids, Channel, User, Usergroup, get_team_of, process_command, clean_slack_text, send_message, route_message, handle_channel_message, scheduled_messages, set_work_hours, parse_time, is_work_day, is_work_time
 from slack_sdk.errors import SlackApiError
 
 @pytest.mark.asyncio
@@ -70,43 +71,43 @@ async def test_replace_ids_no_match():
 async def test_get_team_of_single_user():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    username = "@johndoe"
+    username = "<@U12345>"
     user = User(id="U12345", name="test", real_name="Test User", team="Testers")
     thread_ts = "1234567890.123456"
 
-    with patch('bot.get_user_by_name', return_value=User(id="U12345", name="johndoe", real_name="John Doe", team="team1")):
+    with patch('bot.get_user_by_id', return_value=User(id="U12345", name="johndoe", real_name="John Doe", team="team1")):
         with patch('bot.send_message') as mock_send_message:
             await get_team_of(app, channel, username, user, thread_ts)
-            mock_send_message.assert_called_once_with(app, channel, user, "*John Doe* (<@U12345>): team1", thread_ts)
+            mock_send_message.assert_called_once_with(app, channel, user, "*John Doe* (<@U12345>): `team1`", thread_ts)
 
 @pytest.mark.asyncio
 async def test_get_team_of_multiple_users():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    username = "@johndoe @janedoe"
+    username = "<@U12345> <@U67890>"
     user = User(id="U12345", name="test", real_name="Test User", team="Testers")
     thread_ts = "1234567890.123456"
 
-    with patch('bot.get_user_by_name', side_effect=[
+    with patch('bot.get_user_by_id', side_effect=[
         User(id="U12345", name="johndoe", real_name="John Doe", team="team1"),
         User(id="U67890", name="janedoe", real_name="Jane Doe", team="team2")
     ]):
         with patch('bot.send_message') as mock_send_message:
             await get_team_of(app, channel, username, user, thread_ts)
-            mock_send_message.assert_called_once_with(app, channel, user, "*John Doe* (<@U12345>): team1\n*Jane Doe* (<@U67890>): team2", thread_ts)
+            mock_send_message.assert_called_once_with(app, channel, user, "*John Doe* (<@U12345>): `team1`\n*Jane Doe* (<@U67890>): `team2`", thread_ts)
 
 @pytest.mark.asyncio
 async def test_get_team_of_unknown_user():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", config={})
-    username = "@unknownuser"
+    username = "<@U12345>"
     user = User(id="U12345", name="test", real_name="Test User", team="Testers")
     thread_ts = "1234567890.123456"
 
-    with patch('bot.get_user_by_name', return_value=User(id=None, name="unknownuser", real_name="", team="")):
+    with patch('bot.get_user_by_id', return_value=User(id=None, name="unknownuser", real_name="", team="")):
         with patch('bot.send_message') as mock_send_message:
             await get_team_of(app, channel, username, user, thread_ts)
-            mock_send_message.assert_called_once_with(app, channel, user, "Unknown user: `@unknownuser`.", thread_ts)
+            mock_send_message.assert_called_once_with(app, channel, user, "Unknown user: `<@U12345>`.", thread_ts)
 
 @pytest.mark.asyncio
 async def test_get_team_of_no_mentions():
@@ -517,3 +518,285 @@ async def test_route_message_channel_message():
             patch('bot.handle_channel_message') as mock_handle_channel_message:
         await route_message(app, opsgenie_token, event)
         mock_handle_channel_message.assert_called_once_with(app, opsgenie_token, Channel(id="C12345", name="general", config={}), User(id="U67890", name="test", real_name="Test User", team="Testers"), "Hello, world!", "1234567890.123456")
+
+@pytest.mark.asyncio
+async def test_process_command_set_work_hours():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    for test in [ [ "set work-hours 9:00 17:00", "9:00", "17:00" ], [ "work-hours 9 17", "9", "17" ], [ "set work_hours 9:00 17:00", "9:00", "17:00" ], [ "set workhours 9:00 17:00", "9:00", "17:00" ], [ "workhours   \"9:00\" \"17:00\"", "9:00", "17:00" ], [ "workhours   '9:00' '17:00'", "9:00", "17:00" ] ]:
+        with patch('bot.set_work_hours') as mock_set_work_hours:
+            await process_command(app, test[0], channel, user, thread_ts)
+            mock_set_work_hours.assert_called_once_with(app, channel, test[1], test[2], user, thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_enable_only_work_days():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    for text in [ "enable only-work-days", "enable only_work_days", "enable work-days", "enable work_days" ]:
+        with patch('bot.set_only_work_days') as mock_set_only_work_days:
+            await process_command(app, text, channel, user, thread_ts)
+            mock_set_only_work_days.assert_called_once_with(app, channel, True, user, thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_disable_only_work_days():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    for text in [ "disable only-work-days", "disable only_work_days", "disable work-days", "disable work_days" ]:
+        with patch('bot.set_only_work_days') as mock_set_only_work_days:
+            await process_command(app, text, channel, user, thread_ts)
+            mock_set_only_work_days.assert_called_once_with(app, channel, False, user, thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_enable_bots():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    for text in [ "enable bots", "include bots", "set bots" ]:
+        with patch('bot.set_bots') as mock_set_bots:
+            await process_command(app, text, channel, user, thread_ts)
+            mock_set_bots.assert_called_once_with(app, channel, True, user, thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_disable_bots():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    for text in [ "disable bots", "exclude bots" ]:
+        with patch('bot.set_bots') as mock_set_bots:
+            await process_command(app, text, channel, user, thread_ts)
+            mock_set_bots.assert_called_once_with(app, channel, False, user, thread_ts)
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_on_non_work_day():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={'only_work_days': True})
+    user = User(id="U12345", name="test", real_name="Test User", team="team1")
+
+    with patch('bot.is_work_day', return_value=False), \
+            patch('bot.log') as mock_log:
+        await handle_channel_message(app, "token", channel, user, "test", "1234.5678")
+        mock_log.assert_called_once_with("Message from user @test in #general will be ignored because of a non work day.")
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_outside_work_hours():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={'hours': ['9:00', '17:00']})
+    user = User(id="U12345", name="test", real_name="Test User", team="team1")
+
+    with patch('bot.is_work_day', return_value=True), \
+            patch('bot.is_work_time', return_value=False), \
+            patch('bot.log') as mock_log:
+        await handle_channel_message(app, "token", channel, user, "test", "1234.5678")
+        mock_log.assert_called_once_with("Message from user @test in #general will be ignored because it was sent outside work time.")
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_team_not_included():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={'included_teams': ['team2'], 'excluded_teams': [], 'hours': []})
+    user = User(id="U12345", name="test", real_name="Test User", team="team1")
+
+    with patch('bot.is_work_day', return_value=True), \
+            patch('bot.log') as mock_log:
+        await handle_channel_message(app, "token", channel, user, "test", "1234.5678")
+        mock_log.assert_called_once_with("Message from user @test in #general will be ignored because team 'team1' is not included.")
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_team_excluded():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={'included_teams': [], 'excluded_teams': ['team1'], 'hours': []})
+    user = User(id="U12345", name="test", real_name="Test User", team="team1")
+
+    with patch('bot.is_work_day', return_value=True), \
+            patch('bot.log') as mock_log:
+        await handle_channel_message(app, "token", channel, user, "test", "1234.5678")
+        mock_log.assert_called_once_with("Message from user @test in #general will be ignored because team 'team1' is excluded.")
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_schedule_reply():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={'included_teams': [], 'excluded_teams': [], 'hours': []})
+    user = User(id="U12345", name="test", real_name="Test User", team="team1")
+    text = "test message"
+    ts = "1234.5678"
+
+    with patch('bot.is_work_day', return_value=True), \
+            patch('asyncio.create_task') as mock_create_task:
+        await handle_channel_message(app, "token", channel, user, text, ts)
+
+        mock_create_task.assert_called_once()
+        assert (channel.id, ts) in scheduled_messages
+        assert scheduled_messages[(channel.id, ts)].user_id == user.id
+
+@pytest.mark.asyncio
+async def test_set_work_hours_valid():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    test_cases = [
+        ("9:00", "17:00"),
+        ("9", "17"),
+        ("09:00", "17:00")
+    ]
+
+    for start, end in test_cases:
+        with patch('bot.save_configuration') as mock_save_config, \
+                patch('bot.send_message') as mock_send_message:
+            await set_work_hours(app, channel, start, end, user, thread_ts)
+
+            expected_hours = [parse_time(start).strftime("%H:%M"),
+                            parse_time(end).strftime("%H:%M")]
+            assert channel.config['hours'] == expected_hours
+
+            mock_save_config.assert_called_once()
+            mock_send_message.assert_called_once_with(
+                app, channel, user,
+                f"*Work hours* set to `{expected_hours[0]}` - `{expected_hours[1]}`",
+                thread_ts
+            )
+
+@pytest.mark.asyncio
+async def test_set_work_hours_invalid_start():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_work_hours(app, channel, "invalid", "17:00", user, thread_ts)
+        mock_send_message.assert_called_once_with(
+            app, channel, user,
+            "Invalid time format `invalid`.",
+            thread_ts
+        )
+        assert 'hours' not in channel.config
+
+@pytest.mark.asyncio
+async def test_set_work_hours_invalid_end():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_work_hours(app, channel, "9:00", "invalid", user, thread_ts)
+        mock_send_message.assert_called_once_with(
+            app, channel, user,
+            "Invalid time format `invalid`.",
+            thread_ts
+        )
+        assert 'hours' not in channel.config
+
+@pytest.mark.asyncio
+async def test_set_work_hours_midnight():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", config={})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration') as mock_save_config, \
+            patch('bot.send_message') as mock_send_message:
+        await set_work_hours(app, channel, "00:00", "00:00", user, thread_ts)
+
+        assert channel.config['hours'] == []
+        mock_save_config.assert_called_once()
+        mock_send_message.assert_called_once_with(
+            app, channel, user,
+            "*Work hours* set to all day",
+            thread_ts
+        )
+
+def test_parse_time_valid_formats():
+    # Test valid time formats
+    test_cases = [
+        ("9:00", datetime.time(9, 0)),
+        ("09:00", datetime.time(9, 0)),
+        ("9", datetime.time(9, 0)),
+        ("09", datetime.time(9, 0)),
+        ("23:59", datetime.time(23, 59)),
+        ("0:00", datetime.time(0, 0))
+    ]
+
+    for time_str, expected in test_cases:
+        assert parse_time(time_str) == expected
+
+def test_parse_time_invalid_formats():
+    # Test invalid time formats
+    test_cases = [
+        "invalid",
+        "25:00",
+        "9:60",
+        "-1:00",
+        "9:00am",
+        "abc",
+        "",
+        ":::",
+        "999"
+    ]
+
+    for time_str in test_cases:
+        assert parse_time(time_str) is None
+
+@pytest.mark.parametrize("day,expected", [
+    (datetime.date(2023, 12, 18), True),  # Monday
+    (datetime.date(2023, 12, 19), True),  # Tuesday
+    (datetime.date(2023, 12, 20), True),  # Wednesday
+    (datetime.date(2023, 12, 21), True),  # Thursday
+    (datetime.date(2023, 12, 22), True),  # Friday
+    (datetime.date(2023, 12, 23), False), # Saturday
+    (datetime.date(2023, 12, 24), False), # Sunday
+])
+def test_is_work_day(monkeypatch, day, expected):
+    class MockDate:
+        @classmethod
+        def today(cls):
+            return day
+    monkeypatch.setattr(datetime, 'date', MockDate)
+    assert is_work_day() == expected
+
+@pytest.mark.parametrize("now,start,end,expected", [
+    # During work hours
+    (datetime.datetime(2023, 12, 18, 10, 0), "9:00", "17:00", True),
+    (datetime.datetime(2023, 12, 18, 16, 59), "9:00", "17:00", True),
+
+    # Outside work hours - too early
+    (datetime.datetime(2023, 12, 18, 8, 59), "9:00", "17:00", False),
+
+    # Outside work hours - too late
+    (datetime.datetime(2023, 12, 18, 17, 0), "9:00", "17:00", False),
+
+    # Edge cases
+    (datetime.datetime(2023, 12, 18, 9, 0), "9:00", "17:00", False),  # At start time
+    (datetime.datetime(2023, 12, 18, 0, 0), "0:00", "24:00", True),   # Midnight
+
+    # Using hour-only format
+    (datetime.datetime(2023, 12, 18, 10, 0), "9", "17", True),
+
+    # Invalid time formats should return True
+    (datetime.datetime(2023, 12, 18, 10, 0), "invalid", "17:00", True),
+    (datetime.datetime(2023, 12, 18, 10, 0), "9:00", "invalid", True),
+])
+def test_is_work_time(monkeypatch, now, start, end, expected):
+    class MockDate:
+        strptime = datetime.datetime.strptime
+        combine = datetime.datetime.combine
+
+        @classmethod
+        def now(cls):
+            return now
+    monkeypatch.setattr(datetime, 'datetime', MockDate)
+    assert is_work_time(start, end) == expected
