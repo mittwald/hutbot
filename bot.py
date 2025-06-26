@@ -1033,9 +1033,9 @@ async def send_heartbeat(opsgenie_token: str, opsgenie_heartbeat_name: str) -> N
 
 async def main() -> None:
     load_env_file()
-    slack_app_token = get_env_var("SLACK_APP_TOKEN", "")
-    slack_bot_token = get_env_var("SLACK_BOT_TOKEN", "")
-    opsgenie_token = get_env_var("OPSGENIE_TOKEN", "")
+    slack_app_token = get_env_var("SLACK_APP_TOKEN")
+    slack_bot_token = get_env_var("SLACK_BOT_TOKEN")
+    opsgenie_token = get_env_var("OPSGENIE_TOKEN")
     opsgenie_heartbeat_name = get_env_var("OPSGENIE_HEARTBEAT_NAME")
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
