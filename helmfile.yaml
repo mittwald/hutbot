@@ -2,7 +2,7 @@ repositories: []
 
 releases:
   - name: hutbot
-    namespace: default
+    namespace: mw-internal
     chart: ./charts/hutbot
     values:
       - image:
