@@ -78,3 +78,22 @@ python bot.py
 ```
 /invite @Hutbot
 ```
+
+## Docker and Kubernetes Deployment
+
+Build and push the Docker image:
+
+```bash
+docker build -t <your-docker-repo>/hutbot:latest .
+docker push <your-docker-repo>/hutbot:latest
+```
+
+This repository includes a Helm chart under `charts/hutbot` and a Helmfile configuration at `helmfile.yaml`.
+
+Deploy the bot to your Kubernetes cluster using Helmfile:
+
+```bash
+helmfile sync
+```
+
+Before running, update `helmfile.yaml` with your Docker image repository, Slack tokens, and other configuration values.

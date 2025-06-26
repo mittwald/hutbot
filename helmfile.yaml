@@ -1,0 +1,17 @@
+repositories: []
+
+releases:
+  - name: hutbot
+    namespace: default
+    chart: ./charts/hutbot
+    values:
+      - image:
+          repository: your-docker-repo/hutbot
+          tag: "latest"
+        replicaCount: 1
+      - slack:
+          appToken: "<SLACK_APP_TOKEN>"
+          botToken: "<SLACK_BOT_TOKEN>"
+      - opsgenie:
+          token: "<OPSGENIE_TOKEN>"
+          heartbeatName: "<OPSGENIE_HEARTBEAT_NAME>"
