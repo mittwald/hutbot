@@ -25,6 +25,8 @@ spec:
           env:
             - name: HUTBOT_CONFIG_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "bot.json" }}
+            - name: HUTBOT_EMPLOYEE_CACHE_FILE
+              value: {{ printf "%s/%s" .Values.persistence.mountPath "employees.json" }}
           volumeMounts:
             - name: config
               mountPath: {{ .Values.persistence.mountPath }}

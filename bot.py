@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     "hours": []
 }
 
-EMPLOYEE_CACHE_FILE_NAME = 'employees.json'
+EMPLOYEE_CACHE_FILE_NAME = os.environ.get('HUTBOT_EMPLOYEE_CACHE_FILE', 'employees.json')
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')
 TEAM_UNKNOWN = '<unknown>'
 
@@ -239,6 +239,13 @@ async def load_employees_from_disk() -> dict:
         log_error(f"Failed to decode employee JSON:", e, "Will not be able to do team mapping.")
     return {}
 
+async def save_employees_to_disk(users: list) -> None:
+    try:
+        async with aiofiles.open(EMPLOYEE_CACHE_FILE_NAME, 'w') as f:
+            await f.write(json.dumps(users, indent=2))
+    except Exception as e:
+        log_error("Failed to save employees to disk:", e)
+
 async def load_employees() -> dict:
     username = get_env_var("EMPLOYEE_LIST_USERNAME")
     password = get_env_var("EMPLOYEE_LIST_PASSWORD")
@@ -275,6 +282,7 @@ async def load_employees() -> dict:
                 users = await users_response.json()
                 employees = generate_employee_list(users)
                 log(f"{len(employees)} employees retrieved from {employee_url}.")
+                await save_employees_to_disk(users)
                 return employees
     except Exception as e:
         log_error(f"Failed to retrieve employees from {employee_url}:", e)

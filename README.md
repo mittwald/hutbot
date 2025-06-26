@@ -133,7 +133,9 @@ persistence:
   mountPath: "/data"
 ```
 
-When persistence is enabled (default: `true`), the chart will automatically set the `HUTBOT_CONFIG_FILE` environment variable so Hutbot reads and writes its config from the mounted volume (at `<mountPath>/bot.json`). If you override values via environment variables in Helmfile, you can configure persistence like this:
+When persistence is enabled (default: `true`), the chart will automatically set the `HUTBOT_CONFIG_FILE` environment variable so Hutbot reads and writes its config from the mounted volume (at `<mountPath>/bot.json`).
+Additionally, Hutbot stores its employee list cache in a JSON file (`employees.json`) on the same mounted volume. The chart will set the `HUTBOT_EMPLOYEE_CACHE_FILE` environment variable so Hutbot reads and writes its employee cache from the mounted volume (at `<mountPath>/employees.json`).
+If you override values via environment variables in Helmfile, you can configure persistence like this:
 
 ```bash
 export PERSISTENCE_ENABLED=true
