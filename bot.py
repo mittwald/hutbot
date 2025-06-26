@@ -261,11 +261,9 @@ async def load_employees() -> dict:
                     log_error(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
                     return await load_employees_from_disk()
 
-                auth_data = await auth_response.json()
-                token = auth_data.get("token")
-
+                token = (await auth_response.text()).strip()
                 if not token:
-                    log_error(f"Failed to authenticate to retrieve employees, no token received: {json.dumps(auth_data)}")
+                    log_error(f"Failed to authenticate to retrieve employees, no token received: {token!r}")
                     return await load_employees_from_disk()
 
             headers = {"jwt": token}
