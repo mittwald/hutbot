@@ -1,4 +1,6 @@
 import os
+import base64
+import binascii
 import re
 import sys
 import collections
@@ -107,6 +109,21 @@ def load_env_file() -> None:
             # Set the environment variable
             os.environ[key] = value
 
+
+def _decode_env_value(value: str) -> str:
+    try:
+        decoded = base64.b64decode(value, validate=True).decode('utf-8')
+        return decoded
+    except (binascii.Error, UnicodeDecodeError):
+        return value
+
+
+def get_env_var(name: str, default: str = "") -> str:
+    raw = os.environ.get(name, default)
+    if raw is None:
+        return default
+    return _decode_env_value(raw)
+
 def log(*args: object) -> None:
     __log(sys.stdout, 'INFO', *args)
 
@@ -188,7 +205,7 @@ def generate_employee_list(users: list) -> dict:
 
 def load_employee_mappings() -> dict:
     result = {}
-    employee_mappings = os.environ.get("EMPLOYEE_LIST_MAPPINGS", "").strip()
+    employee_mappings = get_env_var("EMPLOYEE_LIST_MAPPINGS", "").strip()
     if employee_mappings:
         log(f"Attempting to load employee mappings from environment variable.")
         mappings = employee_mappings.split(',')
@@ -223,8 +240,8 @@ async def load_employees_from_disk() -> dict:
     return {}
 
 async def load_employees() -> dict:
-    username = os.environ.get("EMPLOYEE_LIST_USERNAME")
-    password = os.environ.get("EMPLOYEE_LIST_PASSWORD")
+    username = get_env_var("EMPLOYEE_LIST_USERNAME")
+    password = get_env_var("EMPLOYEE_LIST_PASSWORD")
     if not username or not password:
         return await load_employees_from_disk()
 
@@ -1016,10 +1033,10 @@ async def send_heartbeat(opsgenie_token: str, opsgenie_heartbeat_name: str) -> N
 
 async def main() -> None:
     load_env_file()
-    slack_app_token = os.environ.get("SLACK_APP_TOKEN", "")
-    slack_bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
-    opsgenie_token = os.environ.get("OPSGENIE_TOKEN", "")
-    opsgenie_heartbeat_name = os.environ.get("OPSGENIE_HEARTBEAT_NAME")
+    slack_app_token = get_env_var("SLACK_APP_TOKEN", "")
+    slack_bot_token = get_env_var("SLACK_BOT_TOKEN", "")
+    opsgenie_token = get_env_var("OPSGENIE_TOKEN", "")
+    opsgenie_heartbeat_name = get_env_var("OPSGENIE_HEARTBEAT_NAME")
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)

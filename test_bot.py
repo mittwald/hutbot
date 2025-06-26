@@ -4,6 +4,16 @@ from unittest.mock import AsyncMock, patch
 from bot import replace_ids, Channel, User, Usergroup, get_team_of, process_command, clean_slack_text, send_message, route_message, handle_channel_message, scheduled_messages, set_work_hours, parse_time, is_work_day, is_work_time
 from slack_sdk.errors import SlackApiError
 
+import base64
+from bot import get_env_var
+
+def test_get_env_var_decoding_and_passthrough(monkeypatch):
+    encoded = base64.b64encode(b"hello world").decode("utf-8")
+    monkeypatch.setenv("MY_ENV_VAR", encoded)
+    assert get_env_var("MY_ENV_VAR") == "hello world"
+    monkeypatch.setenv("MY_ENV_VAR_PLAIN", "plain value")
+    assert get_env_var("MY_ENV_VAR_PLAIN") == "plain value"
+
 @pytest.mark.asyncio
 async def test_replace_ids_user_id():
     app = AsyncMock()
