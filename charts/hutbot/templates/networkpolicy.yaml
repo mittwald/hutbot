@@ -1,0 +1,35 @@
+{{- $rules := .Values.networkPolicy.rules }}
+{{- $port := .Values.networkPolicy.port | int }}
+{{- $cidr := .Values.networkPolicy.cidr }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  policyTypes:
+  - Egress
+  egress:
+{{- if $rules }}
+{{- range $rule := $rules }}
+  - ports:
+    - port: {{ $rule.port }}
+      protocol: TCP
+  - to:
+    {{- range $cidr := $rule.cidrs }}
+    - ipBlock:
+        cidr: "{{ $cidr }}"
+    {{- end }}
+{{- end }}
+{{- else }}
+  - ports:
+    - port: {{ $port }}
+      protocol: TCP
+  - to:
+    - ipBlock:
+        cidr: "{{ $cidr }}"
+{{- end }}

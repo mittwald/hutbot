@@ -100,6 +100,8 @@ export OPSGENIE_HEARTBEAT_NAME='<your Opsgenie heartbeat name>'
 export EMPLOYEE_LIST_USERNAME='<your employee list username>'
 export EMPLOYEE_LIST_PASSWORD='<your employee list password>'
 export EMPLOYEE_LIST_MAPPINGS='<optional comma-separated mappings, e.g.: user1=alias1,user2=alias2>'
+# To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
+export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 ```
 
 Load the environment variables before deploying with Helmfile:
@@ -142,5 +144,7 @@ export PERSISTENCE_ENABLED=true
 export PERSISTENCE_SIZE=1Gi
 export PERSISTENCE_STORAGE_CLASS=<your-storage-class>
 export PERSISTENCE_MOUNT_PATH=/data
+# To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
+export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 helmfile sync
 ```

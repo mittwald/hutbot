@@ -26,3 +26,15 @@ releases:
           size: {{ env "PERSISTENCE_SIZE" | default "100Mi" | quote }}
           storageClass: {{ env "PERSISTENCE_STORAGE_CLASS" | default "" | quote }}
           mountPath: {{ env "PERSISTENCE_MOUNT_PATH" | default "/data" | quote }}
+{{- if env "NETWORKPOLICY_RULES" }}
+      - networkPolicy:
+          rules:
+{{- range $pair := splitList " " (env "NETWORKPOLICY_RULES") }}
+{{- $parts := splitList ":" $pair }}
+            - port: {{ index $parts 0 }}
+              cidrs:
+{{- range $cidr := splitList "," (index $parts 1) }}
+                - {{ $cidr }}
+{{- end }}
+{{- end }}
+{{- end }}
