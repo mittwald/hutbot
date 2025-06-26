@@ -10,8 +10,12 @@ releases:
           tag: "latest"
         replicaCount: 1
       - slack:
-          appToken: "<SLACK_APP_TOKEN>"
-          botToken: "<SLACK_BOT_TOKEN>"
+          appToken: "{{ env \"SLACK_APP_TOKEN\" }}"
+          botToken: "{{ env \"SLACK_BOT_TOKEN\" }}"
       - opsgenie:
-          token: "<OPSGENIE_TOKEN>"
-          heartbeatName: "<OPSGENIE_HEARTBEAT_NAME>"
+          token: "{{ env \"OPSGENIE_TOKEN\" }}"
+          heartbeatName: "{{ env \"OPSGENIE_HEARTBEAT_NAME\" }}"
+      - employeeList:
+          username: "{{ env \"EMPLOYEE_LIST_USERNAME\" }}"
+          password: "{{ env \"EMPLOYEE_LIST_PASSWORD\" }}"
+          mappings: "{{ env \"EMPLOYEE_LIST_MAPPINGS\" }}"

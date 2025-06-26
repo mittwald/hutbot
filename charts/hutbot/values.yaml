@@ -15,4 +15,9 @@ opsgenie:
   token: ""
   heartbeatName: ""
 
+employeeList:
+  username: ""
+  password: ""
+  mappings: ""
+
 resources: {}

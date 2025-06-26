@@ -96,4 +96,22 @@ Deploy the bot to your Kubernetes cluster using Helmfile:
 helmfile sync
 ```
 
-Before running, update `helmfile.yaml` with your Docker image repository, Slack tokens, and other configuration values.
+Create a `.env` file in the project root (this file is ignored by git) with the following content:
+
+```bash
+export SLACK_BOT_TOKEN='<your bot token>'
+export SLACK_APP_TOKEN='<your app-level token>'
+export OPSGENIE_TOKEN='<your Opsgenie API token>'
+export OPSGENIE_HEARTBEAT_NAME='<your Opsgenie heartbeat name>'
+export EMPLOYEE_LIST_USERNAME='<your employee list username>'
+export EMPLOYEE_LIST_PASSWORD='<your employee list password>'
+export EMPLOYEE_LIST_MAPPINGS='<optional comma-separated mappings, e.g.: user1=alias1,user2=alias2>'
+```
+
+Load the environment variables before deploying with Helmfile:
+
+```bash
+source .env
+```
+
+Before running, update `helmfile.yaml` with your Docker image repository and other configuration values.
