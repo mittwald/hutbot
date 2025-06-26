@@ -81,11 +81,11 @@ python bot.py
 
 ## Docker and Kubernetes Deployment
 
-Build and push the Docker image:
+A GitHub Actions workflow automatically builds and publishes the Docker image to GitHub Container Registry on pushes to `main` and tags `v*.*.*`. You can pull the image with:
 
 ```bash
-docker build -t <your-docker-repo>/hutbot:latest .
-docker push <your-docker-repo>/hutbot:latest
+docker pull ghcr.io/mittwald/hutbot:latest
+docker pull ghcr.io/mittwald/hutbot:<version>
 ```
 
 This repository includes a Helm chart under `charts/hutbot` and a Helmfile configuration at `helmfile.yaml`.
