@@ -38,3 +38,13 @@ releases:
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{- if env "HOST_ALIASES" }}
+      - hostAliases:
+{{- range $pair := splitList "," (env "HOST_ALIASES") }}
+{{- $parts := splitList "=" $pair }}
+            - ip: {{ index $parts 1 | quote }}
+              hostnames:
+                - {{ index $parts 0 | quote }}
+{{- end }}
+{{- end }}
