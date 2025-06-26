@@ -88,13 +88,7 @@ docker pull ghcr.io/mittwald/hutbot:latest
 docker pull ghcr.io/mittwald/hutbot:<version>
 ```
 
-This repository includes a Helm chart under `charts/hutbot` and a Helmfile configuration at `helmfile.yaml`.
-
-Deploy the bot to your Kubernetes cluster using Helmfile:
-
-```bash
-helmfile sync
-```
+This repository includes a Helm chart under `charts/hutbot` and a Helmfile configuration at `helmfile.yaml.gotmpl`.
 
 Create a `.env` file in the project root (this file is ignored by git) with the following content:
 
@@ -114,4 +108,13 @@ Load the environment variables before deploying with Helmfile:
 source .env
 ```
 
-Before running, update `helmfile.yaml` with your Docker image repository and other configuration values.
+Before running, update `helmfile.yaml.gotmpl` with your Docker image repository and other configuration values.
+
+Deploy the bot to your Kubernetes cluster using Helmfile:
+
+```bash
+helmfile sync
+```
+
+> **Note:** Helmfile uses Go templating to inject these variables and will error if any required environment variables are missing.
+> Ensure you run `source .env` in the same shell as you execute `helmfile sync`.
