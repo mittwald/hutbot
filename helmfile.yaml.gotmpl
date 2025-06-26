@@ -19,3 +19,10 @@ releases:
           username: {{ env "EMPLOYEE_LIST_USERNAME" | quote }}
           password: {{ env "EMPLOYEE_LIST_PASSWORD" | quote }}
           mappings: {{ env "EMPLOYEE_LIST_MAPPINGS" | quote }}
+      - persistence:
+          enabled: {{ env "PERSISTENCE_ENABLED" | default "true" | quote }}
+          accessModes:
+            - ReadWriteOnce
+          size: {{ env "PERSISTENCE_SIZE" | default "100Mi" | quote }}
+          storageClass: {{ env "PERSISTENCE_STORAGE_CLASS" | default "" | quote }}
+          mountPath: {{ env "PERSISTENCE_MOUNT_PATH" | default "/data" | quote }}

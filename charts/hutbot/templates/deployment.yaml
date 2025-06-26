@@ -21,7 +21,21 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ .Release.Name }}-secret
+          {{- if .Values.persistence.enabled }}
+          env:
+            - name: HUTBOT_CONFIG_FILE
+              value: {{ printf "%s/%s" .Values.persistence.mountPath "bot.json" }}
+          volumeMounts:
+            - name: config
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- end }}
           {{- if .Values.resources }}
           resources:
             {{ toYaml .Values.resources | indent 12 }}
           {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-pvc
+      {{- end }}

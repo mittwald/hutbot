@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
 }
 
 EMPLOYEE_CACHE_FILE_NAME = 'employees.json'
-CONFIG_FILE_NAME = 'bot.json'  # Path to the configuration file
+CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')
 TEAM_UNKNOWN = '<unknown>'
 
 IGNORED_MESSAGE_SUBTYPES = set(['channel_join',

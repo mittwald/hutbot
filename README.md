@@ -118,3 +118,27 @@ helmfile sync
 
 > **Note:** Helmfile uses Go templating to inject these variables and will error if any required environment variables are missing.
 > Ensure you run `source .env` in the same shell as you execute `helmfile sync`.
+
+### Persisting the Configuration File
+
+Hutbot stores its channel configuration in a JSON file (`bot.json`) on a mounted volume. You can configure the persistence options in the Helm chart like this:
+
+```yaml
+persistence:
+  enabled: true
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  storageClass: "<your-storage-class>"
+  mountPath: "/data"
+```
+
+When persistence is enabled (default: `true`), the chart will automatically set the `HUTBOT_CONFIG_FILE` environment variable so Hutbot reads and writes its config from the mounted volume (at `<mountPath>/bot.json`). If you override values via environment variables in Helmfile, you can configure persistence like this:
+
+```bash
+export PERSISTENCE_ENABLED=true
+export PERSISTENCE_SIZE=1Gi
+export PERSISTENCE_STORAGE_CLASS=<your-storage-class>
+export PERSISTENCE_MOUNT_PATH=/data
+helmfile sync
+```

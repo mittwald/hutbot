@@ -21,3 +21,12 @@ employeeList:
   mappings: ""
 
 resources: {}
+
+# Persistence configuration for storing the bot config file on a PersistentVolumeClaim
+persistence:
+  enabled: true
+  accessModes:
+    - ReadWriteOnce
+  size: 100Mi
+  storageClass: ""
+  mountPath: "/data"
