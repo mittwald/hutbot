@@ -89,6 +89,7 @@ SET_WORK_HOURS_PATTERN = create_command_pattern(r'(set\s+)?(work[_ -]?)?hours\s+
 ENABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'enable\s+(only[_ -]?)?work[_ -]?days')
 DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)?work[_ -]?days')
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
+DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)')
 
 def load_env_file() -> None:
     env_file_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -514,6 +515,9 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
         await add_included_team(app, channel, config_name, team, user, thread_ts)
     elif (match := CLEAR_INCLUDED_TEAM_PATTERN.match(command_text)):
         await clear_included_team(app, channel, config_name, user, thread_ts)
+    elif (match := DELETE_CONFIG_PATTERN.match(command_text)):
+        name = match.group("name").strip('"').strip("'")
+        await delete_config(app, channel, name, user, thread_ts)
     elif SHOW_CONFIG_PATTERN.match(command_text):
         await show_config(app, channel, user, thread_ts)
     elif HELP_PATTERN.match(command_text):
@@ -651,6 +655,19 @@ async def set_pattern(app: AsyncApp, channel: Channel, config_name: str, pattern
     else:
         message += " (case-insensitive)"
     await send_message(app, channel, user, message, thread_ts)
+
+async def delete_config(app: AsyncApp, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> None:
+    if config_name == DEFAULT_CONFIG_NAME:
+        await send_message(app, channel, user, f"The `{DEFAULT_CONFIG_NAME}` configuration cannot be deleted.", thread_ts)
+        return
+
+    if config_name not in channel.configs:
+        await send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
+        return
+
+    del channel.configs[config_name]
+    await save_configuration()
+    await send_message(app, channel, user, f"Configuration `{config_name}` has been deleted.", thread_ts)
 
 async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]:
     # Regular expression to find @username patterns
@@ -895,6 +912,10 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "```/hutbot show config\n"
         "@Hutbot show config```\n"
         f"Displays the configuration for #{channel.name}.\n\n"
+        "*Delete Configuration:*\n"
+        "```/hutbot delete config <name>\n"
+        "@Hutbot delete config <name>```\n"
+        "Deletes a configuration. Replace `<name>` with the name of the configuration. The `default` configuration cannot be deleted.\n\n"
         "*Help:*\n"
         "```/hutbot help\n"
         "@Hutbot help```\n"

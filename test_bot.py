@@ -209,3 +209,29 @@ async def test_show_config():
         assert "*Wait time*: `5` minutes" in sent_message
         assert "*Pattern*: `.*alarm.*` (case-insensitive)" in sent_message
         assert "Alarm message" in sent_message
+
+@pytest.mark.asyncio
+async def test_process_command_delete_config():
+    app = AsyncMock()
+    configs = {
+        "default": DEFAULT_CONFIG.copy(),
+        "todelete": DEFAULT_CONFIG.copy()
+    }
+    channel = Channel(id="C12345", name="general", configs=configs)
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        # Test deleting a config
+        await process_command(app, "delete config todelete", channel, user, thread_ts)
+        assert "todelete" not in channel.configs
+        mock_send_message.assert_called_with(app, channel, user, "Configuration `todelete` has been deleted.", thread_ts)
+
+        # Test deleting default config
+        await process_command(app, "delete config default", channel, user, thread_ts)
+        assert "default" in channel.configs
+        mock_send_message.assert_called_with(app, channel, user, "The `default` configuration cannot be deleted.", thread_ts)
+
+        # Test deleting non-existent config
+        await process_command(app, "delete config non-existent", channel, user, thread_ts)
+        mock_send_message.assert_called_with(app, channel, user, "Configuration `non-existent` not found.", thread_ts)
