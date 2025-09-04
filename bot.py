@@ -17,7 +17,7 @@ from slack_sdk.errors import SlackApiError
 ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
 User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
 Usergroup = collections.namedtuple('Usergroup', ['id', 'handle', 'name'])
-Channel = collections.namedtuple('Channel', ['id', 'name', 'config'])
+Channel = collections.namedtuple('Channel', ['id', 'name', 'configs'])
 
 DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
@@ -28,7 +28,9 @@ DEFAULT_CONFIG = {
     "excluded_teams": [],
     "included_teams": [],
     "only_work_days": False,
-    "hours": []
+    "hours": [],
+    "pattern": None,
+    "pattern_case_sensitive": False
 }
 
 EMPLOYEE_CACHE_FILE_NAME = os.environ.get('HUTBOT_EMPLOYEE_CACHE_FILE', 'employees.json')
@@ -64,22 +66,26 @@ ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 TIME_HOUR_PATTERN = re.compile(r"^[0-9]{1,2}$")
 
 # Regex patterns for command parsing
+def create_command_pattern(command_regex: str) -> re.Pattern:
+    return re.compile(f'^{command_regex}', re.IGNORECASE)
+
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
-SET_WAIT_TIME_PATTERN = re.compile(r'^(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)$', re.IGNORECASE)
-SET_REPLY_MESSAGE_PATTERN = re.compile(r'^(set\s+)?(message|reply)\s+(?P<message>.+)$', re.IGNORECASE)
-ADD_EXCLUDED_TEAM_PATTERN = re.compile(r'^(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)$', re.IGNORECASE)
-CLEAR_EXCLUDED_TEAM_PATTERN = re.compile(r'^clear\s+excluded?([_ -]?teams?)?$', re.IGNORECASE)
-ADD_INCLUDED_TEAM_PATTERN = re.compile(r'^(add\s+)?included?([_ -]?teams?)?\s+(?P<team>.+)$', re.IGNORECASE)
-CLEAR_INCLUDED_TEAM_PATTERN = re.compile(r'^clear\s+included?([_ -]?teams?)?$', re.IGNORECASE)
+SET_WAIT_TIME_PATTERN = create_command_pattern(r'(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)')
+SET_REPLY_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?(message|reply)\s+(?P<message>.+)')
+SET_PATTERN_PATTERN = create_command_pattern(r'set\s+pattern\s+(?P<pattern>".*?"|\S+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
+ADD_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)')
+CLEAR_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+excluded?([_ -]?teams?)?')
+ADD_INCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?included?([_ -]?teams?)?\s+(?P<team>.+)')
+CLEAR_INCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+included?([_ -]?teams?)?')
 LIST_TEAMS_PATTERN = re.compile(r'^(list\s+)?teams?$', re.IGNORECASE)
 EMPLOYEE_TEAM_PATTERN = re.compile(r'^team(\s+of)?\s+(?P<user>.+)$', re.IGNORECASE)
-ENABLE_OPSGENIE_PATTERN = re.compile(r'^enable\s+(opsgenie|alerts?)$', re.IGNORECASE)
-DISABLE_OPSGENIE_PATTERN = re.compile(r'^disable\s+(opsgenie|alerts?)$', re.IGNORECASE)
-ENABLE_BOTS_PATTERN = re.compile(r'^(enable|include|set)?\s+bots?$', re.IGNORECASE)
-DISABLE_BOTS_PATTERN = re.compile(r'^(disable|exclude)\s+bots?$', re.IGNORECASE)
-SET_WORK_HOURS_PATTERN = re.compile(r'^(set\s+)?(work[_ -]?)?hours\s+(?P<start>.+)\s+(?P<end>.+)$', re.IGNORECASE)
-ENABLE_ONLY_WORK_DAYS_PATTERN = re.compile(r'^enable\s+(only[_ -]?)?work[_ -]?days$', re.IGNORECASE)
-DISABLE_ONLY_WORK_DAYS_PATTERN = re.compile(r'^disable\s+(only[_ -]?)?work[_ -]?days$', re.IGNORECASE)
+ENABLE_OPSGENIE_PATTERN = create_command_pattern(r'enable\s+(opsgenie|alerts?)')
+DISABLE_OPSGENIE_PATTERN = create_command_pattern(r'disable\s+(opsgenie|alerts?)')
+ENABLE_BOTS_PATTERN = create_command_pattern(r'(enable|include|set)?\s+bots?')
+DISABLE_BOTS_PATTERN = create_command_pattern(r'(disable|exclude)\s+bots?')
+SET_WORK_HOURS_PATTERN = create_command_pattern(r'(set\s+)?(work[_ -]?)?hours\s+(?P<start>.+)\s+(?P<end>.+)')
+ENABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'enable\s+(only[_ -]?)?work[_ -]?days')
+DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)?work[_ -]?days')
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 
 def load_env_file() -> None:
@@ -134,7 +140,7 @@ def log_error(*args: object) -> None:
     __log(sys.stderr, 'ERROR', *args)
 
 def log_debug(channel: Channel | None, *args: object) -> None:
-    if channel and channel.config.get('debug'):
+    if channel and any(c.get('debug') for c in channel.configs.values()):
         __log(sys.stderr, 'DEBUG', *args)
 
 def __log(file, prefix, *args: object) -> None:
@@ -164,20 +170,32 @@ def normalize_real_name_with_diagraphs(real_name: str) -> str:
     # don't ask, you wouldn't be able to grasp the extend...
     return normalize_real_name(real_name.lower().replace('ae', 'ä').replace('oe', 'ö').replace('ue', 'ü'))
 
-async def apply_defaults(app: AsyncApp, config: dict) -> dict:
-    for channel_id, channel_config in config.items():
-        channel_config['name'] = await get_channel_name(app, channel_id)
-        for key, value in DEFAULT_CONFIG.items():
-            if key not in channel_config:
-                channel_config[key] = value
+async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
+    for channel_id, channel_data in config.items():
+        # Migration for old format
+        # old format: "C1234": { "wait_time": 60, ... }
+        # new format: "C1234": { "default": { "wait_time": 60, ... } }
+        is_flat_config = any(k in DEFAULT_CONFIG for k in channel_data.keys())
+        if is_flat_config:
+            # This looks like an old, flat config. Let's wrap it.
+            log(f"Migrating old configuration for channel {channel_id}")
+            channel_data = {"default": channel_data}
+            config[channel_id] = channel_data
+
+        for config_name, single_config in channel_data.items():
+            for key, value in DEFAULT_CONFIG.items():
+                if key not in single_config:
+                    single_config[key] = value
     return config
+
 
 async def load_configuration(app: AsyncApp) -> None:
     global channel_config
     try:
         async with aiofiles.open(CONFIG_FILE_NAME, 'r') as f:
             content = await f.read()
-            channel_config = await apply_defaults(app, json.loads(content))
+            loaded_config = json.loads(content)
+            channel_config = await migrate_and_apply_defaults(app, loaded_config)
             log("Configuration loaded from disk.")
     except FileNotFoundError:
         log_warning("No configuration file found. Using default settings.")
@@ -291,12 +309,12 @@ async def load_employees() -> dict:
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     global channel_config
     if channel_id not in channel_config:
-        channel_config[channel_id] = DEFAULT_CONFIG.copy()
+        channel_config[channel_id] = {}
 
     name = await get_channel_name(app, channel_id)
-    config = channel_config[channel_id]
+    configs = channel_config[channel_id]
 
-    return Channel(id=channel_id, name=name, config=config)
+    return Channel(id=channel_id, name=name, configs=configs)
 
 async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
     try:
@@ -456,60 +474,82 @@ async def process_command(app: AsyncApp, text: str, channel: Channel, user: User
 
     log_debug(channel, f"Received command for channel #{channel.name}: {text}")
 
+    parts = text.split()
+    config_name = "default"
+    command_text = text
+
+    # This is a bit of a hack. If the first word does not match any known command keywords,
+    # we assume it's a configuration name.
+    known_command_keywords = ['set', 'add', 'clear', 'list', 'team', 'enable', 'disable', 'show', 'help']
+    if parts and parts[0] not in known_command_keywords:
+        # It's not a perfect check, as a team name could be "set", but it's good enough for now.
+        is_command_like = any(p.match(parts[0]) for p in [LIST_TEAMS_PATTERN, EMPLOYEE_TEAM_PATTERN, SHOW_CONFIG_PATTERN, HELP_PATTERN])
+        if not is_command_like:
+            config_name = parts[0]
+            command_text = " ".join(parts[1:])
+
     # Parse commands
-    if (match := SET_WAIT_TIME_PATTERN.match(text)):
+    if (match := SET_WAIT_TIME_PATTERN.match(command_text)):
         wait_time_minutes = int(match.group("wait_time").strip('"').strip("'"))
-        await set_wait_time(app, channel, wait_time_minutes, user, thread_ts)
-    elif (match := SET_REPLY_MESSAGE_PATTERN.match(text)):
+        await set_wait_time(app, channel, config_name, wait_time_minutes, user, thread_ts)
+    elif (match := SET_REPLY_MESSAGE_PATTERN.match(command_text)):
         message = match.group("message").strip('"').strip("'")
-        await set_reply_message(app, channel, message, user, thread_ts)
-    elif ENABLE_OPSGENIE_PATTERN.match(text):
-        await set_opsgenie(app, channel, True, user, thread_ts)
-    elif DISABLE_OPSGENIE_PATTERN.match(text):
-        await set_opsgenie(app, channel, False, user, thread_ts)
-    elif ENABLE_BOTS_PATTERN.match(text):
-        await set_bots(app, channel, True, user, thread_ts)
-    elif DISABLE_BOTS_PATTERN.match(text):
-        await set_bots(app, channel, False, user, thread_ts)
-    elif ENABLE_ONLY_WORK_DAYS_PATTERN.match(text):
-        await set_only_work_days(app, channel, True, user, thread_ts)
-    elif DISABLE_ONLY_WORK_DAYS_PATTERN.match(text):
-        await set_only_work_days(app, channel, False, user, thread_ts)
-    elif (match := SET_WORK_HOURS_PATTERN.match(text)):
+        await set_reply_message(app, channel, config_name, message, user, thread_ts)
+    elif (match := SET_PATTERN_PATTERN.match(command_text)):
+        pattern = match.group("pattern")
+        case_sensitive = match.group("case_sensitive")
+        await set_pattern(app, channel, config_name, pattern, case_sensitive, user, thread_ts)
+    elif (match := ENABLE_OPSGENIE_PATTERN.match(command_text)):
+        await set_opsgenie(app, channel, config_name, True, user, thread_ts)
+    elif (match := DISABLE_OPSGENIE_PATTERN.match(command_text)):
+        await set_opsgenie(app, channel, config_name, False, user, thread_ts)
+    elif (match := ENABLE_BOTS_PATTERN.match(command_text)):
+        await set_bots(app, channel, config_name, True, user, thread_ts)
+    elif (match := DISABLE_BOTS_PATTERN.match(command_text)):
+        await set_bots(app, channel, config_name, False, user, thread_ts)
+    elif (match := ENABLE_ONLY_WORK_DAYS_PATTERN.match(command_text)):
+        await set_only_work_days(app, channel, config_name, True, user, thread_ts)
+    elif (match := DISABLE_ONLY_WORK_DAYS_PATTERN.match(command_text)):
+        await set_only_work_days(app, channel, config_name, False, user, thread_ts)
+    elif (match := SET_WORK_HOURS_PATTERN.match(command_text)):
         start = match.group("start").strip('"').strip("'")
         end = match.group("end").strip('"').strip("'")
-        await set_work_hours(app, channel, start, end, user, thread_ts)
-    elif LIST_TEAMS_PATTERN.match(text):
+        await set_work_hours(app, channel, config_name, start, end, user, thread_ts)
+    elif LIST_TEAMS_PATTERN.match(command_text):
         await list_teams(app, channel, user, thread_ts)
-    elif (match := EMPLOYEE_TEAM_PATTERN.match(text)):
+    elif (match := EMPLOYEE_TEAM_PATTERN.match(command_text)):
         username = match.group("user").strip('"').strip("'")
         await get_team_of(app, channel, username, user, thread_ts)
-    elif (match := ADD_EXCLUDED_TEAM_PATTERN.match(text)):
+    elif (match := ADD_EXCLUDED_TEAM_PATTERN.match(command_text)):
         team = match.group("team").strip('"').strip("'")
-        await add_excluded_team(app, channel, team, user, thread_ts)
-    elif CLEAR_EXCLUDED_TEAM_PATTERN.match(text):
-        await clear_excluded_team(app, channel, user, thread_ts)
-    elif (match := ADD_INCLUDED_TEAM_PATTERN.match(text)):
+        await add_excluded_team(app, channel, config_name, team, user, thread_ts)
+    elif (match := CLEAR_EXCLUDED_TEAM_PATTERN.match(command_text)):
+        await clear_excluded_team(app, channel, config_name, user, thread_ts)
+    elif (match := ADD_INCLUDED_TEAM_PATTERN.match(command_text)):
         team = match.group("team").strip('"').strip("'")
-        await add_included_team(app, channel, team, user, thread_ts)
-    elif CLEAR_INCLUDED_TEAM_PATTERN.match(text):
-        await clear_included_team(app, channel, user, thread_ts)
-    elif SHOW_CONFIG_PATTERN.match(text):
+        await add_included_team(app, channel, config_name, team, user, thread_ts)
+    elif (match := CLEAR_INCLUDED_TEAM_PATTERN.match(command_text)):
+        await clear_included_team(app, channel, config_name, user, thread_ts)
+    elif SHOW_CONFIG_PATTERN.match(command_text):
         await show_config(app, channel, user, thread_ts)
-    elif HELP_PATTERN.match(text):
+    elif HELP_PATTERN.match(command_text):
         await send_help_message(app, channel, user, thread_ts)
     else:
         await send_message(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
 
-async def set_bots(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
-    channel.config['include_bots'] = enabled
+async def set_bots(app: AsyncApp, channel: Channel, config_name: str, enabled: bool, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    channel.configs[config_name]['include_bots'] = enabled
     await save_configuration()
-    await send_message(app, channel, user, f"*Bot messages* will {'also be *handled*' if enabled else 'be *ignored*'}.", thread_ts)
+    await send_message(app, channel, user, f"*Bot messages* will {'also be *handled*' if enabled else 'be *ignored*'} in configuration `{config_name}`.", thread_ts)
 
-async def set_only_work_days(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
-    channel.config['only_work_days'] = enabled
+async def set_only_work_days(app: AsyncApp, channel: Channel, config_name: str, enabled: bool, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    channel.configs[config_name]['only_work_days'] = enabled
     await save_configuration()
-    await send_message(app, channel, user, f"Messages will be handled {'*only on work days*' if enabled else '*on all days*'}.", thread_ts)
+    await send_message(app, channel, user, f"Messages will be handled {'*only on work days*' if enabled else '*on all days*'} in configuration `{config_name}`.", thread_ts)
 
 def parse_time(time_str) -> datetime.time | None:
     if TIME_HOUR_PATTERN.match(time_str):
@@ -523,7 +563,9 @@ def parse_time(time_str) -> datetime.time | None:
 
     return time
 
-async def set_work_hours(app: AsyncApp, channel: Channel, start: str, end: str, user: User, thread_ts: str = "") -> None:
+async def set_work_hours(app: AsyncApp, channel: Channel, config_name: str, start: str, end: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
     start_time = parse_time(start)
     end_time = parse_time(end)
     if not start_time:
@@ -535,27 +577,33 @@ async def set_work_hours(app: AsyncApp, channel: Channel, start: str, end: str, 
     hours = [start_time.strftime("%H:%M"), end_time.strftime("%H:%M")]
     if hours[0] == "00:00" and hours[1] == "00:00":
         hours = []
-    channel.config['hours'] = hours
+    channel.configs[config_name]['hours'] = hours
     await save_configuration()
-    await send_message(app, channel, user, f"*Work hours* set to {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'}", thread_ts)
+    await send_message(app, channel, user, f"*Work hours* set to {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'} in configuration `{config_name}`", thread_ts)
 
-async def set_opsgenie(app: AsyncApp, channel: Channel, enabled: bool, user: User, thread_ts: str = "") -> None:
-    channel.config['opsgenie'] = enabled
+async def set_opsgenie(app: AsyncApp, channel: Channel, config_name: str, enabled: bool, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    channel.configs[config_name]['opsgenie'] = enabled
     await save_configuration()
-    await send_message(app, channel, user, f"*OpsGenie integration* {'*enabled*' if enabled else '*disabled*'}{', but not configured' if enabled and not opsgenie_configured else ''}.", thread_ts)
+    await send_message(app, channel, user, f"*OpsGenie integration* {'*enabled*' if enabled else '*disabled*'}{', but not configured' if enabled and not opsgenie_configured else ''} in configuration `{config_name}`.", thread_ts)
 
-async def set_wait_time(app: AsyncApp, channel: Channel, wait_time_minutes: int, user: User, thread_ts: str = "") -> None:
+async def set_wait_time(app: AsyncApp, channel: Channel, config_name: str, wait_time_minutes: int, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
     # check if number and in range 0-1440
     if not wait_time_minutes or wait_time_minutes < 0 or wait_time_minutes > 1440:
         await send_message(app, channel, user, "Invalid wait time. Must be a number between 0 and 1440.", thread_ts)
         return
 
-    channel.config['wait_time'] = wait_time_minutes * 60  # Convert to seconds
-    log_debug(channel, f"Wait time for #{channel.name} set to {wait_time_minutes} minutes")
+    channel.configs[config_name]['wait_time'] = wait_time_minutes * 60  # Convert to seconds
+    log_debug(channel, f"Wait time for #{channel.name} set to {wait_time_minutes} minutes for configuration `{config_name}`")
     await save_configuration()
-    await send_message(app, channel, user, f"*Wait time* set to `{wait_time_minutes}` minutes.", thread_ts)
+    await send_message(app, channel, user, f"*Wait time* set to `{wait_time_minutes}` minutes in configuration `{config_name}`.", thread_ts)
 
-async def set_reply_message(app: AsyncApp, channel: Channel, message: str, user: User, thread_ts: str = "") -> None:
+async def set_reply_message(app: AsyncApp, channel: Channel, config_name: str, message: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
     # check message
     if not message or message.strip() == "":
         await send_message(app, channel, user, "Invalid *reply message*. Must be non-empty.", thread_ts)
@@ -565,9 +613,34 @@ async def set_reply_message(app: AsyncApp, channel: Channel, message: str, user:
         await send_message(app, channel, user, "Invalid *reply message*: " + error + ".", thread_ts)
         return
 
-    channel.config['reply_message'] = message
+    channel.configs[config_name]['reply_message'] = message
     await save_configuration()
-    await send_message(app, channel, user, f"*Reply message* set to: {message}", thread_ts)
+    await send_message(app, channel, user, f"*Reply message* set to: {message} in configuration `{config_name}`.", thread_ts)
+
+async def set_pattern(app: AsyncApp, channel: Channel, config_name: str, pattern_str: str, case_sensitive_str: str | None, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+
+    # Validate the regex pattern
+    pattern_str = pattern_str.strip('"')
+    try:
+        re.compile(pattern_str)
+    except re.error as e:
+        await send_message(app, channel, user, f"Invalid regex pattern: `{e}`", thread_ts)
+        return
+
+    case_sensitive = case_sensitive_str is not None and case_sensitive_str.lower() in ['true', '1']
+
+    channel.configs[config_name]['pattern'] = pattern_str
+    channel.configs[config_name]['pattern_case_sensitive'] = case_sensitive
+    await save_configuration()
+
+    message = f"Pattern set to `{pattern_str}` for configuration `{config_name}`."
+    if case_sensitive:
+        message += " (case-sensitive)"
+    else:
+        message += " (case-insensitive)"
+    await send_message(app, channel, user, message, thread_ts)
 
 async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]:
     # Regular expression to find @username patterns
@@ -582,49 +655,59 @@ async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]
                 return False, f"{user_match} not found", ""
     return True, "", message
 
-async def add_excluded_team(app: AsyncApp, channel: Channel, team: str, user: User, thread_ts: str = "") -> None:
+async def add_excluded_team(app: AsyncApp, channel: Channel, config_name: str, team: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    config = channel.configs[config_name]
     await update_user_cache(app)
     if team not in team_cache:
         await send_message(app, channel, user, f"Unknown team: `{team}`.", thread_ts)
         return
-    if team in channel.config['excluded_teams']:
-        await send_message(app, channel, user, f"`{team}` is already excluded.", thread_ts)
+    if team in config['excluded_teams']:
+        await send_message(app, channel, user, f"`{team}` is already excluded in configuration `{config_name}`.", thread_ts)
         return
 
-    if len(channel.config['included_teams']) > 0:
-        await send_message(app, channel, user, f"Either set *included teams* or *excluded teams*, not both.", thread_ts)
+    if len(config['included_teams']) > 0:
+        await send_message(app, channel, user, f"Either set *included teams* or *excluded teams*, not both, in configuration `{config_name}`.", thread_ts)
         return
 
-    channel.config['excluded_teams'].append(team)
+    config['excluded_teams'].append(team)
     await save_configuration()
-    await send_message(app, channel, user, f"Added `{team}` to *excluded teams*.", thread_ts)
+    await send_message(app, channel, user, f"Added `{team}` to *excluded teams* in configuration `{config_name}`.", thread_ts)
 
-async def clear_excluded_team(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
-    channel.config['excluded_teams'] = []
+async def clear_excluded_team(app: AsyncApp, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    channel.configs[config_name]['excluded_teams'] = []
     await save_configuration()
-    await send_message(app, channel, user, "Cleared *excluded teams*.", thread_ts)
+    await send_message(app, channel, user, f"Cleared *excluded teams* in configuration `{config_name}`.", thread_ts)
 
-async def add_included_team(app: AsyncApp, channel: Channel, team: str, user: User, thread_ts: str = "") -> None:
+async def add_included_team(app: AsyncApp, channel: Channel, config_name: str, team: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    config = channel.configs[config_name]
     await update_user_cache(app)
     if team not in team_cache:
         await send_message(app, channel, user, f"Unknown team: `{team}`.", thread_ts)
         return
-    if team in channel.config['included_teams']:
-        await send_message(app, channel, user, f"`{team}` is already included.", thread_ts)
+    if team in config['included_teams']:
+        await send_message(app, channel, user, f"`{team}` is already included in configuration `{config_name}`.", thread_ts)
         return
 
-    if len(channel.config['excluded_teams']) > 0:
-        await send_message(app, channel, user, f"Either set *included teams* or *excluded teams*, not both.", thread_ts)
+    if len(config['excluded_teams']) > 0:
+        await send_message(app, channel, user, f"Either set *included teams* or *excluded teams*, not both, in configuration `{config_name}`.", thread_ts)
         return
 
-    channel.config['included_teams'].append(team)
+    config['included_teams'].append(team)
     await save_configuration()
-    await send_message(app, channel, user, f"Added `{team}` to *included teams*.", thread_ts)
+    await send_message(app, channel, user, f"Added `{team}` to *included teams* in configuration `{config_name}`.", thread_ts)
 
-async def clear_included_team(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
-    channel.config['included_teams'] = []
+async def clear_included_team(app: AsyncApp, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    channel.configs[config_name]['included_teams'] = []
     await save_configuration()
-    await send_message(app, channel, user, "Cleared *included teams*.", thread_ts)
+    await send_message(app, channel, user, f"Cleared *included teams* in configuration `{config_name}`.", thread_ts)
 
 async def list_teams(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     await update_user_cache(app)
@@ -656,26 +739,37 @@ async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User
         await send_message(app, channel, user, f"Unknown user: `{username}`.", thread_ts)
 
 async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
-    opsgenie_enabled = channel.config.get('opsgenie')
-    wait_time_minutes = channel.config.get('wait_time') // 60
-    included_teams = channel.config.get('included_teams')
-    excluded_teams = channel.config.get('excluded_teams')
-    include_bots = channel.config.get('include_bots')
-    only_work_days = channel.config.get('only_work_days')
-    hours = channel.config.get('hours')
-    reply_message = channel.config.get('reply_message')
-    message = (
-        f"This is the configuration for #{channel.name}:\n\n"
-        f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
-        f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
-        f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
-        f"*Included teams*: {' '.join(f'`{team}`' for team in included_teams) if included_teams else '<None>'}\n\n"
-        f"*Excluded teams*: {' '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
-        f"*Include bots*: {'enabled' if include_bots else 'disabled'}\n\n"
-        f"*Only work days*: {'enabled' if only_work_days else 'disabled'}\n\n"
-        f"*Work hours*: {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'}\n\n"
-        f"*Reply message*:\n{reply_message}"
-    )
+    if not channel.configs:
+        message = f"There is no configuration for #{channel.name}."
+        await send_message(app, channel, user, message, thread_ts)
+        return
+
+    message = f"This is the configuration for #{channel.name}:"
+    for config_name, config in sorted(channel.configs.items()):
+        opsgenie_enabled = config.get('opsgenie')
+        wait_time_minutes = config.get('wait_time') // 60
+        included_teams = config.get('included_teams')
+        excluded_teams = config.get('excluded_teams')
+        include_bots = config.get('include_bots')
+        only_work_days = config.get('only_work_days')
+        hours = config.get('hours')
+        pattern = config.get('pattern')
+        pattern_case_sensitive = config.get('pattern_case_sensitive')
+        reply_message = config.get('reply_message')
+
+        message += (
+            f"\n\n---\n*Configuration*: `{config_name}`\n\n"
+            f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
+            f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
+            f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
+            f"*Included teams*: {' '.join(f'`{team}`' for team in included_teams) if included_teams else '<None>'}\n\n"
+            f"*Excluded teams*: {' '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
+            f"*Include bots*: {'enabled' if include_bots else 'disabled'}\n\n"
+            f"*Only work days*: {'enabled' if only_work_days else 'disabled'}\n\n"
+            f"*Work hours*: {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'}\n\n"
+            f"*Pattern*: {f'`{pattern}` (case-sensitive)' if pattern_case_sensitive else f'`{pattern}` (case-insensitive)' if pattern else '<None>'}\n\n"
+            f"*Reply message*:\n{reply_message}"
+        )
     await send_message(app, channel, user, message, thread_ts)
 
 async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "") -> None:
@@ -782,11 +876,11 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     )
     await send_message(app, channel, user, help_text, thread_ts)
 
-async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str) -> None:
-    opsgenie_enabled = channel.config.get('opsgenie')
-    wait_time = channel.config.get('wait_time')
-    reply_message = channel.config.get('reply_message')
-    log(f"Scheduling reply for message {ts} in channel #{channel.name}, user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
+async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str) -> None:
+    opsgenie_enabled = config.get('opsgenie')
+    wait_time = config.get('wait_time')
+    reply_message = config.get('reply_message')
+    log(f"Scheduling reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
     try:
         await asyncio.sleep(wait_time)
         await send_message(app, channel, user, reply_message, ts)
@@ -795,9 +889,9 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, u
             permalink = await get_message_permalink(app, channel, ts)
             await post_opsgenie_alert(app, opsgenie_token, channel, user, text, ts, permalink)
     except asyncio.CancelledError as e:
-        log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name}, user @{user.name}:", e)
+        log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
     except Exception as e:
-        log_error(f"Failed to send scheduled reply for message {ts} in channel #{channel.name}, user @{user.name}:", e)
+        log_error(f"Failed to send scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
 
 async def replace_ids(app: AsyncApp, channel: Channel | None, text: str) -> str:
     for match in ID_PATTERN.finditer(text):
@@ -921,7 +1015,7 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
     user = None
     if user_id:
         user = await get_user_by_id(app, user_id)
-    elif bot_id and channel.config.get('include_bots', False):
+    elif bot_id and any(c.get('include_bots', False) for c in channel.configs.values()):
         user = await get_user_by_id(app, bot_id)
 
     if subtype == 'message_deleted' and previous_message:
@@ -939,34 +1033,52 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
         await handle_channel_message(app, opsgenie_token, channel, user, text, ts)
 
 async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: User, thread_ts: str):
-    key = (channel.id, thread_ts)
-    if key in scheduled_messages and scheduled_messages[key].user_id != reply_user.id:
-        message_user_id = scheduled_messages[key].user_id
-        message_user = await get_user_by_id(app, message_user_id)
-        log(f"Thread reply by user @{reply_user.name} detected. Cancelling reminder for message {thread_ts} in channel #{channel.name}, user @{message_user.name}")
+    keys_to_cancel = []
+    for key, scheduled_reply in scheduled_messages.items():
+        if key[0] == channel.id and key[1] == thread_ts and scheduled_reply.user_id != reply_user.id:
+            keys_to_cancel.append(key)
+
+    if not keys_to_cancel:
+        return
+
+    message_user_id = scheduled_messages[keys_to_cancel[0]].user_id
+    message_user = await get_user_by_id(app, message_user_id)
+    log(f"Thread reply by user @{reply_user.name} detected. Cancelling {len(keys_to_cancel)} reminder(s) for message {thread_ts} in channel #{channel.name}, user @{message_user.name}")
+
+    for key in keys_to_cancel:
         scheduled_messages[key].task.cancel()
         del scheduled_messages[key]
 
 async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str):
-    only_work_days = channel.config.get('only_work_days')
-    hours = channel.config.get('hours')
-    included_teams = channel.config.get('included_teams')
-    excluded_teams = channel.config.get('excluded_teams')
-    if only_work_days and not is_work_day():
-        log(f"Message from user @{user.name} in #{channel.name} will be ignored because of a non work day.")
-        return
-    if len(hours) == 2 and not is_work_time(hours[0], hours[1]):
-        log(f"Message from user @{user.name} in #{channel.name} will be ignored because it was sent outside work time.")
-        return
-    if len(included_teams) > 0 and user.team not in included_teams:
-        log(f"Message from user @{user.name} in #{channel.name} will be ignored because team '{user.team}' is not included.")
-        return
-    if len(excluded_teams) > 0 and user.team in excluded_teams:
-        log(f"Message from user @{user.name} in #{channel.name} will be ignored because team '{user.team}' is excluded.")
-        return
+    for config_name, config in channel.configs.items():
+        only_work_days = config.get('only_work_days')
+        hours = config.get('hours')
+        included_teams = config.get('included_teams')
+        excluded_teams = config.get('excluded_teams')
+        pattern = config.get('pattern')
+        pattern_case_sensitive = config.get('pattern_case_sensitive')
 
-    task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, user, text, ts))
-    scheduled_messages[(channel.id, ts)] = ScheduledReply(task, user.id)
+        if only_work_days and not is_work_day():
+            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because of a non work day.")
+            continue
+        if len(hours) == 2 and not is_work_time(hours[0], hours[1]):
+            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because it was sent outside work time.")
+            continue
+        if len(included_teams) > 0 and user.team not in included_teams:
+            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because team '{user.team}' is not included.")
+            continue
+        if len(excluded_teams) > 0 and user.team in excluded_teams:
+            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because team '{user.team}' is excluded.")
+            continue
+
+        if pattern:
+            flags = 0 if pattern_case_sensitive else re.IGNORECASE
+            if not re.search(pattern, text, flags):
+                log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because it does not match pattern '{pattern}'.")
+                continue
+
+        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, config, config_name, user, text, ts))
+        scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
 
 async def handle_reaction_added(app: AsyncApp, event):
     item = event.get('item', {})
@@ -974,14 +1086,21 @@ async def handle_reaction_added(app: AsyncApp, event):
     user_id = event.get('user', '')
     ts = item.get('ts')
 
-    # Cancel the scheduled task if it exists
-    key = (channel_id, ts)
-    if key in scheduled_messages and scheduled_messages[key].user_id != user_id:
-        channel = await get_channel_by_id(app, channel_id)
-        message_user_id = scheduled_messages[key].user_id
-        message_user = await get_user_by_id(app, message_user_id)
-        reaction_user = await get_user_by_id(app, user_id)
-        log(f"Reaction added by user @{reaction_user.name}. Cancelling reminder for message {ts} in channel #{channel.name}, user @{message_user.name}")
+    keys_to_cancel = []
+    for key, scheduled_reply in scheduled_messages.items():
+        if key[0] == channel_id and key[1] == ts and scheduled_reply.user_id != user_id:
+            keys_to_cancel.append(key)
+
+    if not keys_to_cancel:
+        return
+
+    channel = await get_channel_by_id(app, channel_id)
+    message_user_id = scheduled_messages[keys_to_cancel[0]].user_id
+    message_user = await get_user_by_id(app, message_user_id)
+    reaction_user = await get_user_by_id(app, user_id)
+    log(f"Reaction added by user @{reaction_user.name}. Cancelling {len(keys_to_cancel)} reminder(s) for message {ts} in channel #{channel.name}, user @{message_user.name}")
+
+    for key in keys_to_cancel:
         scheduled_messages[key].task.cancel()
         del scheduled_messages[key]
 
@@ -990,10 +1109,16 @@ async def handle_message_deletion(app: AsyncApp, channel: Channel, previous_mess
         log(f"Ignoring message deletion by bot from channel #{channel.name}.")
         return
 
-    # Cancel the scheduled task if it exists
-    key = (channel.id, previous_message_ts)
-    if key in scheduled_messages:
-        log(f"Message deleted. Cancelling reply for message {previous_message_ts} in channel #{channel.name}, user @{previous_message_user.name}")
+    keys_to_cancel = []
+    for key in scheduled_messages.keys():
+        if key[0] == channel.id and key[1] == previous_message_ts:
+            keys_to_cancel.append(key)
+
+    if not keys_to_cancel:
+        return
+
+    log(f"Message deleted. Cancelling {len(keys_to_cancel)} reply/replies for message {previous_message_ts} in channel #{channel.name}, user @{previous_message_user.name}")
+    for key in keys_to_cancel:
         scheduled_messages[key].task.cancel()
         del scheduled_messages[key]
 
