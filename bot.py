@@ -160,6 +160,12 @@ def __log(file, prefix, *args: object) -> None:
     prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} {prefix}:"
     print(prefix, message, flush=True, file=file)
 
+def strip_quotes(text: str) -> str:
+    if text and ((text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'"))):
+        text = text[1:-1]
+
+    return text
+
 def normalize_id(id: str) -> str: return id.lower().strip()
 
 def normalize_user_name(user_name: str) -> str: return user_name.lower().strip().replace('.', '')
@@ -476,10 +482,10 @@ def is_command(text: str) -> bool:
 async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> bool:
     """Parses and executes a command, returns True if a command was matched."""
     if (match := SET_WAIT_TIME_PATTERN.match(command_text)):
-        wait_time_minutes = int(match.group("wait_time").strip('"').strip("'"))
+        wait_time_minutes = int(strip_quotes(match.group("wait_time")))
         await set_wait_time(app, channel, config_name, wait_time_minutes, user, thread_ts)
     elif (match := SET_REPLY_MESSAGE_PATTERN.match(command_text)):
-        message = match.group("message").strip('"').strip("'")
+        message = strip_quotes(match.group("message"))
         await set_reply_message(app, channel, config_name, message, user, thread_ts)
     elif (match := SET_PATTERN_PATTERN.match(command_text)):
         pattern = match.group("pattern")
@@ -498,26 +504,26 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
     elif (match := DISABLE_ONLY_WORK_DAYS_PATTERN.match(command_text)):
         await set_only_work_days(app, channel, config_name, False, user, thread_ts)
     elif (match := SET_WORK_HOURS_PATTERN.match(command_text)):
-        start = match.group("start").strip('"').strip("'")
-        end = match.group("end").strip('"').strip("'")
+        start = strip_quotes(match.group("start"))
+        end = strip_quotes(match.group("end"))
         await set_work_hours(app, channel, config_name, start, end, user, thread_ts)
     elif LIST_TEAMS_PATTERN.match(command_text):
         await list_teams(app, channel, user, thread_ts)
     elif (match := EMPLOYEE_TEAM_PATTERN.match(command_text)):
-        username = match.group("user").strip('"').strip("'")
+        username = strip_quotes(match.group("user"))
         await get_team_of(app, channel, username, user, thread_ts)
     elif (match := ADD_EXCLUDED_TEAM_PATTERN.match(command_text)):
-        team = match.group("team").strip('"').strip("'")
+        team = strip_quotes(match.group("team"))
         await add_excluded_team(app, channel, config_name, team, user, thread_ts)
     elif (match := CLEAR_EXCLUDED_TEAM_PATTERN.match(command_text)):
         await clear_excluded_team(app, channel, config_name, user, thread_ts)
     elif (match := ADD_INCLUDED_TEAM_PATTERN.match(command_text)):
-        team = match.group("team").strip('"').strip("'")
+        team = strip_quotes(match.group("team"))
         await add_included_team(app, channel, config_name, team, user, thread_ts)
     elif (match := CLEAR_INCLUDED_TEAM_PATTERN.match(command_text)):
         await clear_included_team(app, channel, config_name, user, thread_ts)
     elif (match := DELETE_CONFIG_PATTERN.match(command_text)):
-        name = match.group("name").strip('"').strip("'")
+        name = strip_quotes(match.group("name"))
         await delete_config(app, channel, name, user, thread_ts)
     elif SHOW_CONFIG_PATTERN.match(command_text):
         await show_config(app, channel, user, thread_ts)
@@ -636,8 +642,7 @@ async def set_pattern(app: AsyncApp, channel: Channel, config_name: str, pattern
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()
 
-    if pattern_str and ((pattern_str.startswith('"') and pattern_str.endswith('"')) or (pattern_str.startswith("'") and pattern_str.endswith("'"))):
-        pattern_str = pattern_str[1:-1]
+    pattern_str = strip_quotes(pattern_str)
 
     # Validate the regex pattern
     try:
@@ -746,6 +751,7 @@ async def list_teams(app: AsyncApp, channel: Channel, user: User, thread_ts: str
 
 async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User, thread_ts: str = "") -> None:
     message = None
+    log_debug(channel, f"Looking up users from message `{username}`...")
     for match in ID_PATTERN.finditer(username):
         full_match = match.group(0)
         log_debug(channel, f"Found ID match: {full_match}...")
