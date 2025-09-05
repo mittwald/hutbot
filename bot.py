@@ -834,13 +834,13 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
 
 async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     update_text = (
-        "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's whats new:\n\n"
+        "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what's :new::\n\n"
         "> * :sparkles: Now I can also handle multiple configurations per channel* :partying_face:\n>\n"
         "> Now you can *optionally specify a config name* for commands to edit a specific configuration.\n"
         "> There can be an *unlimited number of configurations per channel*. :rocket:\n>\n"
         f"> All channels have a `{DEFAULT_CONFIG_NAME}` config, which also holds the previous configuration.\n>\n"
         f"> *Commands work like before.* By omitting the config name, you'll edit `{DEFAULT_CONFIG_NAME}`.\n>\n"
-        "> :thinking_face: *Why?* 💡 One use case would be to configure reply messages for *bi-directional communication*.\n>\n"
+        "> :thinking_face: *Why?* :bulb: One use case would be to configure reply messages for *bi-directional communication*.\n>\n"
         ">   *1.* Team A sends a message without a response :arrow_right: B is notified.\n"
         ">   *2.* Team B sends a message without a response :arrow_right: A is notified.\n>\n"
         "> Also, you could specify a *regex pattern to only respond to certain messages* :new:.\n"
