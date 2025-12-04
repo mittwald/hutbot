@@ -55,7 +55,15 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
      - `message.im`
      - `message.mpim`
 
-6. **Install the App**
+6. **Add Slash Command**
+
+   - Go to **"Slash Commands"**.
+   - Click **"Create New Command"**.
+   - Set the command to `/hutbot`.
+   - Set the short description to `Configure @Hutbot`.
+   - Click **"Save"**.
+
+7. **Install the App**
 
    - Go to **"Install App"**.
    - Click **"Install App to Workspace"** and authorize the app.
