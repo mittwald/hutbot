@@ -1270,10 +1270,12 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
         log(f"Ignoring message with subtype '{subtype}' for channel #{channel.name}.")
         return
 
+    actor_is_bot = False
     user = None
     if user_id:
         user = await get_user_by_id(app, user_id)
-    elif bot_id and any(c.get('include_bots', False) for c in channel.configs.values()):
+    elif bot_id and (thread_ts or any(c.get('include_bots', False) for c in channel.configs.values())):
+        actor_is_bot = True
         user = await get_user_by_id(app, bot_id)
 
     if subtype == 'message_deleted' and previous_message:
@@ -1285,15 +1287,49 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
         await process_command(app, text, channel, user, ts)
     elif user and thread_ts:
         # thread
-        await handle_thread_response(app, channel, user, thread_ts)
+        await handle_thread_response(app, channel, user, thread_ts, actor_is_bot)
     elif user and ts:
         # channel message
-        await handle_channel_message(app, opsgenie_token, channel, user, text, ts)
+        await handle_channel_message(app, opsgenie_token, channel, user, text, ts, actor_is_bot)
 
-async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: User, thread_ts: str):
+def user_matches_actor_criteria(config: dict | None, user: User, actor_is_bot: bool = False) -> bool:
+    if not config:
+        return False
+
+    if actor_is_bot and not config.get('include_bots', False):
+        return False
+
+    included_teams = config.get('included_teams', [])
+    if included_teams and user.team not in included_teams:
+        return False
+
+    excluded_teams = config.get('excluded_teams', [])
+    if excluded_teams and user.team in excluded_teams:
+        return False
+
+    return True
+
+def get_actor_mismatch_reason(config: dict | None, user: User, actor_is_bot: bool = False) -> str:
+    if not config:
+        return "the configuration no longer exists"
+    if actor_is_bot and not config.get('include_bots', False):
+        return "bots are not included"
+    included_teams = config.get('included_teams', [])
+    if included_teams and user.team not in included_teams:
+        return f"team '{user.team}' is not included"
+    excluded_teams = config.get('excluded_teams', [])
+    if excluded_teams and user.team in excluded_teams:
+        return f"team '{user.team}' is excluded"
+    return "the actor does not match the configuration"
+
+async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: User, thread_ts: str, actor_is_bot: bool = False):
     keys_to_cancel = []
     for key, scheduled_reply in scheduled_messages.items():
-        if key[0] == channel.id and key[1] == thread_ts and scheduled_reply.user_id != reply_user.id:
+        if key[0] != channel.id or key[1] != thread_ts:
+            continue
+
+        config = channel.configs.get(key[2])
+        if not user_matches_actor_criteria(config, reply_user, actor_is_bot):
             keys_to_cancel.append(key)
 
     if not keys_to_cancel:
@@ -1307,12 +1343,10 @@ async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: Us
         scheduled_messages[key].task.cancel()
         del scheduled_messages[key]
 
-async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str):
+async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, actor_is_bot: bool = False):
     for config_name, config in channel.configs.items():
         only_work_days = config.get('only_work_days')
         hours = config.get('hours')
-        included_teams = config.get('included_teams')
-        excluded_teams = config.get('excluded_teams')
         pattern = config.get('pattern')
         pattern_case_sensitive = config.get('pattern_case_sensitive')
 
@@ -1322,11 +1356,8 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel: Ch
         if len(hours) == 2 and not is_work_time(hours[0], hours[1]):
             log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because it was sent outside work time.")
             continue
-        if len(included_teams) > 0 and user.team not in included_teams:
-            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because team '{user.team}' is not included.")
-            continue
-        if len(excluded_teams) > 0 and user.team in excluded_teams:
-            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because team '{user.team}' is excluded.")
+        if not user_matches_actor_criteria(config, user, actor_is_bot):
+            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because {get_actor_mismatch_reason(config, user, actor_is_bot)}.")
             continue
 
         if pattern:
@@ -1343,19 +1374,23 @@ async def handle_reaction_added(app: AsyncApp, event):
     channel_id = item.get('channel', '')
     user_id = event.get('user', '')
     ts = item.get('ts')
+    channel = await get_channel_by_id(app, channel_id)
+    reaction_user = await get_user_by_id(app, user_id)
 
     keys_to_cancel = []
     for key, scheduled_reply in scheduled_messages.items():
-        if key[0] == channel_id and key[1] == ts and scheduled_reply.user_id != user_id:
+        if key[0] != channel_id or key[1] != ts:
+            continue
+
+        config = channel.configs.get(key[2])
+        if not user_matches_actor_criteria(config, reaction_user):
             keys_to_cancel.append(key)
 
     if not keys_to_cancel:
         return
 
-    channel = await get_channel_by_id(app, channel_id)
     message_user_id = scheduled_messages[keys_to_cancel[0]].user_id
     message_user = await get_user_by_id(app, message_user_id)
-    reaction_user = await get_user_by_id(app, user_id)
     log(f"Reaction added by user @{reaction_user.name}. Cancelling {len(keys_to_cancel)} reminder(s) for message {ts} in channel #{channel.name}, user @{message_user.name}")
 
     for key in keys_to_cancel:

@@ -207,7 +207,11 @@ async def test_handle_channel_message_multi_config_and_pattern():
 @pytest.mark.asyncio
 async def test_multi_cancel_thread_response():
     app = AsyncMock()
-    channel = Channel(id="C123", name="test-ch", configs={})
+    configs = {
+        "config1": {**DEFAULT_CONFIG.copy(), "included_teams": ["A"]},
+        "config2": {**DEFAULT_CONFIG.copy(), "included_teams": ["B"]},
+    }
+    channel = Channel(id="C123", name="test-ch", configs=configs)
     user1 = User(id="U1", name="user1", real_name="User One", team="A")
     user2 = User(id="U2", name="user2", real_name="User Two", team="B")
     ts = "12345.6789"
@@ -225,17 +229,22 @@ async def test_multi_cancel_thread_response():
         await handle_thread_response(app, channel, user2, ts)
 
     task1.cancel.assert_called_once()
-    task2.cancel.assert_called_once()
-    assert len(scheduled_messages) == 0
+    task2.cancel.assert_not_called()
+    assert list(scheduled_messages.keys()) == [(channel.id, ts, "config2")]
 
 @pytest.mark.asyncio
 async def test_multi_cancel_reaction_added():
     app = AsyncMock()
     channel_id = "C123"
     user1_id = "U1"
-    user2_id = "U2"
+    user2 = User(id="U2", name="user2", real_name="User Two", team="B")
     ts = "12345.6789"
-    event = {'item': {'channel': channel_id, 'ts': ts}, 'user': user2_id}
+    event = {'item': {'channel': channel_id, 'ts': ts}, 'user': user2.id}
+    configs = {
+        "config1": {**DEFAULT_CONFIG.copy(), "included_teams": ["A"]},
+        "config2": {**DEFAULT_CONFIG.copy(), "included_teams": ["B"]},
+    }
+    channel = Channel(id=channel_id, name="test-ch", configs=configs)
 
     task1 = AsyncMock()
     task1.cancel = MagicMock()
@@ -246,12 +255,57 @@ async def test_multi_cancel_reaction_added():
     scheduled_messages[(channel_id, ts, "config1")] = ScheduledReply(task=task1, user_id=user1_id)
     scheduled_messages[(channel_id, ts, "config2")] = ScheduledReply(task=task2, user_id=user1_id)
 
-    with patch('bot.get_channel_by_id'), patch('bot.get_user_by_id'):
+    with patch('bot.get_channel_by_id', return_value=channel), patch('bot.get_user_by_id', side_effect=[user2, User(id=user1_id, name="user1", real_name="User One", team="A")]):
         await handle_reaction_added(app, event)
 
     task1.cancel.assert_called_once()
+    task2.cancel.assert_not_called()
+    assert list(scheduled_messages.keys()) == [(channel_id, ts, "config2")]
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_ignores_bot_for_configs_without_include_bots():
+    app = AsyncMock()
+    configs = {
+        "bots": {**DEFAULT_CONFIG.copy(), "include_bots": True},
+        "humans": {**DEFAULT_CONFIG.copy(), "include_bots": False},
+    }
+    channel = Channel(id="C12345", name="general", configs=configs)
+    bot_user = User(id="B12345", name="alert-bot", real_name="Alert Bot", team="Bots")
+
+    with patch('bot.is_work_day', return_value=True), \
+         patch('bot.schedule_reply') as mock_schedule_reply:
+        scheduled_messages.clear()
+        await handle_channel_message(app, "token", channel, bot_user, "Alarm", "1234.1", actor_is_bot=True)
+
+    mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["bots"], "bots", bot_user, "Alarm", "1234.1")
+
+@pytest.mark.asyncio
+async def test_thread_response_by_bot_cancels_only_configs_without_include_bots():
+    app = AsyncMock()
+    configs = {
+        "bots": {**DEFAULT_CONFIG.copy(), "include_bots": True},
+        "humans": {**DEFAULT_CONFIG.copy(), "include_bots": False},
+    }
+    channel = Channel(id="C123", name="test-ch", configs=configs)
+    bot_user = User(id="B1", name="alert-bot", real_name="Alert Bot", team="Bots")
+    message_user = User(id="U1", name="user1", real_name="User One", team="A")
+    ts = "12345.6789"
+
+    task1 = AsyncMock()
+    task1.cancel = MagicMock()
+    task2 = AsyncMock()
+    task2.cancel = MagicMock()
+
+    scheduled_messages.clear()
+    scheduled_messages[(channel.id, ts, "bots")] = ScheduledReply(task=task1, user_id=message_user.id)
+    scheduled_messages[(channel.id, ts, "humans")] = ScheduledReply(task=task2, user_id=message_user.id)
+
+    with patch('bot.get_user_by_id', return_value=message_user):
+        await handle_thread_response(app, channel, bot_user, ts, actor_is_bot=True)
+
+    task1.cancel.assert_not_called()
     task2.cancel.assert_called_once()
-    assert len(scheduled_messages) == 0
+    assert list(scheduled_messages.keys()) == [(channel.id, ts, "bots")]
 
 @pytest.mark.asyncio
 async def test_show_config():
