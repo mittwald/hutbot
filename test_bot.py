@@ -78,6 +78,62 @@ async def test_process_command_set_opsgenie_schedule():
         mock_send_message.assert_called_with(app, channel, user, "*OpsGenie schedule* set to `Team Primary` in configuration `default`.", thread_ts)
 
 @pytest.mark.asyncio
+async def test_process_command_list_opsgenie_schedules():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    response = AsyncMock()
+    response.status = 200
+    response.json = AsyncMock(return_value={
+        "data": [
+            {"name": "Zulu"},
+            {"name": "alpha"},
+        ]
+    })
+    response_context = AsyncMock()
+    response_context.__aenter__.return_value = response
+    response_context.__aexit__.return_value = None
+
+    session = MagicMock()
+    session.get.return_value = response_context
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = session
+    session_context.__aexit__.return_value = None
+
+    with patch('bot.get_env_var', return_value="token"), \
+         patch('bot.aiohttp.ClientSession', return_value=session_context), \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "list opsgenie-schedules", channel, user, thread_ts)
+
+        mock_send_message.assert_called_with(
+            app,
+            channel,
+            user,
+            "*OpsGenie schedules*:\n`alpha`\n`Zulu`",
+            thread_ts
+        )
+
+@pytest.mark.asyncio
+async def test_process_command_list_opsgenie_schedules_without_token():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.get_env_var', return_value=""), patch('bot.send_message') as mock_send_message:
+        await process_command(app, "list opsgenie-schedules", channel, user, thread_ts)
+
+        mock_send_message.assert_called_with(
+            app,
+            channel,
+            user,
+            "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.",
+            thread_ts
+        )
+
+@pytest.mark.asyncio
 async def test_process_command_set_pattern():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={})

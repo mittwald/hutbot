@@ -106,6 +106,7 @@ ADD_INCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?included?([_ -]?te
 CLEAR_INCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+included?([_ -]?teams?)?')
 LIST_TEAMS_PATTERN = re.compile(r'^(list\s+)?teams?$', re.IGNORECASE)
 EMPLOYEE_TEAM_PATTERN = re.compile(r'^team(\s+of)?\s+(?P<user>.+)$', re.IGNORECASE)
+LIST_OPSGENIE_SCHEDULES_PATTERN = re.compile(r'^list\s+opsgenie[_ -]?schedules$', re.IGNORECASE)
 ENABLE_OPSGENIE_PATTERN = create_command_pattern(r'enable\s+(opsgenie|alerts?)')
 DISABLE_OPSGENIE_PATTERN = create_command_pattern(r'disable\s+(opsgenie|alerts?)')
 ENABLE_BOTS_PATTERN = create_command_pattern(r'(enable|include|set)?\s+bots?')
@@ -548,6 +549,8 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
         await set_work_hours(app, channel, config_name, start, end, user, thread_ts)
     elif LIST_TEAMS_PATTERN.match(command_text):
         await list_teams(app, channel, user, thread_ts)
+    elif LIST_OPSGENIE_SCHEDULES_PATTERN.match(command_text):
+        await list_opsgenie_schedules(app, channel, user, thread_ts)
     elif (match := EMPLOYEE_TEAM_PATTERN.match(command_text)):
         username = strip_quotes(match.group("user"))
         await get_team_of(app, channel, username, user, thread_ts)
@@ -828,6 +831,47 @@ async def list_teams(app: AsyncApp, channel: Channel, user: User, thread_ts: str
     message = f"*Available teams*:\n{'\n'.join(sorted(team_cache, key=lambda v: v.upper()))}"
     await send_message(app, channel, user, message, thread_ts)
 
+async def list_opsgenie_schedules(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
+    opsgenie_token = get_env_var("OPSGENIE_TOKEN")
+    if not opsgenie_token:
+        await send_message(app, channel, user, "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.", thread_ts)
+        return
+
+    url = "https://api.opsgenie.com/v2/schedules"
+    headers = {
+        "Authorization": f"GenieKey {opsgenie_token}",
+    }
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    log_error(f"Failed to list OpsGenie schedules: {response.status}")
+                    await send_message(app, channel, user, f"Failed to list OpsGenie schedules: HTTP {response.status}.", thread_ts)
+                    return
+
+                payload = await response.json()
+    except Exception as e:
+        log_error("Failed to list OpsGenie schedules:", e)
+        await send_message(app, channel, user, "Failed to list OpsGenie schedules.", thread_ts)
+        return
+
+    schedules = payload.get("data", [])
+    if not schedules:
+        await send_message(app, channel, user, "No OpsGenie schedules found.", thread_ts)
+        return
+
+    schedule_names = sorted(
+        (schedule.get("name", "").strip() for schedule in schedules if schedule.get("name")),
+        key=str.casefold
+    )
+    if not schedule_names:
+        await send_message(app, channel, user, "No OpsGenie schedules found.", thread_ts)
+        return
+
+    message = "*OpsGenie schedules*:\n" + "\n".join(f"`{name}`" for name in schedule_names)
+    await send_message(app, channel, user, message, thread_ts)
+
 async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User, thread_ts: str = "") -> None:
     message = None
     log_debug(channel, f"Looking up users from message `{username}`...")
@@ -961,6 +1005,9 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "*List Available Teams:*\n"
         "```/hutbot list teams```\n"
         "Lists the available teams.\n\n"
+        "*List OpsGenie Schedules:*\n"
+        "```/hutbot list opsgenie-schedules```\n"
+        "Lists the available OpsGenie schedules.\n\n"
         "*Team of User:*\n"
         "```/hutbot team of <user>```\n"
         "Lists the team of a user. Replace `<user>` with @<user>.\n\n"
