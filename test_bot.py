@@ -62,7 +62,20 @@ async def test_migrate_and_apply_defaults():
     assert migrated_config["C123"]["default"]["wait_time"] == 60
     assert migrated_config["C123"]["default"]["reply_message"] == "Old message"
     assert migrated_config["C123"]["default"]["opsgenie"] is False
+    assert migrated_config["C123"]["default"]["opsgenie_schedule_name"] == ""
     assert migrated_config["C123"]["default"]["pattern"] is None
+
+@pytest.mark.asyncio
+async def test_process_command_set_opsgenie_schedule():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await process_command(app, "set opsgenie-schedule Team Primary", channel, user, thread_ts)
+        assert channel.configs["default"]["opsgenie_schedule_name"] == "Team Primary"
+        mock_send_message.assert_called_with(app, channel, user, "*OpsGenie schedule* set to `Team Primary` in configuration `default`.", thread_ts)
 
 @pytest.mark.asyncio
 async def test_process_command_set_pattern():
@@ -203,6 +216,7 @@ async def test_show_config():
 
         sent_message = mock_send_message.call_args.args[3]
         assert "*Configuration*: `default`" in sent_message
+        assert "*OpsGenie schedule*: ``" in sent_message
         assert "*Wait time*: `10` minutes" in sent_message
         assert "Default message" in sent_message
         assert "*Configuration*: `alarms`" in sent_message
@@ -247,7 +261,7 @@ async def test_set_reply_message_template():
             app,
             channel,
             "default",
-            "Hi {{user}}, {{user_name}}, {{team}}, {{channel}}, {{channel_name}}, {{message}}, {{message_link}}, {{config}}, {{wait_minutes}}, {{timestamp}}",
+            "Hi {{user}}, {{user_name}}, {{team}}, {{channel}}, {{channel_name}}, {{message}}, {{message_link}}, {{config}}, {{wait_minutes}}, {{timestamp}}, {{opsgenie_current_user}}, {{opsgenie_current_email}}, {{opsgenie_current_name}}",
             user,
             ""
         )
@@ -257,7 +271,7 @@ async def test_set_reply_message_template():
             app,
             channel,
             user,
-            "*Reply message* set to: Hi {{user}}, {{user_name}}, {{team}}, {{channel}}, {{channel_name}}, {{message}}, {{message_link}}, {{config}}, {{wait_minutes}}, {{timestamp}} in configuration `default`.",
+            "*Reply message* set to: Hi {{user}}, {{user_name}}, {{team}}, {{channel}}, {{channel_name}}, {{message}}, {{message_link}}, {{config}}, {{wait_minutes}}, {{timestamp}}, {{opsgenie_current_user}}, {{opsgenie_current_email}}, {{opsgenie_current_name}} in configuration `default`.",
             ""
         )
 
@@ -302,6 +316,58 @@ async def test_schedule_reply_renders_template_variables():
         )
 
 @pytest.mark.asyncio
+async def test_schedule_reply_renders_opsgenie_template_variables():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = DEFAULT_CONFIG.copy()
+    config["wait_time"] = 0
+    config["opsgenie_schedule_name"] = "Team Primary"
+    config["reply_message"] = "On call: {{opsgenie_current_user}} / {{opsgenie_current_email}} / {{opsgenie_current_name}}"
+
+    with patch('bot.get_opsgenie_template_variables', new=AsyncMock(return_value={
+        "opsgenie_current_user": "<@U999>",
+        "opsgenie_current_email": "oncall@example.com",
+        "opsgenie_current_name": "On Call User",
+    })), patch('bot.send_message') as mock_send_message:
+        await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
+
+        mock_send_message.assert_called_with(
+            app,
+            channel,
+            user,
+            "On call: <@U999> / oncall@example.com / On Call User",
+            "1234.1"
+        )
+
+@pytest.mark.asyncio
+async def test_schedule_reply_uses_placeholder_for_unmapped_opsgenie_user():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = DEFAULT_CONFIG.copy()
+    config["wait_time"] = 0
+    config["opsgenie_schedule_name"] = "Team Primary"
+    config["reply_message"] = "On call: {{opsgenie_current_user}} / {{opsgenie_current_email}} / {{opsgenie_current_name}}"
+
+    with patch('bot.get_opsgenie_template_variables', new=AsyncMock(return_value={
+        "opsgenie_current_user": "<unknown-oncall>",
+        "opsgenie_current_email": "oncall@example.com",
+        "opsgenie_current_name": "oncall@example.com",
+    })), patch('bot.send_message') as mock_send_message:
+        await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
+
+        mock_send_message.assert_called_with(
+            app,
+            channel,
+            user,
+            "On call: <unknown-oncall> / oncall@example.com / oncall@example.com",
+            "1234.1"
+        )
+
+@pytest.mark.asyncio
 async def test_schedule_reply_keeps_plain_message_unchanged():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
@@ -311,7 +377,9 @@ async def test_schedule_reply_keeps_plain_message_unchanged():
     config["wait_time"] = 0
     config["reply_message"] = "Anybody?"
 
-    with patch('bot.send_message') as mock_send_message:
+    with patch('bot.get_opsgenie_template_variables', new=AsyncMock()) as mock_get_opsgenie_template_variables, \
+         patch('bot.send_message') as mock_send_message:
         await schedule_reply(app, "token", channel, config, "default", user, "Original text", "1234.1")
 
+        mock_get_opsgenie_template_variables.assert_not_awaited()
         mock_send_message.assert_called_with(app, channel, user, "Anybody?", "1234.1")

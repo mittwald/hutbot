@@ -2,6 +2,12 @@
 
 The hutbot is a simple Slack bot that monitors messages in a channel and automatically replies in a thread if no one reacts or responds to the message within a configurable time period (by default 30 minutes). The bot reminds channel members that a message has gone unanswered. Users can adjust both the waiting time and the reminder message directly within the channel, including `{{variable}}` placeholders in the reminder text.
 
+Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
+
+- `{{opsgenie_current_user}}` for a Slack `@mention`
+- `{{opsgenie_current_email}}` for the Opsgenie recipient email
+- `{{opsgenie_current_name}}` for the resolved Slack display name, or the Opsgenie email if no Slack match is found
+
 ## Step 1: Set Up the Slack App
 
 1. **Create a New Slack App**

@@ -6,6 +6,7 @@ import sys
 import collections
 import asyncio
 import json
+import urllib.parse
 import aiofiles
 import datetime
 import aiohttp  # Added for making HTTP requests
@@ -24,6 +25,7 @@ DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
     "opsgenie": False,
+    "opsgenie_schedule_name": "",
     "debug": False,
     "include_bots": False,
     "excluded_teams": [],
@@ -53,6 +55,7 @@ channel_config = {}
 scheduled_messages = {}
 
 user_id_cache = {}
+user_email_cache = {}
 id_user_cache = {}
 usergroup_id_cache = {}
 id_usergroup_cache = {}
@@ -67,18 +70,25 @@ ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 TIME_HOUR_PATTERN = re.compile(r"^[0-9]{1,2}$")
 CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-_\.:/]+$")
 TEMPLATE_VARIABLE_PATTERN = re.compile(r'{{\s*([a-z_][a-z0-9_]*)\s*}}')
+OPSGENIE_TEMPLATE_VARIABLES = {
+    "opsgenie_current_email",
+    "opsgenie_current_name",
+    "opsgenie_current_user",
+}
 SUPPORTED_TEMPLATE_VARIABLES = {
     "channel",
     "channel_name",
     "config",
     "message",
     "message_link",
+    *OPSGENIE_TEMPLATE_VARIABLES,
     "team",
     "timestamp",
     "user",
     "user_name",
     "wait_minutes",
 }
+UNKNOWN_ONCALL_PLACEHOLDER = "<unknown-oncall>"
 
 # Regex patterns for command parsing
 def create_command_pattern(command_regex: str) -> re.Pattern:
@@ -88,6 +98,7 @@ HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 WHATSNEW_PATTERN = re.compile(r'news', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = create_command_pattern(r'(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)')
 SET_REPLY_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?(message|reply)\s+(?P<message>.+)')
+SET_OPSGENIE_SCHEDULE_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?schedule\s+(?P<schedule>.+)')
 SET_PATTERN_PATTERN = create_command_pattern(r'set\s+pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|[^\r\n\t\f\v\s"\']+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
 ADD_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)')
 CLEAR_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+excluded?([_ -]?teams?)?')
@@ -381,8 +392,8 @@ async def update_usergroup_cache(app: AsyncApp) -> None:
           log_error(f"Failed to fetch usergroup list:", e)
 
 async def update_user_cache(app: AsyncApp) -> None:
-    global user_id_cache, id_user_cache
-    if not user_id_cache or not id_user_cache:
+    global user_id_cache, user_email_cache, id_user_cache
+    if not user_id_cache or not user_email_cache or not id_user_cache:
         employees = await load_employees()
         mappings = load_employee_mappings()
         try:
@@ -439,6 +450,8 @@ async def update_user_cache(app: AsyncApp) -> None:
                             user_team = employees[user_key].get('group', '').strip()
 
                     user_id_cache[user_name] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
+                    if user_email:
+                        user_email_cache[user_email] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
                     id_user_cache[user_id] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
                     if user_team not in team_cache:
                         team_cache.add(user_team)
@@ -458,6 +471,16 @@ async def get_user_by_name(app: AsyncApp, name: str) -> User:
     if not user:
         user = User(id=None, name=name, team=TEAM_UNKNOWN, real_name='')
     return user
+
+async def get_user_by_email(app: AsyncApp, email: str) -> User:
+    await update_user_cache(app)
+    normalized_email = normalize_id(email)
+    user = user_email_cache.get(normalized_email, None)
+    if user:
+        return user
+
+    user_alias = normalized_email.split('@')[0]
+    return await get_user_by_name(app, user_alias)
 
 async def get_usergroup_by_id(app: AsyncApp, id: str) -> Usergroup:
     await update_usergroup_cache(app)
@@ -500,6 +523,9 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
     elif (match := SET_REPLY_MESSAGE_PATTERN.match(command_text)):
         message = strip_quotes(match.group("message"))
         await set_reply_message(app, channel, config_name, message, user, thread_ts)
+    elif (match := SET_OPSGENIE_SCHEDULE_PATTERN.match(command_text)):
+        schedule_name = strip_quotes(match.group("schedule"))
+        await set_opsgenie_schedule_name(app, channel, config_name, schedule_name, user, thread_ts)
     elif (match := SET_PATTERN_PATTERN.match(command_text)):
         pattern = match.group("pattern")
         case_sensitive = match.group("case_sensitive")
@@ -622,6 +648,18 @@ async def set_opsgenie(app: AsyncApp, channel: Channel, config_name: str, enable
     await save_configuration()
     await send_message(app, channel, user, f"*OpsGenie integration* {'*enabled*' if enabled else '*disabled*'}{', but not configured' if enabled and not opsgenie_configured else ''} in configuration `{config_name}`.", thread_ts)
 
+async def set_opsgenie_schedule_name(app: AsyncApp, channel: Channel, config_name: str, schedule_name: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    if not schedule_name.strip():
+        await send_message(app, channel, user, "Invalid *OpsGenie schedule name*. Must be non-empty.", thread_ts)
+        return
+
+    schedule_name = schedule_name.strip()
+    channel.configs[config_name]['opsgenie_schedule_name'] = schedule_name
+    await save_configuration()
+    await send_message(app, channel, user, f"*OpsGenie schedule* set to `{schedule_name}` in configuration `{config_name}`.", thread_ts)
+
 async def set_wait_time(app: AsyncApp, channel: Channel, config_name: str, wait_time_minutes: int, user: User, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()
@@ -638,6 +676,9 @@ async def set_wait_time(app: AsyncApp, channel: Channel, config_name: str, wait_
 def find_unknown_template_variables(message: str) -> list[str]:
     variables = {match.group(1) for match in TEMPLATE_VARIABLE_PATTERN.finditer(message)}
     return sorted(variable for variable in variables if variable not in SUPPORTED_TEMPLATE_VARIABLES)
+
+def find_template_variables(message: str) -> set[str]:
+    return {match.group(1) for match in TEMPLATE_VARIABLE_PATTERN.finditer(message)}
 
 def render_reply_message_template(message: str, variables: dict[str, str]) -> str:
     def replace_variable(match: re.Match) -> str:
@@ -830,11 +871,13 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         pattern = config.get('pattern')
         pattern_case_sensitive = config.get('pattern_case_sensitive')
         reply_message = config.get('reply_message')
+        opsgenie_schedule_name = config.get('opsgenie_schedule_name')
 
         message += (
             f"\n\n---\n*Configuration*: `{config_name}`\n\n"
             f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
             f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
+            f"*OpsGenie schedule*: `{opsgenie_schedule_name}`\n\n"
             f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
             f"*Included teams*: {' '.join(f'`{team}`' for team in included_teams) if included_teams else '<None>'}\n\n"
             f"*Excluded teams*: {' '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
@@ -909,6 +952,9 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "*Disable OpsGenie Integration:*\n"
         "```/hutbot [config] disable opsgenie```\n"
         "Disables the OpsGenie integration.\n\n"
+        "*Set OpsGenie Schedule:*\n"
+        "```/hutbot [config] set opsgenie-schedule <name>```\n"
+        "Sets the OpsGenie schedule name used for current on-call template variables.\n\n"
         "*Set Wait Time:*\n"
         "```/hutbot [config] set wait-time <minutes>```\n"
         "Sets the wait time before I send a reminder. Replace `<minutes>` with the number of minutes you want.\n\n"
@@ -950,7 +996,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "Respond to messages matching the pattern, case sensitive with `1` (default) or `0`.\n\n"
         "*Set Reply Message:*\n"
         "```/hutbot [config] set message \"Hi {{user}}, your message in {{channel}} is still unanswered: {{message_link}}\"```\n"
-        "Sets the reminder message I'll send. Supported variables: `{{user}}`, `{{user_name}}`, `{{team}}`, `{{channel}}`, `{{channel_name}}`, `{{message}}`, `{{message_link}}`, `{{config}}`, `{{wait_minutes}}`, `{{timestamp}}`.\n\n"
+        "Sets the reminder message I'll send. Supported variables: `{{user}}`, `{{user_name}}`, `{{team}}`, `{{channel}}`, `{{channel_name}}`, `{{message}}`, `{{message_link}}`, `{{config}}`, `{{wait_minutes}}`, `{{timestamp}}`, `{{opsgenie_current_user}}`, `{{opsgenie_current_email}}`, `{{opsgenie_current_name}}`.\n\n"
         ":sparkles: *Delete Configuration:* :new:\n"
         "```/hutbot delete config <name>```\n"
         "Deletes a configuration. Replace `<name>` with the name of the config.\n\n"
@@ -963,6 +1009,64 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     )
     await send_message(app, channel, user, help_text, thread_ts)
 
+def get_opsgenie_placeholder_variables() -> dict[str, str]:
+    return {
+        "opsgenie_current_email": UNKNOWN_ONCALL_PLACEHOLDER,
+        "opsgenie_current_name": UNKNOWN_ONCALL_PLACEHOLDER,
+        "opsgenie_current_user": UNKNOWN_ONCALL_PLACEHOLDER,
+    }
+
+async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, config: dict) -> dict[str, str]:
+    schedule_name = config.get("opsgenie_schedule_name", "").strip()
+    variables = get_opsgenie_placeholder_variables()
+    if not schedule_name:
+        return variables
+    if not opsgenie_token:
+        log_warning(f"Cannot resolve OpsGenie schedule '{schedule_name}': missing token.")
+        return variables
+
+    encoded_schedule_name = urllib.parse.quote(schedule_name, safe="")
+    url = f"https://api.opsgenie.com/v2/schedules/{encoded_schedule_name}/on-calls"
+    headers = {
+        "Authorization": f"GenieKey {opsgenie_token}",
+    }
+    params = {
+        "scheduleIdentifierType": "name",
+        "flat": "true",
+    }
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, headers=headers, params=params) as response:
+                if response.status != 200:
+                    log_error(f"Failed to retrieve on-call recipients for OpsGenie schedule '{schedule_name}': {response.status}")
+                    return variables
+                payload = await response.json()
+    except Exception as e:
+        log_error(f"Failed to retrieve on-call recipients for OpsGenie schedule '{schedule_name}':", e)
+        return variables
+
+    recipients = payload.get("data", {}).get("onCallRecipients", [])
+    if not recipients:
+        log_warning(f"OpsGenie schedule '{schedule_name}' returned no current on-call recipients.")
+        return variables
+
+    recipient_email = recipients[0].strip()
+    if not recipient_email:
+        return variables
+
+    variables["opsgenie_current_email"] = recipient_email
+    variables["opsgenie_current_name"] = recipient_email
+
+    slack_user = await get_user_by_email(app, recipient_email)
+    if slack_user.id:
+        variables["opsgenie_current_user"] = f"<@{slack_user.id}>"
+        variables["opsgenie_current_name"] = slack_user.real_name if slack_user.real_name else slack_user.name
+    else:
+        log_warning(f"Failed to map OpsGenie recipient '{recipient_email}' to a Slack user.")
+
+    return variables
+
 async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str) -> None:
     opsgenie_enabled = config.get('opsgenie')
     wait_time = config.get('wait_time')
@@ -971,12 +1075,17 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
     try:
         await asyncio.sleep(wait_time)
         permalink = await get_message_permalink(app, channel, ts)
+        template_variables = find_template_variables(reply_message_template)
+        opsgenie_template_variables = {}
+        if OPSGENIE_TEMPLATE_VARIABLES.intersection(template_variables):
+            opsgenie_template_variables = await get_opsgenie_template_variables(app, opsgenie_token, config)
         reply_message = render_reply_message_template(reply_message_template, {
             "channel": f"#{channel.name}",
             "channel_name": channel.name,
             "config": config_name,
             "message": text,
             "message_link": permalink,
+            **opsgenie_template_variables,
             "team": user.team if user.team else TEAM_UNKNOWN,
             "timestamp": ts,
             "user": f"<@{user.id}>",
