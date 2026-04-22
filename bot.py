@@ -66,6 +66,19 @@ MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
 ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 TIME_HOUR_PATTERN = re.compile(r"^[0-9]{1,2}$")
 CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-_\.:/]+$")
+TEMPLATE_VARIABLE_PATTERN = re.compile(r'{{\s*([a-z_][a-z0-9_]*)\s*}}')
+SUPPORTED_TEMPLATE_VARIABLES = {
+    "channel",
+    "channel_name",
+    "config",
+    "message",
+    "message_link",
+    "team",
+    "timestamp",
+    "user",
+    "user_name",
+    "wait_minutes",
+}
 
 # Regex patterns for command parsing
 def create_command_pattern(command_regex: str) -> re.Pattern:
@@ -622,6 +635,17 @@ async def set_wait_time(app: AsyncApp, channel: Channel, config_name: str, wait_
     await save_configuration()
     await send_message(app, channel, user, f"*Wait time* set to `{wait_time_minutes}` minutes in configuration `{config_name}`.", thread_ts)
 
+def find_unknown_template_variables(message: str) -> list[str]:
+    variables = {match.group(1) for match in TEMPLATE_VARIABLE_PATTERN.finditer(message)}
+    return sorted(variable for variable in variables if variable not in SUPPORTED_TEMPLATE_VARIABLES)
+
+def render_reply_message_template(message: str, variables: dict[str, str]) -> str:
+    def replace_variable(match: re.Match) -> str:
+        variable = match.group(1)
+        return variables.get(variable, match.group(0))
+
+    return TEMPLATE_VARIABLE_PATTERN.sub(replace_variable, message)
+
 async def set_reply_message(app: AsyncApp, channel: Channel, config_name: str, message: str, user: User, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()
@@ -632,6 +656,20 @@ async def set_reply_message(app: AsyncApp, channel: Channel, config_name: str, m
     ok, error, message = await process_mentions(app, message)
     if not ok:
         await send_message(app, channel, user, "Invalid *reply message*: " + error + ".", thread_ts)
+        return
+    unknown_variables = find_unknown_template_variables(message)
+    if unknown_variables:
+        await send_message(
+            app,
+            channel,
+            user,
+            "Invalid *reply message*: unsupported template variable(s) "
+            + ", ".join(f"`{{{{{variable}}}}}`" for variable in unknown_variables)
+            + ". Supported variables: "
+            + ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
+            + ".",
+            thread_ts
+        )
         return
 
     channel.configs[config_name]['reply_message'] = message
@@ -911,8 +949,8 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "```/hutbot [config] set pattern \"<regex>\" [<case-sensitive>]```\n"
         "Respond to messages matching the pattern, case sensitive with `1` (default) or `0`.\n\n"
         "*Set Reply Message:*\n"
-        "```/hutbot [config] set message \"Your reminder message\"```\n"
-        "Sets the reminder message I'll send.\n\n"
+        "```/hutbot [config] set message \"Hi {{user}}, your message in {{channel}} is still unanswered: {{message_link}}\"```\n"
+        "Sets the reminder message I'll send. Supported variables: `{{user}}`, `{{user_name}}`, `{{team}}`, `{{channel}}`, `{{channel_name}}`, `{{message}}`, `{{message_link}}`, `{{config}}`, `{{wait_minutes}}`, `{{timestamp}}`.\n\n"
         ":sparkles: *Delete Configuration:* :new:\n"
         "```/hutbot delete config <name>```\n"
         "Deletes a configuration. Replace `<name>` with the name of the config.\n\n"
@@ -928,14 +966,26 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
 async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str) -> None:
     opsgenie_enabled = config.get('opsgenie')
     wait_time = config.get('wait_time')
-    reply_message = config.get('reply_message')
+    reply_message_template = config.get('reply_message')
     log(f"Scheduling reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
     try:
         await asyncio.sleep(wait_time)
+        permalink = await get_message_permalink(app, channel, ts)
+        reply_message = render_reply_message_template(reply_message_template, {
+            "channel": f"#{channel.name}",
+            "channel_name": channel.name,
+            "config": config_name,
+            "message": text,
+            "message_link": permalink,
+            "team": user.team if user.team else TEAM_UNKNOWN,
+            "timestamp": ts,
+            "user": f"<@{user.id}>",
+            "user_name": user.real_name if user.real_name else user.name,
+            "wait_minutes": str(wait_time // 60),
+        })
         await send_message(app, channel, user, reply_message, ts)
         if opsgenie_configured and opsgenie_enabled:
             log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name}...")
-            permalink = await get_message_permalink(app, channel, ts)
             await post_opsgenie_alert(app, opsgenie_token, channel, user, text, ts, permalink)
     except asyncio.CancelledError as e:
         log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)

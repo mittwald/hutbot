@@ -7,7 +7,7 @@ from bot import (
     scheduled_messages, set_work_hours, parse_time, is_work_day, is_work_time,
     DEFAULT_CONFIG, migrate_and_apply_defaults, set_pattern, show_config,
     handle_thread_response, handle_reaction_added, handle_message_deletion,
-    ScheduledReply
+    ScheduledReply, set_reply_message, schedule_reply
 )
 from slack_sdk.errors import SlackApiError
 import base64
@@ -235,3 +235,83 @@ async def test_process_command_delete_config():
         # Test deleting non-existent config
         await process_command(app, "delete config non-existent", channel, user, thread_ts)
         mock_send_message.assert_called_with(app, channel, user, "Configuration `non-existent` not found.", thread_ts)
+
+@pytest.mark.asyncio
+async def test_set_reply_message_template():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await set_reply_message(
+            app,
+            channel,
+            "default",
+            "Hi {{user}}, {{user_name}}, {{team}}, {{channel}}, {{channel_name}}, {{message}}, {{message_link}}, {{config}}, {{wait_minutes}}, {{timestamp}}",
+            user,
+            ""
+        )
+
+        assert "{{user}}" in channel.configs["default"]["reply_message"]
+        mock_send_message.assert_called_with(
+            app,
+            channel,
+            user,
+            "*Reply message* set to: Hi {{user}}, {{user_name}}, {{team}}, {{channel}}, {{channel_name}}, {{message}}, {{message_link}}, {{config}}, {{wait_minutes}}, {{timestamp}} in configuration `default`.",
+            ""
+        )
+
+@pytest.mark.asyncio
+async def test_set_reply_message_rejects_unknown_template_variable():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_reply_message(app, channel, "default", "Hi {{unknown}}", user, "")
+
+        assert channel.configs["default"]["reply_message"] == "Anybody?"
+        sent_message = mock_send_message.call_args.args[3]
+        assert "unsupported template variable(s) `{{unknown}}`" in sent_message
+        assert "`{{user}}`" in sent_message
+        assert "`{{message_link}}`" in sent_message
+
+@pytest.mark.asyncio
+async def test_schedule_reply_renders_template_variables():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = DEFAULT_CONFIG.copy()
+    config["wait_time"] = 0
+    config["reply_message"] = (
+        "Hi {{user}} ({{user_name}}) from {{team}} in {{channel}}/{{channel_name}}. "
+        "Config={{config}} Wait={{wait_minutes}} Ts={{timestamp}} "
+        "Message={{message}} Link={{message_link}}"
+    )
+
+    with patch('bot.send_message') as mock_send_message:
+        await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
+
+        mock_send_message.assert_called_with(
+            app,
+            channel,
+            user,
+            "Hi <@U12345> (Test User) from Testers in #general/general. Config=alerts Wait=0 Ts=1234.1 Message=Original text Link=https://slack.test/message",
+            "1234.1"
+        )
+
+@pytest.mark.asyncio
+async def test_schedule_reply_keeps_plain_message_unchanged():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = DEFAULT_CONFIG.copy()
+    config["wait_time"] = 0
+    config["reply_message"] = "Anybody?"
+
+    with patch('bot.send_message') as mock_send_message:
+        await schedule_reply(app, "token", channel, config, "default", user, "Original text", "1234.1")
+
+        mock_send_message.assert_called_with(app, channel, user, "Anybody?", "1234.1")

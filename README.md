@@ -1,6 +1,6 @@
 # hutbot Slack Bot
 
-The hutbot is a simple Slack bot that monitors messages in a channel and automatically replies in a thread if no one reacts or responds to the message within a configurable time period (by default 30 minutes). The bot reminds channel members that a message has gone unanswered. Users can adjust both the waiting time and the reminder message directly within the channel.
+The hutbot is a simple Slack bot that monitors messages in a channel and automatically replies in a thread if no one reacts or responds to the message within a configurable time period (by default 30 minutes). The bot reminds channel members that a message has gone unanswered. Users can adjust both the waiting time and the reminder message directly within the channel, including `{{variable}}` placeholders in the reminder text.
 
 ## Step 1: Set Up the Slack App
 
