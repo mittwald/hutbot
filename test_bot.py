@@ -372,6 +372,26 @@ async def test_schedule_reply_renders_template_variables():
         )
 
 @pytest.mark.asyncio
+async def test_schedule_reply_cleans_up_scheduled_message_after_send():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = DEFAULT_CONFIG.copy()
+    config["wait_time"] = 0
+    ts = "1234.1"
+    key = (channel.id, ts, "alerts")
+
+    scheduled_messages.clear()
+    scheduled_messages[key] = ScheduledReply(task=AsyncMock(), user_id=user.id)
+
+    with patch('bot.send_message') as mock_send_message:
+        await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", ts)
+
+    mock_send_message.assert_called_once()
+    assert key not in scheduled_messages
+
+@pytest.mark.asyncio
 async def test_schedule_reply_renders_opsgenie_template_variables():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}

@@ -1118,6 +1118,7 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
     opsgenie_enabled = config.get('opsgenie')
     wait_time = config.get('wait_time')
     reply_message_template = config.get('reply_message')
+    scheduled_message_key = (channel.id, ts, config_name)
     log(f"Scheduling reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
     try:
         await asyncio.sleep(wait_time)
@@ -1147,6 +1148,8 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
         log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
     except Exception as e:
         log_error(f"Failed to send scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
+    finally:
+        scheduled_messages.pop(scheduled_message_key, None)
 
 async def replace_ids(app: AsyncApp, channel: Channel | None, text: str) -> str:
     for match in ID_PATTERN.finditer(text):
