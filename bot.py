@@ -966,19 +966,15 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
 async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     update_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what's :new::\n\n"
-        "> * :sparkles: Now I can also handle multiple configurations per channel* :partying_face:\n>\n"
-        "> Now you can *optionally specify a config name* for commands to edit a specific configuration.\n"
-        "> There can be an *unlimited number of configurations per channel*. :rocket:\n>\n"
-        f"> All channels have a `{DEFAULT_CONFIG_NAME}` config, which also holds the previous configuration.\n>\n"
-        f"> *Commands work like before.* By omitting the config name, you'll edit `{DEFAULT_CONFIG_NAME}`.\n>\n"
-        "> :thinking_face: *Why?* :bulb: One use case would be to configure reply messages for *bi-directional communication*.\n>\n"
-        ">   *1.* Team A sends a message without a response :arrow_right: B is notified.\n"
-        ">   *2.* Team B sends a message without a response :arrow_right: A is notified.\n>\n"
-        "> Also, you could specify a *regex pattern to only respond to certain messages* :new:.\n"
-        ">   *1.* When a message contains `.*sales.*` :arrow_right: sales team is notified.\n"
-        ">   *2.* When a message contains `.*customer.*` :arrow_right: customer service team is notified.\n>\n"
-        "> You want to get rid of a config? :trash: Use `/hutbot delete config <config>`.\n>\n"
-        "> Maybe I could also do some AI magic here in the future? :sparkles:\n"
+        "> * :sparkles: You can now customize reminder messages with {{placeholders}}*.\n>\n"
+        "> That means Hutbot can include details like the person, channel, original message, or even a mention of the person who is currently on-call :exploding_head:.\n>\n"
+        "> Just configure an Opsgenie schedule and you are good to go.\n>\n"
+        "> * :clipboard: List available Opsgenie schedules, configure one of them and you're good to go.*.\n>\n"
+        "> * :no_bell: Cancellation of replies is smarter now, Hutbot will ONLY cancel responding, when the expected team(s) have already replied :light_bulb:*.\n>\n"
+        "> * Issue was:\n>\n"
+        "> - Team **A** sends a message for Team **B**\n"
+        "> - Someone else from Team **A** adds info\n"
+        "> - Hutbot would NOT remind Team **B** anymore :rotating_light:*\n"
     )
     await send_message(app, channel, user, update_text, thread_ts)
 
