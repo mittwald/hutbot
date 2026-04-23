@@ -816,15 +816,15 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
 async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     update_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what's :new::\n\n"
-        "> * :sparkles: You can now customize reminder messages with {{placeholders}}*.\n>\n"
-        "> That means Hutbot can include details like the person, channel, original message, or even a mention of the person who is currently on-call :exploding_head:.\n>\n"
-        "> Just configure an Opsgenie schedule and you are good to go.\n>\n"
-        "> * :clipboard: List available Opsgenie schedules, configure one of them and you're good to go.*.\n>\n"
-        "> * :no_bell: Cancellation of replies is smarter now, Hutbot will ONLY cancel responding, when the expected team(s) have already replied :light_bulb:*.\n>\n"
-        "> * Issue was:\n>\n"
-        "> - Team **A** sends a message for Team **B**\n"
-        "> - Someone else from Team **A** adds info\n"
-        "> - Hutbot would NOT remind Team **B** anymore :rotating_light:*\n"
+        "> * :pencil: Customize reply messages with `{{placeholders}}` *\n>\n"
+        "> That means Hutbot can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
+        "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
+        "> * :list-item: List available Opsgenie schedules *\n>\n"
+        "> * :bug: Hutbot now ONLY cancels replying, when the *expected* team(s) have already replied :light_bulb: *\n>\n"
+        "> Issue was:\n>\n"
+        "> 1. Team **A** sends a message intended for Team *B*\n"
+        "> 2. Someone else from Team *A* adds additional information\n"
+        "> 3. Hutbot cancel his reply and NOT remind Team *B* anymore :fail:\n"
     )
     await send_message(app, channel, user, update_text, thread_ts)
 
