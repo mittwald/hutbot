@@ -126,6 +126,15 @@ Load the environment variables before deploying with Helmfile:
 source .env
 ```
 
+To query the employee list locally from your terminal, you can use the standalone helper script:
+
+```bash
+python query_employees.py john
+python query_employees.py --team Support
+python query_employees.py john.slack --cache-only
+python query_employees.py john --json
+```
+
 Before running, update `helmfile.yaml.gotmpl` with your Docker image repository and other configuration values.
 
 Deploy the bot to your Kubernetes cluster using Helmfile:

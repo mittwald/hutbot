@@ -1,6 +1,4 @@
 import os
-import base64
-import binascii
 import re
 import sys
 import collections
@@ -10,10 +8,22 @@ import urllib.parse
 import aiofiles
 import datetime
 import aiohttp  # Added for making HTTP requests
-from unidecode import unidecode
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
+from employee_list import (
+    get_env_var,
+    load_employee_mappings,
+    load_employees,
+    load_env_file,
+    log,
+    log_error,
+    log_warning,
+    normalize_id,
+    normalize_real_name,
+    normalize_real_name_with_diagraphs,
+    normalize_user_name,
+)
 
 ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
 User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
@@ -36,7 +46,6 @@ DEFAULT_CONFIG = {
     "pattern_case_sensitive": False
 }
 
-EMPLOYEE_CACHE_FILE_NAME = os.environ.get('HUTBOT_EMPLOYEE_CACHE_FILE', 'employees.json')
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')
 TEAM_UNKNOWN = '<unknown>'
 
@@ -117,57 +126,6 @@ DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)')
 
-def load_env_file() -> None:
-    env_file_path = os.path.join(os.path.dirname(__file__), '.env')
-    if not os.path.exists(env_file_path):
-        return
-
-    with open(env_file_path) as file:
-        for line in file:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-
-            # remove "export " from the start of the line
-            if line.startswith('export '):
-                line = line[7:]
-
-            # Split key-value pairs
-            key, sep, value = line.partition('=')
-            if sep != '=':
-                continue  # Skip malformed lines
-
-            # Remove surrounding quotes from the value if present
-            key = key.strip()
-            value = value.strip().strip('\'"')
-
-            # Set the environment variable
-            os.environ[key] = value
-
-
-def _decode_env_value(value: str) -> str:
-    try:
-        decoded = base64.b64decode(value, validate=True).decode('utf-8')
-        return decoded
-    except (binascii.Error, UnicodeDecodeError):
-        return value
-
-
-def get_env_var(name: str, default: str = "") -> str:
-    raw = os.environ.get(name, default)
-    if raw is None:
-        return default
-    return _decode_env_value(raw)
-
-def log(*args: object) -> None:
-    __log(sys.stdout, 'INFO', *args)
-
-def log_warning(*args: object) -> None:
-    __log(sys.stderr, 'WARN', *args)
-
-def log_error(*args: object) -> None:
-    __log(sys.stderr, 'ERROR', *args)
-
 def log_debug(channel: Channel | None, *args: object) -> None:
     if channel and any(c.get('debug') for c in channel.configs.values()):
         __log(sys.stderr, 'DEBUG', *args)
@@ -190,20 +148,6 @@ def strip_quotes(text: str) -> str:
         text = text[1:-1]
 
     return text
-
-def normalize_id(id: str) -> str: return id.lower().strip()
-
-def normalize_user_name(user_name: str) -> str: return user_name.lower().strip().replace('.', '')
-
-def normalize_real_name(real_name: str) -> str:
-    normalized = real_name.lower().strip().replace(' ', '_').replace('.', '_')
-    # replace non latin characters
-    normalized = unidecode(normalized)
-    return normalized
-
-def normalize_real_name_with_diagraphs(real_name: str) -> str:
-    # don't ask, you wouldn't be able to grasp the extend...
-    return normalize_real_name(real_name.lower().replace('ae', 'ä').replace('oe', 'ö').replace('ue', 'ü'))
 
 async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
     for channel_id, channel_data in config.items():
@@ -246,100 +190,6 @@ async def save_configuration() -> None:
             await f.write(content)
     except Exception as e:
         log_error("Failed to save configuration:", e)
-
-def generate_employee_list(users: list) -> dict:
-    employees = {}
-    for user in users:
-        id = normalize_id(user.get('ad_name', ''))
-        is_deleted = user.get('is_deleted', False)
-        if not is_deleted and len(id) > 0:
-            employees[id] = user
-    return employees
-
-def load_employee_mappings() -> dict:
-    result = {}
-    employee_mappings = get_env_var("EMPLOYEE_LIST_MAPPINGS", "").strip()
-    if employee_mappings:
-        log(f"Attempting to load employee mappings from environment variable.")
-        mappings = employee_mappings.split(',')
-        for mapping in mappings:
-            items = mapping.split('=')
-            if items and len(items) == 2 and len(items[0]) > 0 and len(items[1]) > 0:
-                key = normalize_id(items[0])
-                value = normalize_id(items[1])
-                if key in result:
-                    log_warning(f"Failed to parse employee mapping '{key}' is already mapped, skipping")
-                else:
-                    result[key] = value
-            else:
-                log_warning(f"Failed to parse employee mapping '{mapping}', skipping")
-
-        log(f"{len(result)} employee mappings loaded from environment variable.")
-    return result
-
-async def load_employees_from_disk() -> dict:
-    log(f"Attempting to load employees from disk.")
-    try:
-        async with aiofiles.open(EMPLOYEE_CACHE_FILE_NAME, 'r') as f:
-            content = await f.read()
-            users = json.loads(content)
-            employees = generate_employee_list(users)
-            log(f"{len(employees)} employees loaded from disk.")
-            return employees
-    except FileNotFoundError:
-        log_error("No employee file found. Will not be able to do team mapping.")
-    except json.JSONDecodeError as e:
-        log_error(f"Failed to decode employee JSON:", e, "Will not be able to do team mapping.")
-    return {}
-
-async def save_employees_to_disk(users: list) -> None:
-    try:
-        async with aiofiles.open(EMPLOYEE_CACHE_FILE_NAME, 'w') as f:
-            await f.write(json.dumps(users, indent=2))
-    except Exception as e:
-        log_error("Failed to save employees to disk:", e)
-
-async def load_employees() -> dict:
-    username = get_env_var("EMPLOYEE_LIST_USERNAME")
-    password = get_env_var("EMPLOYEE_LIST_PASSWORD")
-    if not username or not password:
-        return await load_employees_from_disk()
-
-    employee_auth_url = 'https://identity.prod.mittwald.systems/authenticate'
-    employee_url = 'https://lb.mittwald.it/api/users'
-
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            auth_payload = {
-                "username": username,
-                "password": password,
-                "providers": ["service"]
-            }
-
-            async with session.post(employee_auth_url, json=auth_payload) as auth_response:
-                if auth_response.status != 200:
-                    log_error(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
-                    return await load_employees_from_disk()
-
-                token = (await auth_response.text()).strip()
-                if not token:
-                    log_error(f"Failed to authenticate to retrieve employees, no token received: {token!r}")
-                    return await load_employees_from_disk()
-
-            headers = {"jwt": token}
-            async with session.get(employee_url, headers=headers) as users_response:
-                if users_response.status != 200:
-                    log_error(f"Failed to fetch employees: {await users_response.text()}")
-                    return await load_employees_from_disk()
-
-                users = await users_response.json()
-                employees = generate_employee_list(users)
-                log(f"{len(employees)} employees retrieved from {employee_url}.")
-                await save_employees_to_disk(users)
-                return employees
-    except Exception as e:
-        log_error(f"Failed to retrieve employees from {employee_url}:", e)
-        return await load_employees_from_disk()
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     global channel_config
