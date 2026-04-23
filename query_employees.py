@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import contextlib
 import json
+import sys
 
 from employee_list import (
     load_employee_mappings,
@@ -143,8 +145,9 @@ async def async_main() -> int:
     args = parser.parse_args()
 
     load_env_file()
-    employees = await _load_employees(args.cache_only)
-    mappings = load_employee_mappings()
+    with contextlib.redirect_stdout(sys.stderr):
+        employees = await _load_employees(args.cache_only)
+        mappings = load_employee_mappings()
     matches = find_employees(employees, args.query, args.team, mappings)
 
     if args.limit > 0:
