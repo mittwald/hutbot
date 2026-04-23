@@ -816,13 +816,13 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
 async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     update_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what's :new::\n\n"
-        "> * :pencil: Customize reply messages with `{{placeholders}}` *\n>\n"
+        "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
         "> That means Hutbot can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
         "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
-        "> * :list-item: List available Opsgenie schedules *\n>\n"
-        "> * :bug: Hutbot now ONLY cancels replying, when the *expected* team(s) have already replied :light_bulb: *\n>\n"
+        "> :list-item: *List available Opsgenie schedules*\n>\n"
+        "> :bug: *Hutbot now ONLY cancels replying, when the _expected_ team(s) have already replied* :light_bulb:\n>\n"
         "> Issue was:\n>\n"
-        "> 1. Team **A** sends a message intended for Team *B*\n"
+        "> 1. Team *A* sends a message intended for Team *B*\n"
         "> 2. Someone else from Team *A* adds additional information\n"
         "> 3. Hutbot cancel his reply and NOT remind Team *B* anymore :fail:\n"
     )
