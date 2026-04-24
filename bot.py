@@ -848,7 +848,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         "> That means Hutbot can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
         "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
         "> :list-item: *List available Opsgenie schedules*\n>\n"
-        "> :bug: *Hutbot now ONLY cancels replying, when the _expected_ team(s) have already replied* :light_bulb:\n>\n"
+        "> :bug: *Hutbot now ONLY cancels replying, when the _expected_ team(s) have already replied* :lightbulb:\n>\n"
         "> Issue was:\n>\n"
         "> 1. Team *A* sends a message intended for Team *B*\n"
         "> 2. Someone else from Team *A* adds additional information\n"
