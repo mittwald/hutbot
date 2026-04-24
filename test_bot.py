@@ -1,13 +1,18 @@
 import pytest
 import datetime
 from unittest.mock import AsyncMock, patch, call, MagicMock
+import json
+import tempfile
+import os
 from bot import (
     replace_ids, Channel, User, Usergroup, get_team_of, process_command,
     clean_slack_text, send_message, route_message, handle_channel_message,
     scheduled_messages, set_work_hours, parse_time, is_work_day, is_work_time,
     DEFAULT_CONFIG, migrate_and_apply_defaults, set_pattern, show_config,
     handle_thread_response, handle_reaction_added, handle_message_deletion,
-    ScheduledReply, set_reply_message, schedule_reply
+    ScheduledReply, set_reply_message, schedule_reply,
+    load_replies_cache, flush_replies_cache, restore_scheduled_replies,
+    _scheduled_replies_cache,
 )
 from slack_sdk.errors import SlackApiError
 import base64
@@ -513,3 +518,150 @@ async def test_schedule_reply_keeps_plain_message_unchanged():
 
         mock_get_opsgenie_template_variables.assert_not_awaited()
         mock_send_message.assert_called_with(app, channel, user, "Anybody?", "1234.1")
+
+@pytest.mark.asyncio
+async def test_load_and_flush_replies_cache_roundtrip():
+    import bot
+    entry = {
+        'channel_id': 'C123',
+        'ts': '1000.1',
+        'config_name': 'default',
+        'user_id': 'U456',
+        'text': 'hello',
+        'send_at': '2026-04-23T13:00:00',
+    }
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump([entry], f)
+        tmp_path = f.name
+
+    try:
+        with patch('bot.SCHEDULED_REPLIES_CACHE_FILE', tmp_path):
+            bot._scheduled_replies_cache.clear()
+            await load_replies_cache()
+            assert ('C123', '1000.1', 'default') in bot._scheduled_replies_cache
+
+            bot._scheduled_replies_cache[('C123', '1000.1', 'default')]['text'] = 'updated'
+            await flush_replies_cache()
+
+            with open(tmp_path) as f:
+                data = json.load(f)
+            assert data[0]['text'] == 'updated'
+    finally:
+        os.unlink(tmp_path)
+        bot._scheduled_replies_cache.clear()
+
+@pytest.mark.asyncio
+async def test_load_replies_cache_handles_missing_file():
+    import bot
+    with patch('bot.SCHEDULED_REPLIES_CACHE_FILE', '/nonexistent/path/to/cache.json'):
+        bot._scheduled_replies_cache.clear()
+        await load_replies_cache()
+        assert bot._scheduled_replies_cache == {}
+
+@pytest.mark.asyncio
+async def test_restore_scheduled_replies_skips_unknown_channel():
+    import bot
+    bot._scheduled_replies_cache.clear()
+    bot._scheduled_replies_cache[('C_GONE', '1000.1', 'default')] = {
+        'channel_id': 'C_GONE',
+        'ts': '1000.1',
+        'config_name': 'default',
+        'user_id': 'U1',
+        'text': 'msg',
+        'send_at': (datetime.datetime.now() + datetime.timedelta(seconds=60)).isoformat(),
+    }
+    app = AsyncMock()
+    scheduled_messages.clear()
+
+    with patch('bot.channel_config', {}), patch('bot.flush_replies_cache', new=AsyncMock()):
+        await restore_scheduled_replies(app, "token")
+
+    assert len(scheduled_messages) == 0
+    assert bot._scheduled_replies_cache == {}
+
+@pytest.mark.asyncio
+async def test_restore_scheduled_replies_schedules_with_remaining_time():
+    import bot
+    import asyncio
+    future = datetime.datetime.now() + datetime.timedelta(seconds=300)
+    bot._scheduled_replies_cache.clear()
+    bot._scheduled_replies_cache[('C123', '1000.1', 'default')] = {
+        'channel_id': 'C123',
+        'ts': '1000.1',
+        'config_name': 'default',
+        'user_id': 'U456',
+        'text': 'hello',
+        'send_at': future.isoformat(),
+    }
+    config = {**DEFAULT_CONFIG.copy(), 'wait_time': 1800}
+    app = AsyncMock()
+    app.client.conversations_info.return_value = {'channel': {'name': 'general'}}
+    scheduled_messages.clear()
+
+    captured_override = []
+
+    async def fake_schedule_reply(*args, wait_time_override=None, **kwargs):
+        captured_override.append(wait_time_override)
+
+    with patch('bot.channel_config', {'C123': {'default': config}}), \
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User('U456', 'user', 'User', 'Team'))), \
+         patch('bot.schedule_reply', side_effect=fake_schedule_reply), \
+         patch('bot.flush_replies_cache', new=AsyncMock()):
+        await restore_scheduled_replies(app, "token")
+        await asyncio.gather(*[sr.task for sr in scheduled_messages.values()])
+
+    assert len(captured_override) == 1
+    assert 290 <= captured_override[0] <= 310
+
+@pytest.mark.asyncio
+async def test_restore_scheduled_replies_sends_immediately_when_overdue():
+    import bot
+    import asyncio
+    past = datetime.datetime.now() - datetime.timedelta(seconds=60)
+    bot._scheduled_replies_cache.clear()
+    bot._scheduled_replies_cache[('C123', '1000.1', 'default')] = {
+        'channel_id': 'C123',
+        'ts': '1000.1',
+        'config_name': 'default',
+        'user_id': 'U456',
+        'text': 'hello',
+        'send_at': past.isoformat(),
+    }
+    config = {**DEFAULT_CONFIG.copy(), 'wait_time': 1800}
+    app = AsyncMock()
+    app.client.conversations_info.return_value = {'channel': {'name': 'general'}}
+    scheduled_messages.clear()
+
+    captured_override = []
+
+    async def fake_schedule_reply(*args, wait_time_override=None, **kwargs):
+        captured_override.append(wait_time_override)
+
+    with patch('bot.channel_config', {'C123': {'default': config}}), \
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User('U456', 'user', 'User', 'Team'))), \
+         patch('bot.schedule_reply', side_effect=fake_schedule_reply), \
+         patch('bot.flush_replies_cache', new=AsyncMock()):
+        await restore_scheduled_replies(app, "token")
+        await asyncio.gather(*[sr.task for sr in scheduled_messages.values()])
+
+    assert captured_override[0] == 0.0
+
+@pytest.mark.asyncio
+async def test_schedule_reply_removes_entry_from_cache():
+    import bot
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": ""}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = DEFAULT_CONFIG.copy()
+    config["wait_time"] = 0
+    ts = "9999.1"
+    key = (channel.id, ts, "default")
+
+    bot._scheduled_replies_cache.clear()
+    bot._scheduled_replies_cache[key] = {'channel_id': channel.id, 'ts': ts, 'config_name': 'default', 'user_id': user.id, 'text': 'x', 'send_at': '2026-01-01T00:00:00'}
+
+    with patch('bot.send_message'), patch('bot.flush_replies_cache', new=AsyncMock()):
+        await schedule_reply(app, "token", channel, config, "default", user, "x", ts)
+
+    assert key not in bot._scheduled_replies_cache

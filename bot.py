@@ -47,6 +47,7 @@ DEFAULT_CONFIG = {
 }
 
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')
+SCHEDULED_REPLIES_CACHE_FILE = os.environ.get('HUTBOT_SCHEDULED_REPLIES_CACHE_FILE', 'scheduled_replies.json')
 TEAM_UNKNOWN = '<unknown>'
 
 IGNORED_MESSAGE_SUBTYPES = set(['channel_join',
@@ -62,6 +63,7 @@ IGNORED_MESSAGE_SUBTYPES = set(['channel_join',
 
 channel_config = {}
 scheduled_messages = {}
+_scheduled_replies_cache: dict[tuple, dict] = {}
 
 user_id_cache = {}
 user_email_cache = {}
@@ -192,6 +194,30 @@ async def save_configuration() -> None:
             await f.write(content)
     except Exception as e:
         log_error("Failed to save configuration:", e)
+
+async def load_replies_cache() -> None:
+    global _scheduled_replies_cache
+    try:
+        async with aiofiles.open(SCHEDULED_REPLIES_CACHE_FILE, 'r') as f:
+            content = await f.read()
+            entries = json.loads(content)
+            _scheduled_replies_cache = {
+                (e['channel_id'], e['ts'], e['config_name']): e
+                for e in entries
+            }
+            log(f"Loaded {len(_scheduled_replies_cache)} pending scheduled replies from cache.")
+    except FileNotFoundError:
+        _scheduled_replies_cache = {}
+    except Exception as e:
+        log_error("Failed to load scheduled replies cache:", e)
+        _scheduled_replies_cache = {}
+
+async def flush_replies_cache() -> None:
+    try:
+        async with aiofiles.open(SCHEDULED_REPLIES_CACHE_FILE, 'w') as f:
+            await f.write(json.dumps(list(_scheduled_replies_cache.values()), indent=2))
+    except Exception as e:
+        log_error("Failed to flush scheduled replies cache:", e)
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     global channel_config
@@ -962,14 +988,15 @@ async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, co
 
     return variables
 
-async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str) -> None:
+async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, wait_time_override: float | None = None) -> None:
     opsgenie_enabled = config.get('opsgenie')
     wait_time = config.get('wait_time')
     reply_message_template = config.get('reply_message')
     scheduled_message_key = (channel.id, ts, config_name)
+    actual_wait = wait_time_override if wait_time_override is not None else wait_time
     log(f"Scheduling reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not opsgenie_configured else ''}")
     try:
-        await asyncio.sleep(wait_time)
+        await asyncio.sleep(actual_wait)
         permalink = await get_message_permalink(app, channel, ts)
         template_variables = find_template_variables(reply_message_template)
         opsgenie_template_variables = {}
@@ -998,6 +1025,8 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
         log_error(f"Failed to send scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
     finally:
         scheduled_messages.pop(scheduled_message_key, None)
+        _scheduled_replies_cache.pop(scheduled_message_key, None)
+        await flush_replies_cache()
 
 async def replace_ids(app: AsyncApp, channel: Channel | None, text: str) -> str:
     for match in ID_PATTERN.finditer(text):
@@ -1216,6 +1245,16 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel: Ch
 
         task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, config, config_name, user, text, ts))
         scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
+        send_at = datetime.datetime.now() + datetime.timedelta(seconds=config['wait_time'])
+        _scheduled_replies_cache[(channel.id, ts, config_name)] = {
+            'channel_id': channel.id,
+            'ts': ts,
+            'config_name': config_name,
+            'user_id': user.id,
+            'text': text,
+            'send_at': send_at.isoformat(),
+        }
+        await flush_replies_cache()
 
 async def handle_reaction_added(app: AsyncApp, event):
     item = event.get('item', {})
@@ -1287,6 +1326,34 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
         await ack()
         await handle_command_event(app, body)
 
+async def restore_scheduled_replies(app: AsyncApp, opsgenie_token: str) -> None:
+    entries = list(_scheduled_replies_cache.items())
+    invalid_keys = []
+    restored = 0
+    log(f"Restoring {len(entries)} scheduled replies from cache...")
+    for key, entry in entries:
+        channel_id = entry['channel_id']
+        ts = entry['ts']
+        config_name = entry['config_name']
+        if channel_id not in channel_config or config_name not in channel_config[channel_id]:
+            log_warning(f"Skipping cached reply for message {ts}: channel {channel_id} / config '{config_name}' no longer configured.")
+            invalid_keys.append(key)
+            continue
+        config = channel_config[channel_id][config_name]
+        channel = await get_channel_by_id(app, channel_id)
+        user = await get_user_by_id(app, entry['user_id'])
+        send_at = datetime.datetime.fromisoformat(entry['send_at'])
+        remaining = max(0.0, (send_at - datetime.datetime.now()).total_seconds())
+        log(f"Restoring reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, remaining {remaining:.0f}s.")
+        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining))
+        scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
+        restored += 1
+    for key in invalid_keys:
+        _scheduled_replies_cache.pop(key, None)
+    if invalid_keys:
+        await flush_replies_cache()
+    log(f"Restored {restored} scheduled replies.")
+
 async def send_heartbeat(opsgenie_token: str, opsgenie_heartbeat_name: str) -> None:
     url = 'https://api.opsgenie.com/v2/heartbeats/' + opsgenie_heartbeat_name + '/ping'
     headers = {
@@ -1321,6 +1388,8 @@ async def main() -> None:
         global bot_user_id
         bot_user_id = (await app.client.auth_test())["user_id"]
         await update_user_cache(app)
+        await load_replies_cache()
+        await restore_scheduled_replies(app, opsgenie_token)
         register_app_handlers(app, opsgenie_token=opsgenie_token)
         handler = AsyncSocketModeHandler(app, slack_app_token)
         if opsgenie_token and opsgenie_heartbeat_name:
