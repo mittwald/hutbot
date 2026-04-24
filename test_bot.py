@@ -12,7 +12,7 @@ from bot import (
     handle_thread_response, handle_reaction_added, handle_message_deletion,
     ScheduledReply, set_reply_message, schedule_reply,
     load_replies_cache, flush_replies_cache, restore_scheduled_replies,
-    _scheduled_replies_cache,
+    extract_message_text, _scheduled_replies_cache,
 )
 from slack_sdk.errors import SlackApiError
 import base64
@@ -24,6 +24,49 @@ def test_get_env_var_decoding_and_passthrough(monkeypatch):
     assert get_env_var("MY_ENV_VAR") == "hello world"
     monkeypatch.setenv("MY_ENV_VAR_PLAIN", "plain value")
     assert get_env_var("MY_ENV_VAR_PLAIN") == "plain value"
+
+def test_extract_message_text_prefers_top_level_text():
+    event = {
+        "text": "Top-level text",
+        "attachments": [{"text": "Attachment text"}],
+    }
+
+    assert extract_message_text(event) == "Top-level text"
+
+def test_extract_message_text_extracts_attachment_text():
+    event = {
+        "text": "",
+        "attachments": [{
+            "text": "Alerts: \n       - 1 removeQueueItemForAbortedOrder temporal executions needs operating."
+        }],
+    }
+
+    assert extract_message_text(event) == "Alerts: \n       - 1 removeQueueItemForAbortedOrder temporal executions needs operating."
+
+def test_extract_message_text_includes_attachment_title_and_text():
+    event = {
+        "text": "",
+        "attachments": [{
+            "title": "[FIRING:1] FailedTemporalExecutions",
+            "text": "Alerts: temporal executions need operating.",
+            "fallback": "Noisy fallback",
+        }],
+    }
+
+    assert extract_message_text(event) == "[FIRING:1] FailedTemporalExecutions\nAlerts: temporal executions need operating."
+
+def test_extract_message_text_uses_fallback_only_without_cleaner_attachment_text():
+    event = {
+        "text": "",
+        "attachments": [{
+            "fallback": "[FIRING:1] FailedTemporalExecutions noisy fallback",
+        }],
+    }
+
+    assert extract_message_text(event) == "[FIRING:1] FailedTemporalExecutions noisy fallback"
+
+def test_extract_message_text_handles_missing_attachments():
+    assert extract_message_text({"text": ""}) == ""
 
 @pytest.mark.asyncio
 async def test_process_command_set_wait_time():
@@ -283,6 +326,51 @@ async def test_handle_channel_message_ignores_bot_for_configs_without_include_bo
         await handle_channel_message(app, "token", channel, bot_user, "Alarm", "1234.1", actor_is_bot=True)
 
     mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["bots"], "bots", bot_user, "Alarm", "1234.1")
+
+@pytest.mark.asyncio
+async def test_route_message_schedules_bot_attachment_text_when_bots_included():
+    app = AsyncMock()
+    configs = {
+        "alerts": {
+            **DEFAULT_CONFIG.copy(),
+            "include_bots": True,
+            "pattern": "FailedTemporalExecutions",
+        },
+    }
+    channel = Channel(id="C12345", name="general", configs=configs)
+    bot_user = User(id="B12345", name="alertmanager", real_name="Alertmanager", team="Bots")
+    event = {
+        "type": "message",
+        "subtype": "bot_message",
+        "text": "",
+        "attachments": [{
+            "fallback": "[FIRING:1] FailedTemporalExecutions noisy fallback",
+            "text": "Alerts: \n       - 1 removeQueueItemForAbortedOrder temporal executions needs operating.",
+            "title": "[FIRING:1] FailedTemporalExecutions",
+        }],
+        "ts": "1234.1",
+        "bot_id": bot_user.id,
+        "channel": channel.id,
+        "event_ts": "1234.1",
+        "channel_type": "channel",
+    }
+
+    extracted_text = (
+        "[FIRING:1] FailedTemporalExecutions\n"
+        "Alerts: \n       - 1 removeQueueItemForAbortedOrder temporal executions needs operating."
+    )
+
+    with patch('bot.get_channel_by_id', return_value=channel), \
+         patch('bot.get_user_by_id', return_value=bot_user), \
+         patch('bot.is_work_day', return_value=True), \
+         patch('bot.flush_replies_cache', new=AsyncMock()), \
+         patch('bot.schedule_reply') as mock_schedule_reply:
+        scheduled_messages.clear()
+        _scheduled_replies_cache.clear()
+        await route_message(app, "token", event)
+
+    mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["alerts"], "alerts", bot_user, extracted_text, "1234.1")
+    assert _scheduled_replies_cache[(channel.id, "1234.1", "alerts")]["text"] == extracted_text
 
 @pytest.mark.asyncio
 async def test_thread_response_by_bot_cancels_only_configs_without_include_bots():

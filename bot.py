@@ -1125,6 +1125,31 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Chann
         except Exception as e:
             log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}:", e)
 
+def extract_message_text(event: dict) -> str:
+    text = event.get('text', '')
+    if isinstance(text, str) and text.strip():
+        return text
+
+    attachment_texts = []
+    fallback_texts = []
+    for attachment in event.get('attachments', []):
+        if not isinstance(attachment, dict):
+            continue
+
+        for field in ('pretext', 'title', 'text'):
+            value = attachment.get(field, '')
+            if isinstance(value, str) and value.strip():
+                attachment_texts.append(value)
+
+        fallback = attachment.get('fallback', '')
+        if isinstance(fallback, str) and fallback.strip():
+            fallback_texts.append(fallback)
+
+    if attachment_texts:
+        return "\n".join(attachment_texts).strip()
+
+    return "\n".join(fallback_texts).strip()
+
 async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None:
     subtype = event.get('subtype')
     previous_message = event.get('previous_message', {})
@@ -1133,7 +1158,7 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
     bot_id = event.get('bot_id', '')
     ts = event.get('ts', '')
     thread_ts = event.get('thread_ts', '')
-    text = event.get('text', '')
+    text = extract_message_text(event)
 
     channel = await get_channel_by_id(app, channel_id)
     log_debug(channel, f"Received message event from #{channel.name}: {json.dumps(event)}")
