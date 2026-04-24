@@ -608,6 +608,105 @@ async def test_schedule_reply_keeps_plain_message_unchanged():
         mock_send_message.assert_called_with(app, channel, user, "Anybody?", "1234.1")
 
 @pytest.mark.asyncio
+async def test_process_command_test_renders_default_reply_and_variables():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    channel.configs["default"]["wait_time"] = 600
+    channel.configs["default"]["reply_message"] = "Hi {{user}}, wait {{wait_minutes}} in {{channel}}: {{message_link}}"
+
+    with patch('bot.get_opsgenie_template_variables', new=AsyncMock(return_value={
+        "opsgenie_current_user": "<@U999>",
+        "opsgenie_current_email": "oncall@example.com",
+        "opsgenie_current_name": "On Call User",
+    })) as mock_get_opsgenie_template_variables, patch('bot.send_message') as mock_send_message:
+        await process_command(app, "test", channel, user)
+
+    mock_get_opsgenie_template_variables.assert_awaited_once()
+    app.client.chat_getPermalink.assert_not_called()
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Reply preview for configuration `default`:*" in sent_message
+    assert "Hi <@U12345>, wait 10 in #general: " in sent_message
+    assert "`{{channel}}`: #general" in sent_message
+    assert "`{{config}}`: default" in sent_message
+    assert "`{{message}}`: " in sent_message
+    assert "`{{message_link}}`: " in sent_message
+    assert "`{{opsgenie_current_user}}`: <@U999>" in sent_message
+    assert "`{{timestamp}}`: " in sent_message
+
+@pytest.mark.asyncio
+async def test_process_command_test_uses_selected_config():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={
+        "default": DEFAULT_CONFIG.copy(),
+        "alerts": DEFAULT_CONFIG.copy(),
+    })
+    channel.configs["alerts"]["wait_time"] = 120
+    channel.configs["alerts"]["reply_message"] = "Config {{config}} waits {{wait_minutes}}: {{message}}"
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.get_opsgenie_template_variables', new=AsyncMock(return_value={})), patch('bot.send_message') as mock_send_message:
+        await process_command(app, "alerts test", channel, user)
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Reply preview for configuration `alerts`:*" in sent_message
+    assert "Config alerts waits 2: " in sent_message
+    assert "`{{config}}`: alerts" in sent_message
+    assert "`{{wait_minutes}}`: 2" in sent_message
+
+@pytest.mark.asyncio
+async def test_process_command_mention_test_uses_trailing_text_as_message():
+    import bot
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["reply_message"] = "Preview: {{message}} {{timestamp}} {{message_link}}"
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch.object(bot, 'bot_user_id', "UBOT"), \
+         patch('bot.get_opsgenie_template_variables', new=AsyncMock(return_value={})), \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "<@UBOT> test hello world", channel, user, "1234.1", allow_test_message=True, command_ts="1234.1")
+
+    app.client.chat_getPermalink.assert_awaited_once_with(channel="C12345", message_ts="1234.1")
+    sent_message = mock_send_message.call_args.args[3]
+    assert "Preview: hello world 1234.1 https://slack.test/message" in sent_message
+    assert "`{{message}}`: hello world" in sent_message
+    assert "`{{timestamp}}`: 1234.1" in sent_message
+    assert "`{{message_link}}`: https://slack.test/message" in sent_message
+
+@pytest.mark.asyncio
+async def test_process_command_slash_test_with_trailing_text_is_unknown():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.get_opsgenie_template_variables', new=AsyncMock()) as mock_get_opsgenie_template_variables, \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "test hello world", channel, user)
+
+    mock_get_opsgenie_template_variables.assert_not_awaited()
+    mock_send_message.assert_called_with(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", "")
+
+@pytest.mark.asyncio
+async def test_process_command_test_uses_opsgenie_placeholders_when_unavailable():
+    import bot
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["reply_message"] = "Anybody?"
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.get_opsgenie_template_variables', new=AsyncMock(return_value=bot.get_opsgenie_placeholder_variables())) as mock_get_opsgenie_template_variables, \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "test", channel, user, opsgenie_token="token")
+
+    mock_get_opsgenie_template_variables.assert_awaited_once_with(app, "token", channel.configs["default"])
+    sent_message = mock_send_message.call_args.args[3]
+    assert "`{{opsgenie_current_user}}`: <no-user-set>" in sent_message
+    assert "`{{opsgenie_current_email}}`: <no-email-set>" in sent_message
+    assert "`{{opsgenie_current_name}}`: <no-name-set>" in sent_message
+
+@pytest.mark.asyncio
 async def test_load_and_flush_replies_cache_roundtrip():
     import bot
     entry = {

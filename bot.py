@@ -109,6 +109,8 @@ def create_command_pattern(command_regex: str) -> re.Pattern:
 
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 WHATSNEW_PATTERN = re.compile(r'news', re.IGNORECASE)
+TEST_PATTERN = re.compile(r'^test$', re.IGNORECASE)
+TEST_WITH_MESSAGE_PATTERN = re.compile(r'^test(?:\s+(?P<message>.*))?$', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = create_command_pattern(r'(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)')
 SET_REPLY_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?(message|reply)\s+(?P<message>.+)')
 SET_OPSGENIE_SCHEDULE_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?schedule\s+(?P<schedule>.+)')
@@ -394,9 +396,12 @@ def is_work_time(start_time_str: str, end_time_str: str) -> bool:
 def is_command(text: str) -> bool:
     return f"<@{bot_user_id}>" in text
 
-async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> bool:
+async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: Channel, config_name: str, user: User, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> bool:
     """Parses and executes a command, returns True if a command was matched."""
-    if (match := SET_WAIT_TIME_PATTERN.match(command_text)):
+    if (match := (TEST_WITH_MESSAGE_PATTERN if allow_test_message else TEST_PATTERN).match(command_text)):
+        test_message = match.group("message") if allow_test_message and match.groupdict().get("message") is not None else ""
+        await test_reply_message(app, opsgenie_token, channel, config_name, user, test_message, command_ts, thread_ts)
+    elif (match := SET_WAIT_TIME_PATTERN.match(command_text)):
         wait_time_minutes = int(strip_quotes(match.group("wait_time")))
         await set_wait_time(app, channel, config_name, wait_time_minutes, user, thread_ts)
     elif (match := SET_REPLY_MESSAGE_PATTERN.match(command_text)):
@@ -455,12 +460,13 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
         return False
     return True
 
-async def process_command(app: AsyncApp, text: str, channel: Channel, user: User, thread_ts: str = "") -> None:
+async def process_command(app: AsyncApp, text: str, channel: Channel, user: User, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> None:
     text = text.replace(f"<@{bot_user_id}>", "").strip()
     log_debug(channel, f"Received command for channel #{channel.name}: {text}")
+    command_ts = command_ts or thread_ts
 
     # First, try to parse the command with the default config.
-    if await parse_and_execute_command(app, text, channel, DEFAULT_CONFIG_NAME, user, thread_ts):
+    if await parse_and_execute_command(app, text, channel, DEFAULT_CONFIG_NAME, user, thread_ts, opsgenie_token, allow_test_message, command_ts):
         return
 
     # If that fails, assume the first part is a config name.
@@ -473,7 +479,7 @@ async def process_command(app: AsyncApp, text: str, channel: Channel, user: User
             await send_message(app, channel, user, f"Invalid config name: `{config_name}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.", thread_ts)
             return
 
-        if await parse_and_execute_command(app, command_text, channel, config_name, user, thread_ts):
+        if await parse_and_execute_command(app, command_text, channel, config_name, user, thread_ts, opsgenie_token, allow_test_message, command_ts):
             return
 
     await send_message(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
@@ -568,6 +574,26 @@ def render_reply_message_template(message: str, variables: dict[str, str]) -> st
 
     return TEMPLATE_VARIABLE_PATTERN.sub(replace_variable, message)
 
+async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False) -> dict[str, str]:
+    wait_time = config.get('wait_time')
+    opsgenie_template_variables = {}
+    if include_opsgenie:
+        opsgenie_template_variables = await get_opsgenie_template_variables(app, opsgenie_token, config)
+
+    return {
+        "channel": f"#{channel.name}",
+        "channel_name": channel.name,
+        "config": config_name,
+        "message": text,
+        "message_link": permalink,
+        **opsgenie_template_variables,
+        "team": user.team if user.team else TEAM_UNKNOWN,
+        "timestamp": ts,
+        "user": f"<@{user.id}>",
+        "user_name": user.real_name if user.real_name else user.name,
+        "wait_minutes": str(wait_time // 60),
+    }
+
 async def set_reply_message(app: AsyncApp, channel: Channel, config_name: str, message: str, user: User, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()
@@ -597,6 +623,35 @@ async def set_reply_message(app: AsyncApp, channel: Channel, config_name: str, m
     channel.configs[config_name]['reply_message'] = message
     await save_configuration()
     await send_message(app, channel, user, f"*Reply message* set to: {message} in configuration `{config_name}`.", thread_ts)
+
+async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel: Channel, config_name: str, user: User, text: str = "", ts: str = "", thread_ts: str = "") -> None:
+    config = channel.configs.get(config_name, DEFAULT_CONFIG.copy())
+    reply_message_template = config.get('reply_message')
+    permalink = await get_message_permalink(app, channel, ts) if ts else ""
+    template_variables = await build_reply_template_variables(
+        app,
+        opsgenie_token,
+        channel,
+        config,
+        config_name,
+        user,
+        text,
+        ts,
+        permalink,
+        include_opsgenie=True,
+    )
+    reply_message = render_reply_message_template(reply_message_template, template_variables)
+    variable_lines = [
+        f"`{{{{{variable}}}}}`: {template_variables.get(variable, '')}"
+        for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES)
+    ]
+    message = (
+        f"*Reply preview for configuration `{config_name}`:*\n"
+        f"{reply_message}\n\n"
+        "*Template variables:*\n"
+        + "\n".join(variable_lines)
+    )
+    await send_message(app, channel, user, message, thread_ts)
 
 async def set_pattern(app: AsyncApp, channel: Channel, config_name: str, pattern_str: str, case_sensitive_str: str | None, user: User, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
@@ -918,6 +973,10 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "*Set Reply Message:*\n"
         "```/hutbot [config] set message \"Hi {{user}}, your message in {{channel}} is still unanswered: {{message_link}}\"```\n"
         "Sets the reminder message I'll send. Supported variables: `{{user}}`, `{{user_name}}`, `{{team}}`, `{{channel}}`, `{{channel_name}}`, `{{message}}`, `{{message_link}}`, `{{config}}`, `{{wait_minutes}}`, `{{timestamp}}`, `{{opsgenie_current_user}}`, `{{opsgenie_current_email}}`, `{{opsgenie_current_name}}`.\n\n"
+        "*Test Reply Message:*\n"
+        "```/hutbot [config] test\n"
+        "@Hutbot [config] test <message>```\n"
+        "Previews the configured reply message and shows all supported template variables. In @mention commands, `<message>` is used as `{{message}}`.\n\n"
         ":sparkles: *Delete Configuration:* :new:\n"
         "```/hutbot delete config <name>```\n"
         "Deletes a configuration. Replace `<name>` with the name of the config.\n\n"
@@ -999,22 +1058,21 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
         await asyncio.sleep(actual_wait)
         permalink = await get_message_permalink(app, channel, ts)
         template_variables = find_template_variables(reply_message_template)
-        opsgenie_template_variables = {}
-        if OPSGENIE_TEMPLATE_VARIABLES.intersection(template_variables):
-            opsgenie_template_variables = await get_opsgenie_template_variables(app, opsgenie_token, config)
-        reply_message = render_reply_message_template(reply_message_template, {
-            "channel": f"#{channel.name}",
-            "channel_name": channel.name,
-            "config": config_name,
-            "message": text,
-            "message_link": permalink,
-            **opsgenie_template_variables,
-            "team": user.team if user.team else TEAM_UNKNOWN,
-            "timestamp": ts,
-            "user": f"<@{user.id}>",
-            "user_name": user.real_name if user.real_name else user.name,
-            "wait_minutes": str(wait_time // 60),
-        })
+        reply_message = render_reply_message_template(
+            reply_message_template,
+            await build_reply_template_variables(
+                app,
+                opsgenie_token,
+                channel,
+                config,
+                config_name,
+                user,
+                text,
+                ts,
+                permalink,
+                include_opsgenie=bool(OPSGENIE_TEMPLATE_VARIABLES.intersection(template_variables)),
+            )
+        )
         await send_message(app, channel, user, reply_message, ts)
         if opsgenie_configured and opsgenie_enabled:
             log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name}...")
@@ -1186,7 +1244,7 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
         await handle_message_deletion(app, channel, previous_user, previous_message.get('ts'))
     elif user and is_command(text):
         # command
-        await process_command(app, text, channel, user, ts)
+        await process_command(app, text, channel, user, ts, opsgenie_token, allow_test_message=True, command_ts=ts)
     elif user and thread_ts:
         # thread
         await handle_thread_response(app, channel, user, thread_ts, actor_is_bot)
@@ -1327,14 +1385,14 @@ async def handle_message_deletion(app: AsyncApp, channel: Channel, previous_mess
         scheduled_messages[key].task.cancel()
         del scheduled_messages[key]
 
-async def handle_command_event(app: AsyncApp, command: dict):
+async def handle_command_event(app: AsyncApp, command: dict, opsgenie_token: str = ""):
     text = command.get('text', '')
     channel_id = command.get('channel_id', '')
     user_id = command.get('user_id', '')
 
     channel = await get_channel_by_id(app, channel_id)
     user = await get_user_by_id(app, user_id)
-    await process_command(app, text, channel, user)
+    await process_command(app, text, channel, user, opsgenie_token=opsgenie_token)
 
 def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
 
@@ -1349,7 +1407,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
     @app.command("/hutbot")
     async def handle_command(ack, body, logger):
         await ack()
-        await handle_command_event(app, body)
+        await handle_command_event(app, body, opsgenie_token)
 
 async def restore_scheduled_replies(app: AsyncApp, opsgenie_token: str) -> None:
     entries = list(_scheduled_replies_cache.items())
