@@ -97,7 +97,9 @@ SUPPORTED_TEMPLATE_VARIABLES = {
     "user_name",
     "wait_minutes",
 }
-UNKNOWN_ONCALL_PLACEHOLDER = "<unknown-oncall>"
+UNKNOWN_EMAIL_ONCALL_PLACEHOLDER = "<no-email-set>"
+UNKNOWN_NAME_ONCALL_PLACEHOLDER = "<no-name-set>"
+UNKNOWN_USER_ONCALL_PLACEHOLDER = "<no-user-set>"
 
 # Regex patterns for command parsing
 def create_command_pattern(command_regex: str) -> re.Pattern:
@@ -904,9 +906,9 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
 
 def get_opsgenie_placeholder_variables() -> dict[str, str]:
     return {
-        "opsgenie_current_email": UNKNOWN_ONCALL_PLACEHOLDER,
-        "opsgenie_current_name": UNKNOWN_ONCALL_PLACEHOLDER,
-        "opsgenie_current_user": UNKNOWN_ONCALL_PLACEHOLDER,
+            "opsgenie_current_email": UNKNOWN_EMAIL_ONCALL_PLACEHOLDER,
+            "opsgenie_current_name": UNKNOWN_NAME_ONCALL_PLACEHOLDER,
+            "opsgenie_current_user": UNKNOWN_USER_ONCALL_PLACEHOLDER,
     }
 
 async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, config: dict) -> dict[str, str]:
