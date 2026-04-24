@@ -182,6 +182,107 @@ async def test_process_command_list_opsgenie_schedules_without_token():
         )
 
 @pytest.mark.asyncio
+async def test_process_command_on_call_uses_configured_schedule():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["opsgenie_schedule_name"] = "Team Primary"
+    user = User("U12345", "test", "Test User", "Testers")
+    on_call_user = User("U999", "oncall", "On Call User", "Ops")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+
+    mock_resolve.assert_awaited_once_with(app, "token", "Team Primary")
+    mock_send_message.assert_called_with(app, channel, user, "<@U999>", thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_on_call_uses_explicit_schedule():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["opsgenie_schedule_name"] = "Configured Schedule"
+    user = User("U12345", "test", "Test User", "Testers")
+    on_call_user = User("U999", "oncall", "On Call User", "Ops")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "on-call Team Secondary", channel, user, thread_ts, opsgenie_token="token")
+
+    mock_resolve.assert_awaited_once_with(app, "token", "Team Secondary")
+    mock_send_message.assert_called_with(app, channel, user, "<@U999>", thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_on_call_uses_selected_config():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={
+        "default": DEFAULT_CONFIG.copy(),
+        "alerts": DEFAULT_CONFIG.copy(),
+    })
+    channel.configs["default"]["opsgenie_schedule_name"] = "Default Schedule"
+    channel.configs["alerts"]["opsgenie_schedule_name"] = "Alerts Schedule"
+    user = User("U12345", "test", "Test User", "Testers")
+    on_call_user = User("U999", "oncall", "On Call User", "Ops")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "alerts on-call", channel, user, thread_ts, opsgenie_token="token")
+
+    mock_resolve.assert_awaited_once_with(app, "token", "Alerts Schedule")
+    mock_send_message.assert_called_with(app, channel, user, "<@U999>", thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_on_call_falls_back_to_email_when_unmapped():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["opsgenie_schedule_name"] = "Team Primary"
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", None))), \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+
+    mock_send_message.assert_called_with(app, channel, user, "oncall@example.com", thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_on_call_without_schedule():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock()) as mock_resolve, \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+
+    mock_resolve.assert_not_awaited()
+    mock_send_message.assert_called_with(
+        app,
+        channel,
+        user,
+        "No OpsGenie schedule configured. Use `/hutbot [config] set opsgenie-schedule <name>` or `/hutbot [config] on-call <schedule name>`.",
+        thread_ts
+    )
+
+@pytest.mark.asyncio
+async def test_process_command_on_call_without_token():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["opsgenie_schedule_name"] = "Team Primary"
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock()) as mock_resolve, \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "on-call", channel, user, thread_ts)
+
+    mock_resolve.assert_not_awaited()
+    mock_send_message.assert_called_with(app, channel, user, "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.", thread_ts)
+
+@pytest.mark.asyncio
 async def test_process_command_set_pattern():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={})
@@ -687,6 +788,20 @@ async def test_process_command_slash_test_with_trailing_text_is_unknown():
 
     mock_get_opsgenie_template_variables.assert_not_awaited()
     mock_send_message.assert_called_with(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", "")
+
+@pytest.mark.asyncio
+async def test_process_command_news_mentions_on_call_and_test_commands():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.send_message') as mock_send_message:
+        await process_command(app, "news", channel, user)
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "`/hutbot [config] on-call [schedule name]`" in sent_message
+    assert "`/hutbot [config] test`" in sent_message
+    assert "`@Hutbot [config] test <message>`" in sent_message
 
 @pytest.mark.asyncio
 async def test_process_command_test_uses_opsgenie_placeholders_when_unavailable():

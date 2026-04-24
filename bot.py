@@ -122,6 +122,7 @@ CLEAR_INCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+included?([_ -]?t
 LIST_TEAMS_PATTERN = re.compile(r'^(list\s+)?teams?$', re.IGNORECASE)
 EMPLOYEE_TEAM_PATTERN = re.compile(r'^team(\s+of)?\s+(?P<user>.+)$', re.IGNORECASE)
 LIST_OPSGENIE_SCHEDULES_PATTERN = re.compile(r'^list\s+opsgenie[_ -]?schedules$', re.IGNORECASE)
+ON_CALL_PATTERN = create_command_pattern(r'on[_ -]?call(?:\s+(?P<schedule>.+))?$')
 ENABLE_OPSGENIE_PATTERN = create_command_pattern(r'enable\s+(opsgenie|alerts?)')
 DISABLE_OPSGENIE_PATTERN = create_command_pattern(r'disable\s+(opsgenie|alerts?)')
 ENABLE_BOTS_PATTERN = create_command_pattern(r'(enable|include|set)?\s+bots?')
@@ -434,6 +435,9 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
         await list_teams(app, channel, user, thread_ts)
     elif LIST_OPSGENIE_SCHEDULES_PATTERN.match(command_text):
         await list_opsgenie_schedules(app, channel, user, thread_ts)
+    elif (match := ON_CALL_PATTERN.match(command_text)):
+        schedule_name = strip_quotes(match.group("schedule") or "")
+        await send_current_on_call(app, opsgenie_token, channel, config_name, schedule_name, user, thread_ts)
     elif (match := EMPLOYEE_TEAM_PATTERN.match(command_text)):
         username = strip_quotes(match.group("user"))
         await get_team_of(app, channel, username, user, thread_ts)
@@ -903,6 +907,8 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         "> That means Hutbot can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
         "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
         "> :list-item: *List available Opsgenie schedules*\n>\n"
+        "> :telephone_receiver: *Print the current on-call user with `@Hutbot [config] on-call`*\n>\n"
+        "> :test_tube: *Preview stuff with `@Hutbot [config] test <message>`*\n>\n"
         "> :bug: *Hutbot now ONLY cancels replying, when the _expected_ team(s) have already replied* :lightbulb:\n>\n"
         "> Issue was:\n>\n"
         "> 1. Team *A* sends a message intended for Team *B*\n"
@@ -937,6 +943,9 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "*List OpsGenie Schedules:*\n"
         "```/hutbot list opsgenie-schedules```\n"
         "Lists the available OpsGenie schedules.\n\n"
+        "*Current On-call User:*\n"
+        "```/hutbot [config] on-call [schedule name]```\n"
+        "Prints the current on-call user from the configured OpsGenie schedule or the provided schedule name.\n\n"
         "*Team of User:*\n"
         "```/hutbot team of <user>```\n"
         "Lists the team of a user. Replace `<user>` with @<user>.\n\n"
@@ -996,14 +1005,11 @@ def get_opsgenie_placeholder_variables() -> dict[str, str]:
             "opsgenie_current_user": UNKNOWN_USER_ONCALL_PLACEHOLDER,
     }
 
-async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, config: dict) -> dict[str, str]:
-    schedule_name = config.get("opsgenie_schedule_name", "").strip()
-    variables = get_opsgenie_placeholder_variables()
-    if not schedule_name:
-        return variables
+async def resolve_opsgenie_on_call(app: AsyncApp, opsgenie_token: str, schedule_name: str) -> tuple[str, User | None]:
+    schedule_name = schedule_name.strip()
     if not opsgenie_token:
         log_warning(f"Cannot resolve OpsGenie schedule '{schedule_name}': missing token.")
-        return variables
+        return "", None
 
     encoded_schedule_name = urllib.parse.quote(schedule_name, safe="")
     url = f"https://api.opsgenie.com/v2/schedules/{encoded_schedule_name}/on-calls"
@@ -1020,32 +1026,64 @@ async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, co
             async with session.get(url, headers=headers, params=params) as response:
                 if response.status != 200:
                     log_error(f"Failed to retrieve on-call recipients for OpsGenie schedule '{schedule_name}': {response.status}")
-                    return variables
+                    return "", None
                 payload = await response.json()
     except Exception as e:
         log_error(f"Failed to retrieve on-call recipients for OpsGenie schedule '{schedule_name}':", e)
-        return variables
+        return "", None
 
     recipients = payload.get("data", {}).get("onCallRecipients", [])
     if not recipients:
         log_warning(f"OpsGenie schedule '{schedule_name}' returned no current on-call recipients.")
-        return variables
+        return "", None
 
     recipient_email = recipients[0].strip()
+    if not recipient_email:
+        return "", None
+
+    slack_user = await get_user_by_email(app, recipient_email)
+    if not slack_user.id:
+        log_warning(f"Failed to map OpsGenie recipient '{recipient_email}' to a Slack user.")
+        return recipient_email, None
+
+    return recipient_email, slack_user
+
+async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, config: dict) -> dict[str, str]:
+    schedule_name = config.get("opsgenie_schedule_name", "").strip()
+    variables = get_opsgenie_placeholder_variables()
+    if not schedule_name:
+        return variables
+
+    recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_token, schedule_name)
     if not recipient_email:
         return variables
 
     variables["opsgenie_current_email"] = recipient_email
     variables["opsgenie_current_name"] = recipient_email
 
-    slack_user = await get_user_by_email(app, recipient_email)
-    if slack_user.id:
+    if slack_user:
         variables["opsgenie_current_user"] = f"<@{slack_user.id}>"
         variables["opsgenie_current_name"] = slack_user.real_name if slack_user.real_name else slack_user.name
-    else:
-        log_warning(f"Failed to map OpsGenie recipient '{recipient_email}' to a Slack user.")
 
     return variables
+
+async def send_current_on_call(app: AsyncApp, opsgenie_token: str, channel: Channel, config_name: str, schedule_name: str, user: User, thread_ts: str = "") -> None:
+    config = channel.configs.get(config_name, DEFAULT_CONFIG.copy())
+    schedule_name = schedule_name.strip() or config.get("opsgenie_schedule_name", "").strip()
+    if not schedule_name:
+        await send_message(app, channel, user, "No OpsGenie schedule configured. Use `/hutbot [config] set opsgenie-schedule <name>` or `/hutbot [config] on-call <schedule name>`.", thread_ts)
+        return
+    if not opsgenie_token:
+        await send_message(app, channel, user, "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.", thread_ts)
+        return
+
+    recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_token, schedule_name)
+    if not recipient_email:
+        await send_message(app, channel, user, f"Failed to resolve current on-call user for OpsGenie schedule `{schedule_name}`.", thread_ts)
+        return
+
+    mention = f"<@{slack_user.id}>" if slack_user else recipient_email
+    await send_message(app, channel, user, mention, thread_ts)
 
 async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, wait_time_override: float | None = None) -> None:
     opsgenie_enabled = config.get('opsgenie')
