@@ -1069,35 +1069,71 @@ def format_opsgenie_datetime(value: str, local_tz: datetime.tzinfo | None = None
     local_time = parsed.astimezone(local_tz)
     return local_time.strftime("%a, %d %b %Y %H:%M")
 
+def merge_opsgenie_periods(periods: list[dict], current_index: int) -> tuple[str, str]:
+    current_period = periods[current_index]
+    recipient_name = current_period.get("recipient", {}).get("name", "").strip().casefold()
+    merged_start = parse_opsgenie_datetime(current_period.get("startDate", ""))
+    merged_end = parse_opsgenie_datetime(current_period.get("endDate", ""))
+    if not recipient_name or merged_start is None or merged_end is None:
+        return current_period.get("startDate", ""), current_period.get("endDate", "")
+
+    first_period = current_period
+    last_period = current_period
+
+    for period in reversed(periods[:current_index]):
+        period_recipient = period.get("recipient", {}).get("name", "").strip().casefold()
+        period_start = parse_opsgenie_datetime(period.get("startDate", ""))
+        period_end = parse_opsgenie_datetime(period.get("endDate", ""))
+        if period_recipient != recipient_name or period_start is None or period_end is None or period_end != merged_start:
+            break
+        merged_start = period_start
+        first_period = period
+
+    for period in periods[current_index + 1:]:
+        period_recipient = period.get("recipient", {}).get("name", "").strip().casefold()
+        period_start = parse_opsgenie_datetime(period.get("startDate", ""))
+        period_end = parse_opsgenie_datetime(period.get("endDate", ""))
+        if period_recipient != recipient_name or period_start is None or period_end is None or period_start != merged_end:
+            break
+        merged_end = period_end
+        last_period = period
+
+    return first_period.get("startDate", ""), last_period.get("endDate", "")
+
 def find_opsgenie_on_call_period(data: dict, recipient_email: str, now: datetime.datetime | None = None) -> tuple[str, str]:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
 
-    periods = []
+    rotations = []
     for timeline_name in ("finalTimeline", "baseTimeline"):
-        rotations = data.get(timeline_name, {}).get("rotations", [])
-        for rotation in rotations:
-            periods.extend(rotation.get("periods", []))
+        rotations.extend(data.get(timeline_name, {}).get("rotations", []))
 
+    periods = [period for rotation in rotations for period in rotation.get("periods", [])]
     if not periods:
         return "", ""
 
     recipient_email = recipient_email.casefold()
     current_period = None
     matching_period = None
-    for period in periods:
-        start = parse_opsgenie_datetime(period.get("startDate", ""))
-        end = parse_opsgenie_datetime(period.get("endDate", ""))
-        is_current = start is not None and end is not None and start <= now <= end
-        recipient_name = period.get("recipient", {}).get("name", "").strip().casefold()
-        matches_recipient = bool(recipient_email and recipient_name == recipient_email)
-        if is_current and matches_recipient:
-            return period.get("startDate", ""), period.get("endDate", "")
-        if current_period is None and is_current:
-            current_period = period
-        if matching_period is None and matches_recipient:
-            matching_period = period
+
+    for rotation in rotations:
+        rotation_periods = sorted(
+            rotation.get("periods", []),
+            key=lambda period: parse_opsgenie_datetime(period.get("startDate", "")) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+        )
+        for index, period in enumerate(rotation_periods):
+            start = parse_opsgenie_datetime(period.get("startDate", ""))
+            end = parse_opsgenie_datetime(period.get("endDate", ""))
+            is_current = start is not None and end is not None and start <= now <= end
+            recipient_name = period.get("recipient", {}).get("name", "").strip().casefold()
+            matches_recipient = bool(recipient_email and recipient_name == recipient_email)
+            if is_current and matches_recipient:
+                return merge_opsgenie_periods(rotation_periods, index)
+            if current_period is None and is_current:
+                current_period = period
+            if matching_period is None and matches_recipient:
+                matching_period = period
 
     fallback_period = current_period or matching_period or periods[0]
     return fallback_period.get("startDate", ""), fallback_period.get("endDate", "")
@@ -1112,10 +1148,12 @@ async def resolve_opsgenie_on_call_period(opsgenie_token: str, schedule_name: st
     headers = {
         "Authorization": f"GenieKey {opsgenie_token}",
     }
+    timeline_start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
     params = {
         "identifierType": "name",
-        "interval": "1",
-        "intervalUnit": "days",
+        "date": timeline_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "interval": "6",
+        "intervalUnit": "months",
     }
 
     try:

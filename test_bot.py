@@ -350,6 +350,65 @@ def test_format_opsgenie_datetime_uses_local_timezone():
 
     assert bot.format_opsgenie_datetime("2026-04-26T08:00:00Z", local_tz) == "Sun, 26 Apr 2026 10:00"
 
+def test_find_opsgenie_on_call_period_merges_adjacent_matching_periods():
+    import bot
+
+    data = {
+        "finalTimeline": {
+            "rotations": [{
+                "periods": [
+                    {
+                        "startDate": "2026-04-24T16:00:00Z",
+                        "endDate": "2026-04-26T17:19:04.912Z",
+                        "recipient": {"name": "oncall@example.com"},
+                    },
+                    {
+                        "startDate": "2026-04-26T17:19:04.912Z",
+                        "endDate": "2026-05-14T06:00:00Z",
+                        "recipient": {"name": "oncall@example.com"},
+                    },
+                    {
+                        "startDate": "2026-05-14T06:00:00Z",
+                        "endDate": "2026-05-31T22:00:00Z",
+                        "recipient": {"name": "next@example.com"},
+                    },
+                ],
+            }],
+        },
+    }
+    now = datetime.datetime(2026, 4, 26, 16, 35, tzinfo=datetime.timezone.utc)
+
+    assert bot.find_opsgenie_on_call_period(data, "oncall@example.com", now) == (
+        "2026-04-24T16:00:00Z",
+        "2026-05-14T06:00:00Z",
+    )
+
+@pytest.mark.asyncio
+async def test_resolve_opsgenie_on_call_period_requests_past_anchored_wide_timeline():
+    import bot
+
+    response = AsyncMock()
+    response.status = 200
+    response.json = AsyncMock(return_value={"data": {}})
+    response_context = AsyncMock()
+    response_context.__aenter__.return_value = response
+    response_context.__aexit__.return_value = None
+
+    session = MagicMock()
+    session.get.return_value = response_context
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = session
+    session_context.__aexit__.return_value = None
+
+    with patch('bot.aiohttp.ClientSession', return_value=session_context):
+        await bot.resolve_opsgenie_on_call_period("token", "Team Primary", "oncall@example.com")
+
+    params = session.get.call_args.kwargs["params"]
+    assert params["identifierType"] == "name"
+    assert params["interval"] == "6"
+    assert params["intervalUnit"] == "months"
+    assert params["date"].endswith("Z")
+
 @pytest.mark.asyncio
 async def test_process_command_set_pattern():
     app = AsyncMock()
