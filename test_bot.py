@@ -183,19 +183,33 @@ async def test_process_command_list_opsgenie_schedules_without_token():
 
 @pytest.mark.asyncio
 async def test_process_command_on_call_uses_configured_schedule():
+    import bot
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
     channel.configs["default"]["opsgenie_schedule_name"] = "Team Primary"
     user = User("U12345", "test", "Test User", "Testers")
     on_call_user = User("U999", "oncall", "On Call User", "Ops")
     thread_ts = "1234567890.123456"
+    start = "2026-04-26T08:00:00Z"
+    end = "2026-04-27T08:00:00Z"
 
     with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
+         patch('bot.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=(start, end))) as mock_period, \
          patch('bot.send_message') as mock_send_message:
         await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
 
     mock_resolve.assert_awaited_once_with(app, "token", "Team Primary")
-    mock_send_message.assert_called_with(app, channel, user, "<@U999>", thread_ts)
+    mock_period.assert_awaited_once_with("token", "Team Primary", "oncall@example.com")
+    mock_send_message.assert_called_with(
+        app,
+        channel,
+        user,
+        "*Schedule*: `Team Primary`\n"
+        "*On-call*: <@U999>\n"
+        f"*Start*: `{bot.format_opsgenie_datetime(start)}`\n"
+        f"*End*: `{bot.format_opsgenie_datetime(end)}`",
+        thread_ts
+    )
 
 @pytest.mark.asyncio
 async def test_process_command_on_call_uses_explicit_schedule():
@@ -207,11 +221,15 @@ async def test_process_command_on_call_uses_explicit_schedule():
     thread_ts = "1234567890.123456"
 
     with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
+         patch('bot.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=("2026-04-26T08:00:00Z", "2026-04-27T08:00:00Z"))) as mock_period, \
          patch('bot.send_message') as mock_send_message:
         await process_command(app, "on-call Team Secondary", channel, user, thread_ts, opsgenie_token="token")
 
     mock_resolve.assert_awaited_once_with(app, "token", "Team Secondary")
-    mock_send_message.assert_called_with(app, channel, user, "<@U999>", thread_ts)
+    mock_period.assert_awaited_once_with("token", "Team Secondary", "oncall@example.com")
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Schedule*: `Team Secondary`" in sent_message
+    assert "*On-call*: <@U999>" in sent_message
 
 @pytest.mark.asyncio
 async def test_process_command_on_call_uses_selected_config():
@@ -227,25 +245,36 @@ async def test_process_command_on_call_uses_selected_config():
     thread_ts = "1234567890.123456"
 
     with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
+         patch('bot.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=("2026-04-26T08:00:00Z", "2026-04-27T08:00:00Z"))) as mock_period, \
          patch('bot.send_message') as mock_send_message:
         await process_command(app, "alerts on-call", channel, user, thread_ts, opsgenie_token="token")
 
     mock_resolve.assert_awaited_once_with(app, "token", "Alerts Schedule")
-    mock_send_message.assert_called_with(app, channel, user, "<@U999>", thread_ts)
+    mock_period.assert_awaited_once_with("token", "Alerts Schedule", "oncall@example.com")
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Schedule*: `Alerts Schedule`" in sent_message
+    assert "*On-call*: <@U999>" in sent_message
 
 @pytest.mark.asyncio
 async def test_process_command_on_call_falls_back_to_email_when_unmapped():
+    import bot
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
     channel.configs["default"]["opsgenie_schedule_name"] = "Team Primary"
     user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
+    start = "2026-04-26T08:00:00Z"
+    end = "2026-04-27T08:00:00Z"
 
     with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", None))), \
+         patch('bot.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=(start, end))), \
          patch('bot.send_message') as mock_send_message:
         await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
 
-    mock_send_message.assert_called_with(app, channel, user, "oncall@example.com", thread_ts)
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*On-call*: oncall@example.com" in sent_message
+    assert f"*Start*: `{bot.format_opsgenie_datetime(start)}`" in sent_message
+    assert f"*End*: `{bot.format_opsgenie_datetime(end)}`" in sent_message
 
 @pytest.mark.asyncio
 async def test_process_command_on_call_without_schedule():
@@ -255,10 +284,12 @@ async def test_process_command_on_call_without_schedule():
     thread_ts = "1234567890.123456"
 
     with patch('bot.resolve_opsgenie_on_call', new=AsyncMock()) as mock_resolve, \
+         patch('bot.resolve_opsgenie_on_call_period', new=AsyncMock()) as mock_period, \
          patch('bot.send_message') as mock_send_message:
         await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
 
     mock_resolve.assert_not_awaited()
+    mock_period.assert_not_awaited()
     mock_send_message.assert_called_with(
         app,
         channel,
@@ -276,11 +307,48 @@ async def test_process_command_on_call_without_token():
     thread_ts = "1234567890.123456"
 
     with patch('bot.resolve_opsgenie_on_call', new=AsyncMock()) as mock_resolve, \
+         patch('bot.resolve_opsgenie_on_call_period', new=AsyncMock()) as mock_period, \
          patch('bot.send_message') as mock_send_message:
         await process_command(app, "on-call", channel, user, thread_ts)
 
     mock_resolve.assert_not_awaited()
+    mock_period.assert_not_awaited()
     mock_send_message.assert_called_with(app, channel, user, "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.", thread_ts)
+
+def test_find_opsgenie_on_call_period_prefers_matching_current_period():
+    import bot
+
+    data = {
+        "finalTimeline": {
+            "rotations": [{
+                "periods": [
+                    {
+                        "startDate": "2026-04-26T06:00:00Z",
+                        "endDate": "2026-04-26T08:00:00Z",
+                        "recipient": {"name": "previous@example.com"},
+                    },
+                    {
+                        "startDate": "2026-04-26T08:00:00Z",
+                        "endDate": "2026-04-27T08:00:00Z",
+                        "recipient": {"name": "oncall@example.com"},
+                    },
+                ],
+            }],
+        },
+    }
+    now = datetime.datetime(2026, 4, 26, 10, 0, tzinfo=datetime.timezone.utc)
+
+    assert bot.find_opsgenie_on_call_period(data, "oncall@example.com", now) == (
+        "2026-04-26T08:00:00Z",
+        "2026-04-27T08:00:00Z",
+    )
+
+def test_format_opsgenie_datetime_uses_local_timezone():
+    import bot
+
+    local_tz = datetime.timezone(datetime.timedelta(hours=2), "CEST")
+
+    assert bot.format_opsgenie_datetime("2026-04-26T08:00:00Z", local_tz) == "Sun, 26 Apr 2026 10:00"
 
 @pytest.mark.asyncio
 async def test_process_command_set_pattern():

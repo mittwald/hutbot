@@ -102,6 +102,7 @@ SUPPORTED_TEMPLATE_VARIABLES = {
 UNKNOWN_EMAIL_ONCALL_PLACEHOLDER = "<no-email-set>"
 UNKNOWN_NAME_ONCALL_PLACEHOLDER = "<no-name-set>"
 UNKNOWN_USER_ONCALL_PLACEHOLDER = "<no-user-set>"
+UNKNOWN_ONCALL_PERIOD_PLACEHOLDER = "<unknown>"
 
 # Regex patterns for command parsing
 def create_command_pattern(command_regex: str) -> re.Pattern:
@@ -907,8 +908,10 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         "> That means Hutbot can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
         "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
         "> :list-item: *List available Opsgenie schedules*\n>\n"
-        "> :telephone_receiver: *Print the current on-call user with `@Hutbot [config] on-call`*\n>\n"
-        "> :test_tube: *Preview stuff with `@Hutbot [config] test <message>`*\n>\n"
+        "> :telephone_receiver: *Print the current on-call user*\n"
+        "> Use `/hutbot [config] on-call [schedule name]` to get the current OpsGenie on-call user as a Slack mention.\n>\n"
+        "> :test_tube: *Preview your configured reply*\n"
+        "> Use `/hutbot [config] test` or mention me with `@Hutbot [config] test <message>` to test reply templates and variables.\n>\n"
         "> :bug: *Hutbot now ONLY cancels replying, when the _expected_ team(s) have already replied* :lightbulb:\n>\n"
         "> Issue was:\n>\n"
         "> 1. Team *A* sends a message intended for Team *B*\n"
@@ -1048,6 +1051,86 @@ async def resolve_opsgenie_on_call(app: AsyncApp, opsgenie_token: str, schedule_
 
     return recipient_email, slack_user
 
+def parse_opsgenie_datetime(value: str) -> datetime.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+def format_opsgenie_datetime(value: str, local_tz: datetime.tzinfo | None = None) -> str:
+    parsed = parse_opsgenie_datetime(value)
+    if not parsed:
+        return UNKNOWN_ONCALL_PERIOD_PLACEHOLDER
+    local_time = parsed.astimezone(local_tz)
+    return local_time.strftime("%a, %d %b %Y %H:%M")
+
+def find_opsgenie_on_call_period(data: dict, recipient_email: str, now: datetime.datetime | None = None) -> tuple[str, str]:
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+
+    periods = []
+    for timeline_name in ("finalTimeline", "baseTimeline"):
+        rotations = data.get(timeline_name, {}).get("rotations", [])
+        for rotation in rotations:
+            periods.extend(rotation.get("periods", []))
+
+    if not periods:
+        return "", ""
+
+    recipient_email = recipient_email.casefold()
+    current_period = None
+    matching_period = None
+    for period in periods:
+        start = parse_opsgenie_datetime(period.get("startDate", ""))
+        end = parse_opsgenie_datetime(period.get("endDate", ""))
+        is_current = start is not None and end is not None and start <= now <= end
+        recipient_name = period.get("recipient", {}).get("name", "").strip().casefold()
+        matches_recipient = bool(recipient_email and recipient_name == recipient_email)
+        if is_current and matches_recipient:
+            return period.get("startDate", ""), period.get("endDate", "")
+        if current_period is None and is_current:
+            current_period = period
+        if matching_period is None and matches_recipient:
+            matching_period = period
+
+    fallback_period = current_period or matching_period or periods[0]
+    return fallback_period.get("startDate", ""), fallback_period.get("endDate", "")
+
+async def resolve_opsgenie_on_call_period(opsgenie_token: str, schedule_name: str, recipient_email: str) -> tuple[str, str]:
+    schedule_name = schedule_name.strip()
+    if not opsgenie_token:
+        return "", ""
+
+    encoded_schedule_name = urllib.parse.quote(schedule_name, safe="")
+    url = f"https://api.opsgenie.com/v2/schedules/{encoded_schedule_name}/timeline"
+    headers = {
+        "Authorization": f"GenieKey {opsgenie_token}",
+    }
+    params = {
+        "identifierType": "name",
+        "interval": "1",
+        "intervalUnit": "days",
+    }
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, headers=headers, params=params) as response:
+                if response.status != 200:
+                    log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}': {response.status}")
+                    return "", ""
+                payload = await response.json()
+    except Exception as e:
+        log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}':", e)
+        return "", ""
+
+    return find_opsgenie_on_call_period(payload.get("data", {}), recipient_email)
+
 async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, config: dict) -> dict[str, str]:
     schedule_name = config.get("opsgenie_schedule_name", "").strip()
     variables = get_opsgenie_placeholder_variables()
@@ -1083,7 +1166,14 @@ async def send_current_on_call(app: AsyncApp, opsgenie_token: str, channel: Chan
         return
 
     mention = f"<@{slack_user.id}>" if slack_user else recipient_email
-    await send_message(app, channel, user, mention, thread_ts)
+    start, end = await resolve_opsgenie_on_call_period(opsgenie_token, schedule_name, recipient_email)
+    message = (
+        f"*Schedule*: `{schedule_name}`\n"
+        f"*On-call*: {mention}\n"
+        f"*Start*: `{format_opsgenie_datetime(start)}`\n"
+        f"*End*: `{format_opsgenie_datetime(end)}`"
+    )
+    await send_message(app, channel, user, message, thread_ts)
 
 async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, wait_time_override: float | None = None) -> None:
     opsgenie_enabled = config.get('opsgenie')
