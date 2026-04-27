@@ -277,6 +277,53 @@ async def test_process_command_on_call_falls_back_to_email_when_unmapped():
     assert f"*End*: `{bot.format_opsgenie_datetime(end)}`" in sent_message
 
 @pytest.mark.asyncio
+async def test_process_command_on_call_uses_upcoming_period_when_no_current_on_call():
+    import bot
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["opsgenie_schedule_name"] = "Cloud Hosting_schedule"
+    user = User("U12345", "test", "Test User", "Testers")
+    upcoming_user = User("U999", "next", "Next User", "Ops")
+    thread_ts = "1234567890.123456"
+    start = "2026-04-28T08:00:00Z"
+    end = "2026-04-29T08:00:00Z"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("", None))) as mock_resolve, \
+         patch('bot.resolve_opsgenie_upcoming_on_call_period', new=AsyncMock(return_value=("next@example.com", start, end))) as mock_upcoming, \
+         patch('bot.resolve_slack_user_for_opsgenie_recipient', new=AsyncMock(return_value=upcoming_user)) as mock_slack_user, \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+
+    mock_resolve.assert_awaited_once_with(app, "token", "Cloud Hosting_schedule")
+    mock_upcoming.assert_awaited_once_with("token", "Cloud Hosting_schedule")
+    mock_slack_user.assert_awaited_once_with(app, "next@example.com")
+    mock_send_message.assert_called_with(
+        app,
+        channel,
+        user,
+        "*Schedule*: `Cloud Hosting_schedule`\n"
+        "*On-call*: <@U999>\n"
+        f"*Start*: `{bot.format_opsgenie_datetime(start)}`\n"
+        f"*End*: `{bot.format_opsgenie_datetime(end)}`",
+        thread_ts
+    )
+
+@pytest.mark.asyncio
+async def test_process_command_on_call_errors_when_no_current_or_upcoming_on_call():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["opsgenie_schedule_name"] = "Cloud Hosting_schedule"
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("", None))), \
+         patch('bot.resolve_opsgenie_upcoming_on_call_period', new=AsyncMock(return_value=("", "", ""))), \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+
+    mock_send_message.assert_called_with(app, channel, user, "Failed to resolve on-call user for OpsGenie schedule `Cloud Hosting_schedule`.", thread_ts)
+
+@pytest.mark.asyncio
 async def test_process_command_on_call_without_schedule():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
@@ -381,6 +428,40 @@ def test_find_opsgenie_on_call_period_merges_adjacent_matching_periods():
     assert bot.find_opsgenie_on_call_period(data, "oncall@example.com", now) == (
         "2026-04-24T16:00:00Z",
         "2026-05-14T06:00:00Z",
+    )
+
+def test_find_opsgenie_upcoming_on_call_period_selects_next_period():
+    import bot
+
+    data = {
+        "finalTimeline": {
+            "rotations": [{
+                "periods": [
+                    {
+                        "startDate": "2026-04-26T08:00:00Z",
+                        "endDate": "2026-04-26T10:00:00Z",
+                        "recipient": {"name": "past@example.com"},
+                    },
+                    {
+                        "startDate": "2026-04-27T08:00:00Z",
+                        "endDate": "2026-04-27T12:00:00Z",
+                        "recipient": {"name": "next@example.com"},
+                    },
+                    {
+                        "startDate": "2026-04-27T12:00:00Z",
+                        "endDate": "2026-04-27T18:00:00Z",
+                        "recipient": {"name": "next@example.com"},
+                    },
+                ],
+            }],
+        },
+    }
+    now = datetime.datetime(2026, 4, 26, 12, 0, tzinfo=datetime.timezone.utc)
+
+    assert bot.find_opsgenie_upcoming_on_call_period(data, now) == (
+        "next@example.com",
+        "2026-04-27T08:00:00Z",
+        "2026-04-27T18:00:00Z",
     )
 
 @pytest.mark.asyncio

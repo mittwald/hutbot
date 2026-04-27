@@ -1008,6 +1008,13 @@ def get_opsgenie_placeholder_variables() -> dict[str, str]:
             "opsgenie_current_user": UNKNOWN_USER_ONCALL_PLACEHOLDER,
     }
 
+async def resolve_slack_user_for_opsgenie_recipient(app: AsyncApp, recipient_email: str) -> User | None:
+    slack_user = await get_user_by_email(app, recipient_email)
+    if not slack_user.id:
+        log_warning(f"Failed to map OpsGenie recipient '{recipient_email}' to a Slack user.")
+        return None
+    return slack_user
+
 async def resolve_opsgenie_on_call(app: AsyncApp, opsgenie_token: str, schedule_name: str) -> tuple[str, User | None]:
     schedule_name = schedule_name.strip()
     if not opsgenie_token:
@@ -1044,12 +1051,7 @@ async def resolve_opsgenie_on_call(app: AsyncApp, opsgenie_token: str, schedule_
     if not recipient_email:
         return "", None
 
-    slack_user = await get_user_by_email(app, recipient_email)
-    if not slack_user.id:
-        log_warning(f"Failed to map OpsGenie recipient '{recipient_email}' to a Slack user.")
-        return recipient_email, None
-
-    return recipient_email, slack_user
+    return recipient_email, await resolve_slack_user_for_opsgenie_recipient(app, recipient_email)
 
 def parse_opsgenie_datetime(value: str) -> datetime.datetime | None:
     if not value:
@@ -1138,6 +1140,37 @@ def find_opsgenie_on_call_period(data: dict, recipient_email: str, now: datetime
     fallback_period = current_period or matching_period or periods[0]
     return fallback_period.get("startDate", ""), fallback_period.get("endDate", "")
 
+def find_opsgenie_upcoming_on_call_period(data: dict, now: datetime.datetime | None = None) -> tuple[str, str, str]:
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+
+    best_candidate = None
+    for timeline_name in ("finalTimeline", "baseTimeline"):
+        rotations = data.get(timeline_name, {}).get("rotations", [])
+        for rotation in rotations:
+            rotation_periods = sorted(
+                rotation.get("periods", []),
+                key=lambda period: parse_opsgenie_datetime(period.get("startDate", "")) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+            )
+            for index, period in enumerate(rotation_periods):
+                start = parse_opsgenie_datetime(period.get("startDate", ""))
+                end = parse_opsgenie_datetime(period.get("endDate", ""))
+                recipient_email = period.get("recipient", {}).get("name", "").strip()
+                if start is None or end is None or end < now or not recipient_email:
+                    continue
+
+                candidate = (start, rotation_periods, index, recipient_email)
+                if best_candidate is None or candidate[0] < best_candidate[0]:
+                    best_candidate = candidate
+
+    if best_candidate is None:
+        return "", "", ""
+
+    _, rotation_periods, index, recipient_email = best_candidate
+    start, end = merge_opsgenie_periods(rotation_periods, index)
+    return recipient_email, start, end
+
 async def resolve_opsgenie_on_call_period(opsgenie_token: str, schedule_name: str, recipient_email: str) -> tuple[str, str]:
     schedule_name = schedule_name.strip()
     if not opsgenie_token:
@@ -1169,6 +1202,37 @@ async def resolve_opsgenie_on_call_period(opsgenie_token: str, schedule_name: st
 
     return find_opsgenie_on_call_period(payload.get("data", {}), recipient_email)
 
+async def resolve_opsgenie_upcoming_on_call_period(opsgenie_token: str, schedule_name: str) -> tuple[str, str, str]:
+    schedule_name = schedule_name.strip()
+    if not opsgenie_token:
+        return "", "", ""
+
+    encoded_schedule_name = urllib.parse.quote(schedule_name, safe="")
+    url = f"https://api.opsgenie.com/v2/schedules/{encoded_schedule_name}/timeline"
+    headers = {
+        "Authorization": f"GenieKey {opsgenie_token}",
+    }
+    timeline_start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
+    params = {
+        "identifierType": "name",
+        "date": timeline_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "interval": "6",
+        "intervalUnit": "months",
+    }
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, headers=headers, params=params) as response:
+                if response.status != 200:
+                    log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}': {response.status}")
+                    return "", "", ""
+                payload = await response.json()
+    except Exception as e:
+        log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}':", e)
+        return "", "", ""
+
+    return find_opsgenie_upcoming_on_call_period(payload.get("data", {}))
+
 async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, config: dict) -> dict[str, str]:
     schedule_name = config.get("opsgenie_schedule_name", "").strip()
     variables = get_opsgenie_placeholder_variables()
@@ -1199,12 +1263,18 @@ async def send_current_on_call(app: AsyncApp, opsgenie_token: str, channel: Chan
         return
 
     recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_token, schedule_name)
+    if recipient_email:
+        start, end = await resolve_opsgenie_on_call_period(opsgenie_token, schedule_name, recipient_email)
+    else:
+        recipient_email, start, end = await resolve_opsgenie_upcoming_on_call_period(opsgenie_token, schedule_name)
+        if recipient_email:
+            slack_user = await resolve_slack_user_for_opsgenie_recipient(app, recipient_email)
+
     if not recipient_email:
-        await send_message(app, channel, user, f"Failed to resolve current on-call user for OpsGenie schedule `{schedule_name}`.", thread_ts)
+        await send_message(app, channel, user, f"Failed to resolve on-call user for OpsGenie schedule `{schedule_name}`.", thread_ts)
         return
 
     mention = f"<@{slack_user.id}>" if slack_user else recipient_email
-    start, end = await resolve_opsgenie_on_call_period(opsgenie_token, schedule_name, recipient_email)
     message = (
         f"*Schedule*: `{schedule_name}`\n"
         f"*On-call*: {mention}\n"
