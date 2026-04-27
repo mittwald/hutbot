@@ -1404,7 +1404,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         "> Issue was:\n>\n"
         "> 1. Team *A* sends a message intended for Team *B*\n"
         "> 2. Someone else from Team *A* adds additional information\n"
-        "> 3. Hutbot cancel his reply and NOT remind Team *B* anymore :fail:\n"
+        "> 3. Hutbot cancels the reply and does NOT remind Team *B* anymore :fail:\n"
     )
     await send_message(app, channel, user, update_text, thread_ts)
 
