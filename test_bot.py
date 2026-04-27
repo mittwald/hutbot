@@ -111,6 +111,7 @@ async def test_migrate_and_apply_defaults():
     assert migrated_config["C123"]["default"]["reply_message"] == "Old message"
     assert migrated_config["C123"]["default"]["opsgenie"] is False
     assert migrated_config["C123"]["default"]["opsgenie_schedule_name"] == ""
+    assert migrated_config["C123"]["default"]["opsgenie_priority"] == "P4"
     assert migrated_config["C123"]["default"]["pattern"] is None
 
 @pytest.mark.asyncio
@@ -124,6 +125,46 @@ async def test_process_command_set_opsgenie_schedule():
         await process_command(app, "set opsgenie-schedule Team Primary", channel, user, thread_ts)
         assert channel.configs["default"]["opsgenie_schedule_name"] == "Team Primary"
         mock_send_message.assert_called_with(app, channel, user, "*OpsGenie schedule* set to `Team Primary` in configuration `default`.", thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_set_opsgenie_priority():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await process_command(app, "set opsgenie-priority P2", channel, user, thread_ts)
+        assert channel.configs["default"]["opsgenie_priority"] == "P2"
+        mock_send_message.assert_called_with(app, channel, user, "*OpsGenie priority* set to `P2` in configuration `default`.", thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_set_opsgenie_priority_custom_config_normalizes_case():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await process_command(app, "alerts set opsgenie-priority p1", channel, user, thread_ts)
+        assert channel.configs["alerts"]["opsgenie_priority"] == "P1"
+        mock_send_message.assert_called_with(app, channel, user, "*OpsGenie priority* set to `P1` in configuration `alerts`.", thread_ts)
+
+@pytest.mark.asyncio
+async def test_process_command_set_opsgenie_priority_rejects_invalid_value():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration') as mock_save, patch('bot.send_message') as mock_send_message:
+        await process_command(app, "set opsgenie-priority P0", channel, user, thread_ts)
+
+    assert channel.configs["default"]["opsgenie_priority"] == "P4"
+    mock_save.assert_not_called()
+    sent_message = mock_send_message.call_args.args[3]
+    assert "Invalid *OpsGenie priority*" in sent_message
+    assert "`P1`, `P2`, `P3`, `P4`, `P5`" in sent_message
 
 @pytest.mark.asyncio
 async def test_process_command_set_datetime_format_with_quotes_timezone_and_locale():
@@ -846,6 +887,7 @@ async def test_show_config():
         sent_message = mock_send_message.call_args.args[3]
         assert "*Configuration*: `default`" in sent_message
         assert "*OpsGenie schedule*: ``" in sent_message
+        assert "*OpsGenie priority*: `P4`" in sent_message
         assert "*Date format*: `%a, %d %b %Y`" in sent_message
         assert "*Time format*: `%H:%M`" in sent_message
         assert "*Date/time timezone*: `<server local>`" in sent_message
@@ -1163,6 +1205,60 @@ async def test_schedule_reply_keeps_plain_message_unchanged():
 
         mock_get_opsgenie_template_variables.assert_not_awaited()
         mock_send_message.assert_called_with(app, channel, user, "Anybody?", "1234.1")
+
+@pytest.mark.asyncio
+async def test_post_opsgenie_alert_uses_configured_priority():
+    import bot
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = DEFAULT_CONFIG.copy()
+    config["opsgenie_priority"] = "P2"
+
+    response = AsyncMock()
+    response.status = 202
+    response_context = AsyncMock()
+    response_context.__aenter__.return_value = response
+    response_context.__aexit__.return_value = None
+
+    session = MagicMock()
+    session.post.return_value = response_context
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = session
+    session_context.__aexit__.return_value = None
+
+    with patch('bot.aiohttp.ClientSession', return_value=session_context):
+        await bot.post_opsgenie_alert(app, "token", channel, config, user, "Original text", "1234.1", "https://slack.test/message")
+
+    payload = json.loads(session.post.call_args.kwargs["data"])
+    assert payload["priority"] == "P2"
+
+@pytest.mark.asyncio
+async def test_post_opsgenie_alert_defaults_to_p4_without_configured_priority():
+    import bot
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = DEFAULT_CONFIG.copy()
+    config.pop("opsgenie_priority")
+
+    response = AsyncMock()
+    response.status = 202
+    response_context = AsyncMock()
+    response_context.__aenter__.return_value = response
+    response_context.__aexit__.return_value = None
+
+    session = MagicMock()
+    session.post.return_value = response_context
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = session
+    session_context.__aexit__.return_value = None
+
+    with patch('bot.aiohttp.ClientSession', return_value=session_context):
+        await bot.post_opsgenie_alert(app, "token", channel, config, user, "Original text", "1234.1", "https://slack.test/message")
+
+    payload = json.loads(session.post.call_args.kwargs["data"])
+    assert payload["priority"] == "P4"
 
 @pytest.mark.asyncio
 async def test_process_command_test_renders_default_reply_and_variables():

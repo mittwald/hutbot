@@ -37,11 +37,14 @@ OpsGenieContext = collections.namedtuple('OpsGenieContext', ['schedule_name', 'c
 DEFAULT_CONFIG_NAME = 'default'
 DEFAULT_DATE_FORMAT = "%a, %d %b %Y"
 DEFAULT_TIME_FORMAT = "%H:%M"
+DEFAULT_OPSGENIE_PRIORITY = "P4"
+OPSGENIE_PRIORITIES = {"P1", "P2", "P3", "P4", "P5"}
 DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
     "opsgenie": False,
     "opsgenie_schedule_name": "",
+    "opsgenie_priority": DEFAULT_OPSGENIE_PRIORITY,
     "date_format": "",
     "time_format": "",
     "datetime_timezone": "",
@@ -154,6 +157,7 @@ TEST_WITH_MESSAGE_PATTERN = re.compile(r'^test(?:\s+(?P<message>.*))?$', re.IGNO
 SET_WAIT_TIME_PATTERN = create_command_pattern(r'(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)')
 SET_REPLY_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?(message|reply)\s+(?P<message>.+)')
 SET_OPSGENIE_SCHEDULE_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?schedule\s+(?P<schedule>.+)')
+SET_OPSGENIE_PRIORITY_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?priority\s+(?P<priority>.+)')
 SET_DATETIME_FORMAT_PATTERN = create_command_pattern(r'(set\s+)?(datetime[_ -]?format|date[_ -]?format|datefmt)\s+(?P<values>.+)')
 SET_PATTERN_PATTERN = create_command_pattern(r'set\s+pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|[^\r\n\t\f\v\s"\']+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
 ADD_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)')
@@ -812,6 +816,9 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
     elif (match := SET_OPSGENIE_SCHEDULE_PATTERN.match(command_text)):
         schedule_name = strip_quotes(match.group("schedule"))
         await set_opsgenie_schedule_name(app, channel, config_name, schedule_name, user, thread_ts)
+    elif (match := SET_OPSGENIE_PRIORITY_PATTERN.match(command_text)):
+        priority = strip_quotes(match.group("priority"))
+        await set_opsgenie_priority(app, channel, config_name, priority, user, thread_ts)
     elif (match := SET_DATETIME_FORMAT_PATTERN.match(command_text)):
         await set_datetime_format(app, channel, config_name, match.group("values"), user, thread_ts)
     elif (match := SET_PATTERN_PATTERN.match(command_text)):
@@ -953,6 +960,20 @@ async def set_opsgenie_schedule_name(app: AsyncApp, channel: Channel, config_nam
     channel.configs[config_name]['opsgenie_schedule_name'] = schedule_name
     await save_configuration()
     await send_message(app, channel, user, f"*OpsGenie schedule* set to `{schedule_name}` in configuration `{config_name}`.", thread_ts)
+
+async def set_opsgenie_priority(app: AsyncApp, channel: Channel, config_name: str, priority: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+
+    priority = priority.strip().upper()
+    if priority not in OPSGENIE_PRIORITIES:
+        supported = ", ".join(f"`{p}`" for p in sorted(OPSGENIE_PRIORITIES))
+        await send_message(app, channel, user, f"Invalid *OpsGenie priority*. Must be one of {supported}.", thread_ts)
+        return
+
+    channel.configs[config_name]['opsgenie_priority'] = priority
+    await save_configuration()
+    await send_message(app, channel, user, f"*OpsGenie priority* set to `{priority}` in configuration `{config_name}`.", thread_ts)
 
 async def set_datetime_format(app: AsyncApp, channel: Channel, config_name: str, values: str, user: User, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
@@ -1336,12 +1357,14 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         time_format = config.get('time_format') or DEFAULT_TIME_FORMAT
         datetime_timezone = config.get('datetime_timezone') or '<server local>'
         datetime_locale = config.get('datetime_locale') or '<default>'
+        opsgenie_priority = get_opsgenie_priority(config)
 
         message += (
             f"\n\n---\n*Configuration*: `{config_name}`\n\n"
             f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
             f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
             f"*OpsGenie schedule*: `{opsgenie_schedule_name}`\n\n"
+            f"*OpsGenie priority*: `{opsgenie_priority}`\n\n"
             f"*Date format*: `{date_format}`\n\n"
             f"*Time format*: `{time_format}`\n\n"
             f"*Date/time timezone*: `{datetime_timezone}`\n\n"
@@ -1415,6 +1438,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ("/hutbot [config] enable opsgenie", "Enable OpsGenie alerts."),
         ("/hutbot [config] disable opsgenie", "Disable OpsGenie alerts."),
         ("/hutbot [config] set opsgenie-schedule <name>", "Set the OpsGenie schedule name."),
+        ("/hutbot [config] set opsgenie-priority <P1-P5>", "Set the OpsGenie alert priority."),
         ("/hutbot [config] set datetime-format \"<date>\" \"<time>\" [<tz> <locale>]", "Set date/time formats."),
         ("/hutbot [config] set wait-time <minutes>", "Set reminder delay."),
         ("/hutbot list teams", "List available teams."),
@@ -1824,7 +1848,7 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
         await send_message(app, channel, user, reply_message, ts)
         if opsgenie_configured and opsgenie_enabled:
             log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name}...")
-            await post_opsgenie_alert(app, opsgenie_token, channel, user, text, ts, permalink)
+            await post_opsgenie_alert(app, opsgenie_token, channel, config, user, text, ts, permalink)
     except asyncio.CancelledError as e:
         log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
     except Exception as e:
@@ -1898,11 +1922,17 @@ async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
 
     return text
 
-async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, permalink: str) -> None:
+def get_opsgenie_priority(config: dict | None) -> str:
+    priority = (config or {}).get('opsgenie_priority', DEFAULT_OPSGENIE_PRIORITY)
+    priority = priority.strip().upper() if isinstance(priority, str) else ""
+    return priority if priority in OPSGENIE_PRIORITIES else DEFAULT_OPSGENIE_PRIORITY
+
+async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict | None, user: User, text: str, ts: str, permalink: str) -> None:
     log_debug(channel, f"> {text.replace('\n', '\\n')}")
     text = await clean_slack_text(app, channel, text)
     log_debug(channel, f"< {text}")
     user_name = user.real_name if user.real_name else user.name
+    priority = get_opsgenie_priority(config)
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
         'Content-Type': 'application/json',
@@ -1921,7 +1951,7 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Chann
                     "bot": "hutbot",
                     "permalink": permalink,
                 },
-                "priority": "P4",
+                "priority": priority,
             }
             async with session.post(url, headers=headers, data=json.dumps(data)) as response:
                 if response.status != 202:

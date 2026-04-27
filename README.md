@@ -22,6 +22,12 @@ Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`
 /hutbot [config] set datefmt "<date>" "<time>" [<timezone> <locale>]
 ```
 
+Opsgenie alert priority defaults to `P4` and can be configured per channel config with:
+
+```bash
+/hutbot [config] set opsgenie-priority <P1|P2|P3|P4|P5>
+```
+
 ## Step 1: Set Up the Slack App
 
 1. **Create a New Slack App**
