@@ -8,6 +8,8 @@ import urllib.parse
 import aiofiles
 import datetime
 import aiohttp  # Added for making HTTP requests
+from dataclasses import dataclass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_sdk.errors import SlackApiError
@@ -29,13 +31,21 @@ ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
 User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
 Usergroup = collections.namedtuple('Usergroup', ['id', 'handle', 'name'])
 Channel = collections.namedtuple('Channel', ['id', 'name', 'configs'])
+OpsGeniePeriod = collections.namedtuple('OpsGeniePeriod', ['recipient_email', 'slack_user', 'start', 'end'])
+OpsGenieContext = collections.namedtuple('OpsGenieContext', ['schedule_name', 'current', 'next'])
 
 DEFAULT_CONFIG_NAME = 'default'
+DEFAULT_DATE_FORMAT = "%a, %d %b %Y"
+DEFAULT_TIME_FORMAT = "%H:%M"
 DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
     "opsgenie": False,
     "opsgenie_schedule_name": "",
+    "date_format": "",
+    "time_format": "",
+    "datetime_timezone": "",
+    "datetime_locale": "",
     "debug": False,
     "include_bots": False,
     "excluded_teams": [],
@@ -80,11 +90,31 @@ MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
 ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 TIME_HOUR_PATTERN = re.compile(r"^[0-9]{1,2}$")
 CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-_\.:/]+$")
-TEMPLATE_VARIABLE_PATTERN = re.compile(r'{{\s*([a-z_][a-z0-9_]*)\s*}}')
+TEMPLATE_VARIABLE_NAME_PATTERN = re.compile(r'[a-z_][a-z0-9_]*')
+TEMPLATE_ARGUMENT_NAME_PATTERN = re.compile(r'[a-z_][a-z0-9_]*')
+TEMPLATE_ARGUMENT_ALIASES = {
+    "fmt": "fmt",
+    "format": "fmt",
+    "tz": "tz",
+    "timezone": "tz",
+    "lc": "lc",
+    "locale": "lc",
+}
+OPSGENIE_DATETIME_TEMPLATE_VARIABLES = {
+    f"opsgenie_{period}_{bound}_{part}"
+    for period in ("current", "next")
+    for bound in ("start", "end")
+    for part in ("date", "time", "datetime")
+}
 OPSGENIE_TEMPLATE_VARIABLES = {
+    "opsgenie_schedule_name",
     "opsgenie_current_email",
     "opsgenie_current_name",
     "opsgenie_current_user",
+    "opsgenie_next_email",
+    "opsgenie_next_name",
+    "opsgenie_next_user",
+    *OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
 }
 SUPPORTED_TEMPLATE_VARIABLES = {
     "channel",
@@ -103,6 +133,15 @@ UNKNOWN_EMAIL_ONCALL_PLACEHOLDER = "<no-email-set>"
 UNKNOWN_NAME_ONCALL_PLACEHOLDER = "<no-name-set>"
 UNKNOWN_USER_ONCALL_PLACEHOLDER = "<no-user-set>"
 UNKNOWN_ONCALL_PERIOD_PLACEHOLDER = "<unknown>"
+UNKNOWN_OPSGENIE_SCHEDULE_PLACEHOLDER = "<no-schedule-set>"
+
+@dataclass(frozen=True)
+class TemplateExpression:
+    variable: str
+    args: dict[str, str]
+
+class TemplateExpressionError(ValueError):
+    pass
 
 # Regex patterns for command parsing
 def create_command_pattern(command_regex: str) -> re.Pattern:
@@ -115,6 +154,7 @@ TEST_WITH_MESSAGE_PATTERN = re.compile(r'^test(?:\s+(?P<message>.*))?$', re.IGNO
 SET_WAIT_TIME_PATTERN = create_command_pattern(r'(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)')
 SET_REPLY_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?(message|reply)\s+(?P<message>.+)')
 SET_OPSGENIE_SCHEDULE_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?schedule\s+(?P<schedule>.+)')
+SET_DATETIME_FORMAT_PATTERN = create_command_pattern(r'(set\s+)?(datetime[_ -]?format|date[_ -]?format|datefmt)\s+(?P<values>.+)')
 SET_PATTERN_PATTERN = create_command_pattern(r'set\s+pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|[^\r\n\t\f\v\s"\']+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
 ADD_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)')
 CLEAR_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+excluded?([_ -]?teams?)?')
@@ -156,6 +196,366 @@ def strip_quotes(text: str) -> str:
         text = text[1:-1]
 
     return text
+
+def parse_quoted_tokens(text: str) -> tuple[list[str], str]:
+    tokens = []
+    i = 0
+    while i < len(text):
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+
+        if text[i] in ("'", '"'):
+            quote = text[i]
+            i += 1
+            value = []
+            while i < len(text):
+                if text[i] == "\\" and i + 1 < len(text) and text[i + 1] in (quote, "\\"):
+                    value.append(text[i + 1])
+                    i += 2
+                    continue
+                if text[i] == quote:
+                    i += 1
+                    break
+                value.append(text[i])
+                i += 1
+            else:
+                return [], "unterminated quoted value"
+            if i < len(text) and not text[i].isspace():
+                return [], "quoted values must be separated by whitespace"
+            tokens.append("".join(value))
+        else:
+            start = i
+            while i < len(text) and not text[i].isspace():
+                i += 1
+            tokens.append(text[start:i])
+
+    return tokens, ""
+
+def normalize_locale_name(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("locale must be non-empty")
+    match = re.fullmatch(r"([A-Za-z]{2,3})(?:[-_]([A-Za-z]{2}|\d{3}))?", value)
+    if not match:
+        raise ValueError("locale must look like `en`, `en-US`, or `de_DE`")
+
+    language = match.group(1).lower()
+    region = match.group(2)
+    if not region:
+        return language
+    return f"{language}_{region.upper()}"
+
+def validate_timezone_name(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("timezone must be non-empty")
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        raise ValueError(f"unknown timezone `{value}`")
+    return value
+
+def get_local_timezone() -> datetime.tzinfo:
+    return datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
+
+def get_config_timezone(config: dict | None, timezone_name: str = "", local_tz: datetime.tzinfo | None = None) -> datetime.tzinfo:
+    if local_tz is not None:
+        return local_tz
+
+    configured_timezone = timezone_name or (config or {}).get("datetime_timezone", "")
+    if configured_timezone:
+        try:
+            return ZoneInfo(validate_timezone_name(configured_timezone))
+        except ValueError as e:
+            log_warning("Ignoring invalid datetime timezone in configuration:", e)
+
+    return get_local_timezone()
+
+def get_config_locale(config: dict | None, locale_name: str = "") -> str:
+    configured_locale = locale_name or (config or {}).get("datetime_locale", "")
+    if not configured_locale:
+        return ""
+    try:
+        return normalize_locale_name(configured_locale)
+    except ValueError as e:
+        log_warning("Ignoring invalid datetime locale in configuration:", e)
+        return ""
+
+GO_LAYOUT_TOKENS = [
+    ("Monday", "%A"),
+    ("January", "%B"),
+    ("Mon", "%a"),
+    ("Jan", "%b"),
+    ("2006", "%Y"),
+    ("Z07:00", "%z"),
+    ("Z0700", "%z"),
+    ("-07:00", "%z"),
+    ("-0700", "%z"),
+    ("15", "%H"),
+    ("03", "%I"),
+    ("04", "%M"),
+    ("05", "%S"),
+    ("02", "%d"),
+    ("01", "%m"),
+    ("06", "%y"),
+    ("PM", "%p"),
+    ("pm", "%p"),
+    ("MST", "%Z"),
+]
+
+def go_layout_to_strftime(layout: str) -> str:
+    converted = []
+    i = 0
+    while i < len(layout):
+        for token, directive in GO_LAYOUT_TOKENS:
+            if layout.startswith(token, i):
+                converted.append(directive)
+                i += len(token)
+                break
+        else:
+            converted.append(layout[i])
+            i += 1
+    return "".join(converted)
+
+LOCALIZED_DATE_NAMES = {
+    "de": {
+        "Monday": "Montag",
+        "Tuesday": "Dienstag",
+        "Wednesday": "Mittwoch",
+        "Thursday": "Donnerstag",
+        "Friday": "Freitag",
+        "Saturday": "Samstag",
+        "Sunday": "Sonntag",
+        "Mon": "Mo",
+        "Tue": "Di",
+        "Wed": "Mi",
+        "Thu": "Do",
+        "Fri": "Fr",
+        "Sat": "Sa",
+        "Sun": "So",
+        "January": "Januar",
+        "February": "Februar",
+        "March": "Maerz",
+        "April": "April",
+        "May": "Mai",
+        "June": "Juni",
+        "July": "Juli",
+        "August": "August",
+        "September": "September",
+        "October": "Oktober",
+        "November": "November",
+        "December": "Dezember",
+        "Jan": "Jan",
+        "Feb": "Feb",
+        "Mar": "Mrz",
+        "Apr": "Apr",
+        "Jun": "Jun",
+        "Jul": "Jul",
+        "Aug": "Aug",
+        "Sep": "Sep",
+        "Oct": "Okt",
+        "Nov": "Nov",
+        "Dec": "Dez",
+    }
+}
+
+def localize_formatted_datetime(value: str, locale_name: str) -> str:
+    if not locale_name:
+        return value
+
+    language = locale_name.split("_", 1)[0].lower()
+    replacements = LOCALIZED_DATE_NAMES.get(language)
+    if not replacements:
+        return value
+
+    for source in sorted(replacements, key=len, reverse=True):
+        value = re.sub(rf"\b{re.escape(source)}\b", replacements[source], value)
+    return value
+
+def format_datetime_value(
+    value: str,
+    part: str = "datetime",
+    config: dict | None = None,
+    args: dict[str, str] | None = None,
+    local_tz: datetime.tzinfo | None = None,
+) -> str:
+    parsed = parse_opsgenie_datetime(value)
+    if not parsed:
+        return UNKNOWN_ONCALL_PERIOD_PLACEHOLDER
+
+    args = args or {}
+    timezone = get_config_timezone(config, args.get("tz", ""), local_tz)
+    local_time = parsed.astimezone(timezone)
+
+    date_format = (config or {}).get("date_format") or DEFAULT_DATE_FORMAT
+    time_format = (config or {}).get("time_format") or DEFAULT_TIME_FORMAT
+    default_format = {
+        "date": date_format,
+        "time": time_format,
+        "datetime": f"{date_format} {time_format}",
+    }.get(part, f"{date_format} {time_format}")
+
+    fmt = args.get("fmt") or default_format
+    if "%" not in fmt:
+        fmt = go_layout_to_strftime(fmt)
+
+    locale_name = get_config_locale(config, args.get("lc", ""))
+    return localize_formatted_datetime(local_time.strftime(fmt), locale_name)
+
+def format_opsgenie_template_datetime(value: str, variable: str, config: dict | None = None, args: dict[str, str] | None = None) -> str:
+    part = variable.rsplit("_", 1)[-1]
+    return format_datetime_value(value, part, config, args)
+
+def iter_template_expression_parts(message: str):
+    pos = 0
+    while pos < len(message):
+        next_open = message.find("{{", pos)
+        next_close = message.find("}}", pos)
+        if next_close != -1 and (next_open == -1 or next_close < next_open):
+            raise TemplateExpressionError("unexpected `}}`")
+        if next_open == -1:
+            break
+
+        close = message.find("}}", next_open + 2)
+        if close == -1:
+            raise TemplateExpressionError("missing closing `}}`")
+        yield next_open, close + 2, message[next_open + 2:close].strip()
+        pos = close + 2
+
+def parse_template_expression(content: str) -> TemplateExpression:
+    i = 0
+    match = TEMPLATE_VARIABLE_NAME_PATTERN.match(content, i)
+    if not match:
+        raise TemplateExpressionError("missing variable name")
+    variable = match.group(0)
+    i = match.end()
+
+    while i < len(content) and content[i].isspace():
+        i += 1
+    if i == len(content):
+        return TemplateExpression(variable, {})
+    if content[i] != "(":
+        raise TemplateExpressionError("expected `(` after variable name")
+    i += 1
+
+    args = {}
+    while True:
+        while i < len(content) and content[i].isspace():
+            i += 1
+        if i < len(content) and content[i] == ")":
+            i += 1
+            break
+        if i >= len(content):
+            raise TemplateExpressionError("missing closing `)`")
+
+        name_match = TEMPLATE_ARGUMENT_NAME_PATTERN.match(content, i)
+        if not name_match:
+            raise TemplateExpressionError("missing argument name")
+        arg_name = name_match.group(0)
+        i = name_match.end()
+        canonical_arg_name = TEMPLATE_ARGUMENT_ALIASES.get(arg_name)
+        if not canonical_arg_name:
+            raise TemplateExpressionError(f"unknown argument `{arg_name}`")
+        if canonical_arg_name in args:
+            raise TemplateExpressionError(f"duplicate argument `{arg_name}`")
+
+        while i < len(content) and content[i].isspace():
+            i += 1
+        if i >= len(content) or content[i] != "=":
+            raise TemplateExpressionError(f"missing `=` after argument `{arg_name}`")
+        i += 1
+        while i < len(content) and content[i].isspace():
+            i += 1
+        if i >= len(content) or content[i] in ",)":
+            raise TemplateExpressionError(f"missing value for argument `{arg_name}`")
+
+        if content[i] in ("'", '"'):
+            quote = content[i]
+            i += 1
+            value = []
+            while i < len(content):
+                if content[i] == "\\" and i + 1 < len(content) and content[i + 1] in (quote, "\\"):
+                    value.append(content[i + 1])
+                    i += 2
+                    continue
+                if content[i] == quote:
+                    i += 1
+                    break
+                value.append(content[i])
+                i += 1
+            else:
+                raise TemplateExpressionError(f"unterminated quoted value for argument `{arg_name}`")
+            arg_value = "".join(value)
+        else:
+            start = i
+            while i < len(content) and content[i] not in ",)":
+                i += 1
+            arg_value = content[start:i].strip()
+
+        if not arg_value:
+            raise TemplateExpressionError(f"missing value for argument `{arg_name}`")
+        args[canonical_arg_name] = arg_value
+
+        while i < len(content) and content[i].isspace():
+            i += 1
+        if i < len(content) and content[i] == ",":
+            i += 1
+            j = i
+            while j < len(content) and content[j].isspace():
+                j += 1
+            if j < len(content) and content[j] == ")":
+                raise TemplateExpressionError("missing argument after `,`")
+            continue
+        if i < len(content) and content[i] == ")":
+            i += 1
+            break
+        if i >= len(content):
+            raise TemplateExpressionError("missing closing `)`")
+        raise TemplateExpressionError("expected `,` or `)` after argument value")
+
+    while i < len(content) and content[i].isspace():
+        i += 1
+    if i != len(content):
+        raise TemplateExpressionError("unexpected text after closing `)`")
+
+    return TemplateExpression(variable, args)
+
+def parse_template_expressions(message: str) -> list[TemplateExpression]:
+    return [parse_template_expression(content) for _, _, content in iter_template_expression_parts(message)]
+
+def validate_template_expressions(message: str) -> str:
+    try:
+        expressions = parse_template_expressions(message)
+    except TemplateExpressionError as e:
+        return f"malformed template expression: {e}"
+
+    unknown_variables = sorted({expr.variable for expr in expressions if expr.variable not in SUPPORTED_TEMPLATE_VARIABLES})
+    if unknown_variables:
+        return (
+            "unsupported template variable(s) "
+            + ", ".join(f"`{{{{{variable}}}}}`" for variable in unknown_variables)
+            + ". Supported variables: "
+            + ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
+            + "."
+        )
+
+    for expr in expressions:
+        if expr.args and expr.variable not in OPSGENIE_DATETIME_TEMPLATE_VARIABLES:
+            return f"template variable `{{{{{expr.variable}}}}}` does not support arguments"
+        if "tz" in expr.args:
+            try:
+                validate_timezone_name(expr.args["tz"])
+            except ValueError as e:
+                return str(e)
+        if "lc" in expr.args:
+            try:
+                normalize_locale_name(expr.args["lc"])
+            except ValueError as e:
+                return str(e)
+
+    return ""
 
 async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
     for channel_id, channel_data in config.items():
@@ -412,6 +812,8 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
     elif (match := SET_OPSGENIE_SCHEDULE_PATTERN.match(command_text)):
         schedule_name = strip_quotes(match.group("schedule"))
         await set_opsgenie_schedule_name(app, channel, config_name, schedule_name, user, thread_ts)
+    elif (match := SET_DATETIME_FORMAT_PATTERN.match(command_text)):
+        await set_datetime_format(app, channel, config_name, match.group("values"), user, thread_ts)
     elif (match := SET_PATTERN_PATTERN.match(command_text)):
         pattern = match.group("pattern")
         case_sensitive = match.group("case_sensitive")
@@ -552,6 +954,56 @@ async def set_opsgenie_schedule_name(app: AsyncApp, channel: Channel, config_nam
     await save_configuration()
     await send_message(app, channel, user, f"*OpsGenie schedule* set to `{schedule_name}` in configuration `{config_name}`.", thread_ts)
 
+async def set_datetime_format(app: AsyncApp, channel: Channel, config_name: str, values: str, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+
+    tokens, error = parse_quoted_tokens(values)
+    if error:
+        await send_message(app, channel, user, f"Invalid *date/time format*: {error}.", thread_ts)
+        return
+    if len(tokens) < 2 or len(tokens) > 4:
+        await send_message(app, channel, user, "Invalid *date/time format*. Use `/hutbot [config] set datetime-format <date> <time> [<timezone> <locale>]`.", thread_ts)
+        return
+
+    date_format = tokens[0]
+    time_format = tokens[1]
+    if not date_format.strip() or not time_format.strip():
+        await send_message(app, channel, user, "Invalid *date/time format*. Date and time formats must be non-empty.", thread_ts)
+        return
+
+    timezone_name = tokens[2] if len(tokens) >= 3 else ""
+    locale_name = tokens[3] if len(tokens) >= 4 else ""
+    normalized_locale = ""
+    if timezone_name:
+        try:
+            validate_timezone_name(timezone_name)
+        except ValueError as e:
+            await send_message(app, channel, user, f"Invalid *date/time format*: {e}.", thread_ts)
+            return
+    if locale_name:
+        try:
+            normalized_locale = normalize_locale_name(locale_name)
+        except ValueError as e:
+            await send_message(app, channel, user, f"Invalid *date/time format*: {e}.", thread_ts)
+            return
+
+    config = channel.configs[config_name]
+    config["date_format"] = date_format
+    config["time_format"] = time_format
+    config["datetime_timezone"] = timezone_name
+    config["datetime_locale"] = normalized_locale
+
+    await save_configuration()
+
+    details = f"*Date/time format* set to date `{date_format}` and time `{time_format}`"
+    if timezone_name:
+        details += f", timezone `{timezone_name}`"
+    if locale_name:
+        details += f", locale `{normalized_locale}`"
+    details += f" in configuration `{config_name}`."
+    await send_message(app, channel, user, details, thread_ts)
+
 async def set_wait_time(app: AsyncApp, channel: Channel, config_name: str, wait_time_minutes: int, user: User, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()
@@ -566,18 +1018,47 @@ async def set_wait_time(app: AsyncApp, channel: Channel, config_name: str, wait_
     await send_message(app, channel, user, f"*Wait time* set to `{wait_time_minutes}` minutes in configuration `{config_name}`.", thread_ts)
 
 def find_unknown_template_variables(message: str) -> list[str]:
-    variables = {match.group(1) for match in TEMPLATE_VARIABLE_PATTERN.finditer(message)}
+    try:
+        variables = {expr.variable for expr in parse_template_expressions(message)}
+    except TemplateExpressionError:
+        return []
     return sorted(variable for variable in variables if variable not in SUPPORTED_TEMPLATE_VARIABLES)
 
 def find_template_variables(message: str) -> set[str]:
-    return {match.group(1) for match in TEMPLATE_VARIABLE_PATTERN.finditer(message)}
+    try:
+        return {expr.variable for expr in parse_template_expressions(message)}
+    except TemplateExpressionError:
+        return set()
 
-def render_reply_message_template(message: str, variables: dict[str, str]) -> str:
-    def replace_variable(match: re.Match) -> str:
-        variable = match.group(1)
-        return variables.get(variable, match.group(0))
+def render_reply_message_template(message: str, variables: dict[str, str], config: dict | None = None) -> str:
+    try:
+        spans = list(iter_template_expression_parts(message))
+    except TemplateExpressionError:
+        return message
 
-    return TEMPLATE_VARIABLE_PATTERN.sub(replace_variable, message)
+    rendered = []
+    last_index = 0
+    for start, end, content in spans:
+        rendered.append(message[last_index:start])
+        try:
+            expr = parse_template_expression(content)
+        except TemplateExpressionError:
+            rendered.append(message[start:end])
+            last_index = end
+            continue
+
+        if expr.variable in OPSGENIE_DATETIME_TEMPLATE_VARIABLES:
+            raw_value = variables.get(f"__{expr.variable}_raw", "")
+            if raw_value or expr.args:
+                rendered.append(format_opsgenie_template_datetime(raw_value, expr.variable, config, expr.args))
+            else:
+                rendered.append(variables.get(expr.variable, UNKNOWN_ONCALL_PERIOD_PLACEHOLDER))
+        else:
+            rendered.append(variables.get(expr.variable, message[start:end]))
+        last_index = end
+
+    rendered.append(message[last_index:])
+    return "".join(rendered)
 
 async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False) -> dict[str, str]:
     wait_time = config.get('wait_time')
@@ -610,17 +1091,14 @@ async def set_reply_message(app: AsyncApp, channel: Channel, config_name: str, m
     if not ok:
         await send_message(app, channel, user, "Invalid *reply message*: " + error + ".", thread_ts)
         return
-    unknown_variables = find_unknown_template_variables(message)
-    if unknown_variables:
+
+    validation_error = validate_template_expressions(message)
+    if validation_error:
         await send_message(
             app,
             channel,
             user,
-            "Invalid *reply message*: unsupported template variable(s) "
-            + ", ".join(f"`{{{{{variable}}}}}`" for variable in unknown_variables)
-            + ". Supported variables: "
-            + ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
-            + ".",
+            "Invalid *reply message*: " + validation_error,
             thread_ts
         )
         return
@@ -645,7 +1123,7 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel: Channe
         permalink,
         include_opsgenie=True,
     )
-    reply_message = render_reply_message_template(reply_message_template, template_variables)
+    reply_message = render_reply_message_template(reply_message_template, template_variables, config)
     variable_lines = [
         f"`{{{{{variable}}}}}`: {template_variables.get(variable, '')}"
         for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES)
@@ -854,12 +1332,20 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         pattern_case_sensitive = config.get('pattern_case_sensitive')
         reply_message = config.get('reply_message')
         opsgenie_schedule_name = config.get('opsgenie_schedule_name')
+        date_format = config.get('date_format') or DEFAULT_DATE_FORMAT
+        time_format = config.get('time_format') or DEFAULT_TIME_FORMAT
+        datetime_timezone = config.get('datetime_timezone') or '<server local>'
+        datetime_locale = config.get('datetime_locale') or '<default>'
 
         message += (
             f"\n\n---\n*Configuration*: `{config_name}`\n\n"
             f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
             f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
             f"*OpsGenie schedule*: `{opsgenie_schedule_name}`\n\n"
+            f"*Date format*: `{date_format}`\n\n"
+            f"*Time format*: `{time_format}`\n\n"
+            f"*Date/time timezone*: `{datetime_timezone}`\n\n"
+            f"*Date/time locale*: `{datetime_locale}`\n\n"
             f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
             f"*Included teams*: {' '.join(f'`{team}`' for team in included_teams) if included_teams else '<None>'}\n\n"
             f"*Excluded teams*: {' '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
@@ -904,6 +1390,8 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
 async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     update_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what's :new::\n\n"
+        "> :calendar: *OpsGenie date/time template variables and defaults*\n>\n"
+        "> OpsGenie templates can now include current and next on-call start/end dates, times, and datetimes. Use `/hutbot [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]` to set the defaults.\n>\n"
         "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
         "> That means Hutbot can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
         "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
@@ -921,6 +1409,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
     await send_message(app, channel, user, update_text, thread_ts)
 
 async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
+    supported_template_variables = ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
     help_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's how you can configure me via /command or @mention:\n\n"
         "*Show All Configurations:*\n"
@@ -937,6 +1426,11 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "*Set OpsGenie Schedule:*\n"
         "```/hutbot [config] set opsgenie-schedule <name>```\n"
         "Sets the OpsGenie schedule name used for current on-call template variables.\n\n"
+        "*Set Date/Time Format:*\n"
+        "```/hutbot [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]\n"
+        "/hutbot [config] set date-format \"<date>\" \"<time>\" [<timezone> <locale>]\n"
+        "/hutbot [config] set datefmt \"<date>\" \"<time>\" [<timezone> <locale>]```\n"
+        "Sets default date/time formatting for `/hutbot on-call` and OpsGenie date/time template variables. Python `strftime` formats and Go layouts are supported.\n\n"
         "*Set Wait Time:*\n"
         "```/hutbot [config] set wait-time <minutes>```\n"
         "Sets the wait time before I send a reminder. Replace `<minutes>` with the number of minutes you want.\n\n"
@@ -984,7 +1478,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "Respond to messages matching the pattern, case sensitive with `1` (default) or `0`.\n\n"
         "*Set Reply Message:*\n"
         "```/hutbot [config] set message \"Hi {{user}}, your message in {{channel}} is still unanswered: {{message_link}}\"```\n"
-        "Sets the reminder message I'll send. Supported variables: `{{user}}`, `{{user_name}}`, `{{team}}`, `{{channel}}`, `{{channel_name}}`, `{{message}}`, `{{message_link}}`, `{{config}}`, `{{wait_minutes}}`, `{{timestamp}}`, `{{opsgenie_current_user}}`, `{{opsgenie_current_email}}`, `{{opsgenie_current_name}}`.\n\n"
+        f"Sets the reminder message I'll send. Supported variables: {supported_template_variables}. OpsGenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments.\n\n"
         "*Test Reply Message:*\n"
         "```/hutbot [config] test\n"
         "@Hutbot [config] test <message>```\n"
@@ -1001,12 +1495,37 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     )
     await send_message(app, channel, user, help_text, thread_ts)
 
-def get_opsgenie_placeholder_variables() -> dict[str, str]:
-    return {
-            "opsgenie_current_email": UNKNOWN_EMAIL_ONCALL_PLACEHOLDER,
-            "opsgenie_current_name": UNKNOWN_NAME_ONCALL_PLACEHOLDER,
-            "opsgenie_current_user": UNKNOWN_USER_ONCALL_PLACEHOLDER,
+def get_opsgenie_placeholder_variables(config: dict | None = None) -> dict[str, str]:
+    schedule_name = (config or {}).get("opsgenie_schedule_name", "").strip()
+    variables = {
+        "opsgenie_schedule_name": schedule_name or UNKNOWN_OPSGENIE_SCHEDULE_PLACEHOLDER,
+        "opsgenie_current_email": UNKNOWN_EMAIL_ONCALL_PLACEHOLDER,
+        "opsgenie_current_name": UNKNOWN_NAME_ONCALL_PLACEHOLDER,
+        "opsgenie_current_user": UNKNOWN_USER_ONCALL_PLACEHOLDER,
+        "opsgenie_next_email": UNKNOWN_EMAIL_ONCALL_PLACEHOLDER,
+        "opsgenie_next_name": UNKNOWN_NAME_ONCALL_PLACEHOLDER,
+        "opsgenie_next_user": UNKNOWN_USER_ONCALL_PLACEHOLDER,
     }
+    for variable in OPSGENIE_DATETIME_TEMPLATE_VARIABLES:
+        variables[variable] = UNKNOWN_ONCALL_PERIOD_PLACEHOLDER
+        variables[f"__{variable}_raw"] = ""
+    return variables
+
+def fill_opsgenie_period_variables(variables: dict[str, str], config: dict, prefix: str, period: OpsGeniePeriod) -> None:
+    if not period.recipient_email:
+        return
+
+    variables[f"opsgenie_{prefix}_email"] = period.recipient_email
+    variables[f"opsgenie_{prefix}_name"] = period.recipient_email
+    if period.slack_user:
+        variables[f"opsgenie_{prefix}_user"] = f"<@{period.slack_user.id}>"
+        variables[f"opsgenie_{prefix}_name"] = period.slack_user.real_name if period.slack_user.real_name else period.slack_user.name
+
+    for bound, value in (("start", period.start), ("end", period.end)):
+        for part in ("date", "time", "datetime"):
+            variable = f"opsgenie_{prefix}_{bound}_{part}"
+            variables[f"__{variable}_raw"] = value or ""
+            variables[variable] = format_opsgenie_template_datetime(value, variable, config)
 
 async def resolve_slack_user_for_opsgenie_recipient(app: AsyncApp, recipient_email: str) -> User | None:
     slack_user = await get_user_by_email(app, recipient_email)
@@ -1065,11 +1584,7 @@ def parse_opsgenie_datetime(value: str) -> datetime.datetime | None:
     return parsed
 
 def format_opsgenie_datetime(value: str, local_tz: datetime.tzinfo | None = None) -> str:
-    parsed = parse_opsgenie_datetime(value)
-    if not parsed:
-        return UNKNOWN_ONCALL_PERIOD_PLACEHOLDER
-    local_time = parsed.astimezone(local_tz)
-    return local_time.strftime("%a, %d %b %Y %H:%M")
+    return format_datetime_value(value, "datetime", local_tz=local_tz)
 
 def merge_opsgenie_periods(periods: list[dict], current_index: int) -> tuple[str, str]:
     current_period = periods[current_index]
@@ -1102,6 +1617,25 @@ def merge_opsgenie_periods(periods: list[dict], current_index: int) -> tuple[str
 
     return first_period.get("startDate", ""), last_period.get("endDate", "")
 
+def merge_opsgenie_periods_forward(periods: list[dict], current_index: int) -> tuple[str, str]:
+    current_period = periods[current_index]
+    recipient_name = current_period.get("recipient", {}).get("name", "").strip().casefold()
+    merged_end = parse_opsgenie_datetime(current_period.get("endDate", ""))
+    if not recipient_name or merged_end is None:
+        return current_period.get("startDate", ""), current_period.get("endDate", "")
+
+    last_period = current_period
+    for period in periods[current_index + 1:]:
+        period_recipient = period.get("recipient", {}).get("name", "").strip().casefold()
+        period_start = parse_opsgenie_datetime(period.get("startDate", ""))
+        period_end = parse_opsgenie_datetime(period.get("endDate", ""))
+        if period_recipient != recipient_name or period_start is None or period_end is None or period_start != merged_end:
+            break
+        merged_end = period_end
+        last_period = period
+
+    return current_period.get("startDate", ""), last_period.get("endDate", "")
+
 def find_opsgenie_on_call_period(data: dict, recipient_email: str, now: datetime.datetime | None = None) -> tuple[str, str]:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     if now.tzinfo is None:
@@ -1116,8 +1650,6 @@ def find_opsgenie_on_call_period(data: dict, recipient_email: str, now: datetime
         return "", ""
 
     recipient_email = recipient_email.casefold()
-    current_period = None
-    matching_period = None
 
     for rotation in rotations:
         rotation_periods = sorted(
@@ -1127,18 +1659,13 @@ def find_opsgenie_on_call_period(data: dict, recipient_email: str, now: datetime
         for index, period in enumerate(rotation_periods):
             start = parse_opsgenie_datetime(period.get("startDate", ""))
             end = parse_opsgenie_datetime(period.get("endDate", ""))
-            is_current = start is not None and end is not None and start <= now <= end
+            is_current = start is not None and end is not None and start <= now < end
             recipient_name = period.get("recipient", {}).get("name", "").strip().casefold()
             matches_recipient = bool(recipient_email and recipient_name == recipient_email)
             if is_current and matches_recipient:
                 return merge_opsgenie_periods(rotation_periods, index)
-            if current_period is None and is_current:
-                current_period = period
-            if matching_period is None and matches_recipient:
-                matching_period = period
 
-    fallback_period = current_period or matching_period or periods[0]
-    return fallback_period.get("startDate", ""), fallback_period.get("endDate", "")
+    return "", ""
 
 def find_opsgenie_upcoming_on_call_period(data: dict, now: datetime.datetime | None = None) -> tuple[str, str, str]:
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -1153,11 +1680,24 @@ def find_opsgenie_upcoming_on_call_period(data: dict, now: datetime.datetime | N
                 rotation.get("periods", []),
                 key=lambda period: parse_opsgenie_datetime(period.get("startDate", "")) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
             )
+            threshold = now
+            include_threshold = False
+            for index, period in enumerate(rotation_periods):
+                start = parse_opsgenie_datetime(period.get("startDate", ""))
+                end = parse_opsgenie_datetime(period.get("endDate", ""))
+                if start is not None and end is not None and start <= now < end:
+                    _, merged_end = merge_opsgenie_periods(rotation_periods, index)
+                    threshold = parse_opsgenie_datetime(merged_end) or end
+                    include_threshold = True
+                    break
+
             for index, period in enumerate(rotation_periods):
                 start = parse_opsgenie_datetime(period.get("startDate", ""))
                 end = parse_opsgenie_datetime(period.get("endDate", ""))
                 recipient_email = period.get("recipient", {}).get("name", "").strip()
-                if start is None or end is None or end < now or not recipient_email:
+                if start is None or end is None or not recipient_email:
+                    continue
+                if start < threshold or (start == threshold and not include_threshold):
                     continue
 
                 candidate = (start, rotation_periods, index, recipient_email)
@@ -1168,7 +1708,7 @@ def find_opsgenie_upcoming_on_call_period(data: dict, now: datetime.datetime | N
         return "", "", ""
 
     _, rotation_periods, index, recipient_email = best_candidate
-    start, end = merge_opsgenie_periods(rotation_periods, index)
+    start, end = merge_opsgenie_periods_forward(rotation_periods, index)
     return recipient_email, start, end
 
 async def resolve_opsgenie_on_call_period(opsgenie_token: str, schedule_name: str, recipient_email: str) -> tuple[str, str]:
@@ -1233,22 +1773,33 @@ async def resolve_opsgenie_upcoming_on_call_period(opsgenie_token: str, schedule
 
     return find_opsgenie_upcoming_on_call_period(payload.get("data", {}))
 
+async def resolve_opsgenie_on_call_context(app: AsyncApp, opsgenie_token: str, schedule_name: str, include_next: bool = True) -> OpsGenieContext:
+    schedule_name = schedule_name.strip()
+    empty_period = OpsGeniePeriod("", None, "", "")
+    current_period = empty_period
+    next_period = empty_period
+
+    recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_token, schedule_name)
+    if recipient_email:
+        start, end = await resolve_opsgenie_on_call_period(opsgenie_token, schedule_name, recipient_email)
+        current_period = OpsGeniePeriod(recipient_email, slack_user, start, end)
+
+    if include_next:
+        next_email, next_start, next_end = await resolve_opsgenie_upcoming_on_call_period(opsgenie_token, schedule_name)
+        next_slack_user = await resolve_slack_user_for_opsgenie_recipient(app, next_email) if next_email else None
+        next_period = OpsGeniePeriod(next_email, next_slack_user, next_start, next_end)
+
+    return OpsGenieContext(schedule_name, current_period, next_period)
+
 async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, config: dict) -> dict[str, str]:
     schedule_name = config.get("opsgenie_schedule_name", "").strip()
-    variables = get_opsgenie_placeholder_variables()
+    variables = get_opsgenie_placeholder_variables(config)
     if not schedule_name:
         return variables
 
-    recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_token, schedule_name)
-    if not recipient_email:
-        return variables
-
-    variables["opsgenie_current_email"] = recipient_email
-    variables["opsgenie_current_name"] = recipient_email
-
-    if slack_user:
-        variables["opsgenie_current_user"] = f"<@{slack_user.id}>"
-        variables["opsgenie_current_name"] = slack_user.real_name if slack_user.real_name else slack_user.name
+    context = await resolve_opsgenie_on_call_context(app, opsgenie_token, schedule_name, include_next=True)
+    fill_opsgenie_period_variables(variables, config, "current", context.current)
+    fill_opsgenie_period_variables(variables, config, "next", context.next)
 
     return variables
 
@@ -1278,8 +1829,8 @@ async def send_current_on_call(app: AsyncApp, opsgenie_token: str, channel: Chan
     message = (
         f"*Schedule*: `{schedule_name}`\n"
         f"*On-call*: {mention}\n"
-        f"*Start*: `{format_opsgenie_datetime(start)}`\n"
-        f"*End*: `{format_opsgenie_datetime(end)}`"
+        f"*Start*: `{format_datetime_value(start, 'datetime', config)}`\n"
+        f"*End*: `{format_datetime_value(end, 'datetime', config)}`"
     )
     await send_message(app, channel, user, message, thread_ts)
 
@@ -1307,7 +1858,8 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
                 ts,
                 permalink,
                 include_opsgenie=bool(OPSGENIE_TEMPLATE_VARIABLES.intersection(template_variables)),
-            )
+            ),
+            config,
         )
         await send_message(app, channel, user, reply_message, ts)
         if opsgenie_configured and opsgenie_enabled:

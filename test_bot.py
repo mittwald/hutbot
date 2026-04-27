@@ -126,6 +126,43 @@ async def test_process_command_set_opsgenie_schedule():
         mock_send_message.assert_called_with(app, channel, user, "*OpsGenie schedule* set to `Team Primary` in configuration `default`.", thread_ts)
 
 @pytest.mark.asyncio
+async def test_process_command_set_datetime_format_with_quotes_timezone_and_locale():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await process_command(app, "set datetime-format \"%a, %d %b %Y\" \"%H:%M\" Europe/Berlin de-DE", channel, user, thread_ts)
+
+    assert channel.configs["default"]["date_format"] == "%a, %d %b %Y"
+    assert channel.configs["default"]["time_format"] == "%H:%M"
+    assert channel.configs["default"]["datetime_timezone"] == "Europe/Berlin"
+    assert channel.configs["default"]["datetime_locale"] == "de_DE"
+    mock_send_message.assert_called_with(
+        app,
+        channel,
+        user,
+        "*Date/time format* set to date `%a, %d %b %Y` and time `%H:%M`, timezone `Europe/Berlin`, locale `de_DE` in configuration `default`.",
+        thread_ts
+    )
+
+@pytest.mark.asyncio
+async def test_process_command_set_datefmt_alias_rejects_invalid_timezone():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration') as mock_save, patch('bot.send_message') as mock_send_message:
+        await process_command(app, "set datefmt %Y %H:%M Mars/Base de-DE", channel, user, thread_ts)
+
+    mock_save.assert_not_called()
+    sent_message = mock_send_message.call_args.args[3]
+    assert "Invalid *date/time format*" in sent_message
+    assert "unknown timezone `Mars/Base`" in sent_message
+
+@pytest.mark.asyncio
 async def test_process_command_list_opsgenie_schedules():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
@@ -309,6 +346,27 @@ async def test_process_command_on_call_uses_upcoming_period_when_no_current_on_c
     )
 
 @pytest.mark.asyncio
+async def test_process_command_on_call_uses_configured_datetime_defaults():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    channel.configs["default"]["opsgenie_schedule_name"] = "Team Primary"
+    channel.configs["default"]["date_format"] = "%d.%m.%Y"
+    channel.configs["default"]["time_format"] = "%H:%M"
+    channel.configs["default"]["datetime_timezone"] = "Europe/Berlin"
+    user = User("U12345", "test", "Test User", "Testers")
+    on_call_user = User("U999", "oncall", "On Call User", "Ops")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))), \
+         patch('bot.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=("2026-04-26T08:00:00Z", "2026-04-26T16:00:00Z"))), \
+         patch('bot.send_message') as mock_send_message:
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Start*: `26.04.2026 10:00`" in sent_message
+    assert "*End*: `26.04.2026 18:00`" in sent_message
+
+@pytest.mark.asyncio
 async def test_process_command_on_call_errors_when_no_current_or_upcoming_on_call():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
@@ -397,6 +455,31 @@ def test_format_opsgenie_datetime_uses_local_timezone():
 
     assert bot.format_opsgenie_datetime("2026-04-26T08:00:00Z", local_tz) == "Sun, 26 Apr 2026 10:00"
 
+def test_format_datetime_value_supports_python_format_timezone_and_locale():
+    import bot
+
+    config = {
+        **DEFAULT_CONFIG.copy(),
+        "date_format": "%A, %d %B %Y",
+        "time_format": "%H:%M",
+        "datetime_timezone": "Europe/Berlin",
+        "datetime_locale": "de-DE",
+    }
+
+    assert bot.format_datetime_value("2026-04-26T08:00:00Z", "datetime", config) == "Sonntag, 26 April 2026 10:00"
+
+def test_format_datetime_value_supports_go_layout_args():
+    import bot
+
+    rendered = bot.format_datetime_value(
+        "2026-04-26T08:00:00Z",
+        "datetime",
+        DEFAULT_CONFIG.copy(),
+        {"fmt": "02.01.2006 15:04", "tz": "UTC", "lc": "en-us"},
+    )
+
+    assert rendered == "26.04.2026 08:00"
+
 def test_find_opsgenie_on_call_period_merges_adjacent_matching_periods():
     import bot
 
@@ -462,6 +545,40 @@ def test_find_opsgenie_upcoming_on_call_period_selects_next_period():
         "next@example.com",
         "2026-04-27T08:00:00Z",
         "2026-04-27T18:00:00Z",
+    )
+
+def test_find_opsgenie_upcoming_on_call_period_skips_current_period():
+    import bot
+
+    data = {
+        "finalTimeline": {
+            "rotations": [{
+                "periods": [
+                    {
+                        "startDate": "2026-04-26T08:00:00Z",
+                        "endDate": "2026-04-26T12:00:00Z",
+                        "recipient": {"name": "current@example.com"},
+                    },
+                    {
+                        "startDate": "2026-04-26T12:00:00Z",
+                        "endDate": "2026-04-26T18:00:00Z",
+                        "recipient": {"name": "current@example.com"},
+                    },
+                    {
+                        "startDate": "2026-04-26T18:00:00Z",
+                        "endDate": "2026-04-26T20:00:00Z",
+                        "recipient": {"name": "next@example.com"},
+                    },
+                ],
+            }],
+        },
+    }
+    now = datetime.datetime(2026, 4, 26, 10, 0, tzinfo=datetime.timezone.utc)
+
+    assert bot.find_opsgenie_upcoming_on_call_period(data, now) == (
+        "next@example.com",
+        "2026-04-26T18:00:00Z",
+        "2026-04-26T20:00:00Z",
     )
 
 @pytest.mark.asyncio
@@ -729,6 +846,10 @@ async def test_show_config():
         sent_message = mock_send_message.call_args.args[3]
         assert "*Configuration*: `default`" in sent_message
         assert "*OpsGenie schedule*: ``" in sent_message
+        assert "*Date format*: `%a, %d %b %Y`" in sent_message
+        assert "*Time format*: `%H:%M`" in sent_message
+        assert "*Date/time timezone*: `<server local>`" in sent_message
+        assert "*Date/time locale*: `<default>`" in sent_message
         assert "*Wait time*: `10` minutes" in sent_message
         assert "Default message" in sent_message
         assert "*Configuration*: `alarms`" in sent_message
@@ -788,6 +909,22 @@ async def test_set_reply_message_template():
         )
 
 @pytest.mark.asyncio
+async def test_set_reply_message_template_accepts_datetime_args():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    message = (
+        "{{opsgenie_current_start_datetime(fmt=\"%d.%m.%Y %H:%M\", tz='Europe/Berlin', lc=de-DE)}} "
+        "{{opsgenie_next_start_datetime(format=02.01.2006 15:04, timezone=UTC, locale=en_us)}}"
+    )
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await set_reply_message(app, channel, "default", message, user, "")
+
+    assert channel.configs["default"]["reply_message"] == message
+    assert mock_send_message.call_args.args[3] == f"*Reply message* set to: {message} in configuration `default`."
+
+@pytest.mark.asyncio
 async def test_set_reply_message_rejects_unknown_template_variable():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
@@ -801,6 +938,37 @@ async def test_set_reply_message_rejects_unknown_template_variable():
         assert "unsupported template variable(s) `{{unknown}}`" in sent_message
         assert "`{{user}}`" in sent_message
         assert "`{{message_link}}`" in sent_message
+
+@pytest.mark.asyncio
+async def test_set_reply_message_rejects_malformed_datetime_args():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_reply_message(app, channel, "default", "{{opsgenie_current_start_datetime(fmt='%Y',)}}", user, "")
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "Invalid *reply message*: malformed template expression" in sent_message
+    assert "missing argument after `,`" in sent_message
+
+@pytest.mark.asyncio
+async def test_set_reply_message_rejects_unknown_arg_invalid_timezone_and_locale():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_reply_message(app, channel, "default", "{{opsgenie_current_start_datetime(foo=bar)}}", user, "")
+    assert "unknown argument `foo`" in mock_send_message.call_args.args[3]
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_reply_message(app, channel, "default", "{{opsgenie_current_start_datetime(tz=Mars/Base)}}", user, "")
+    assert "unknown timezone `Mars/Base`" in mock_send_message.call_args.args[3]
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_reply_message(app, channel, "default", "{{opsgenie_current_start_datetime(lc=not-a-locale)}}", user, "")
+    assert "locale must look like" in mock_send_message.call_args.args[3]
 
 @pytest.mark.asyncio
 async def test_schedule_reply_renders_template_variables():
@@ -872,6 +1040,86 @@ async def test_schedule_reply_renders_opsgenie_template_variables():
             "On call: <@U999> / oncall@example.com / On Call User",
             "1234.1"
         )
+
+@pytest.mark.asyncio
+async def test_get_opsgenie_template_variables_renders_current_and_next_periods():
+    import bot
+
+    app = AsyncMock()
+    current_user = User("U999", "oncall", "On Call User", "Ops")
+    next_user = User("U998", "next", "Next User", "Ops")
+    config = {
+        **DEFAULT_CONFIG.copy(),
+        "opsgenie_schedule_name": "Team Primary",
+        "date_format": "%d.%m.%Y",
+        "time_format": "%H:%M",
+        "datetime_timezone": "Europe/Berlin",
+    }
+    context = bot.OpsGenieContext(
+        "Team Primary",
+        bot.OpsGeniePeriod("oncall@example.com", current_user, "2026-04-26T08:00:00Z", "2026-04-26T16:00:00Z"),
+        bot.OpsGeniePeriod("next@example.com", next_user, "2026-04-27T08:00:00Z", "2026-04-27T16:00:00Z"),
+    )
+
+    with patch('bot.resolve_opsgenie_on_call_context', new=AsyncMock(return_value=context)):
+        variables = await bot.get_opsgenie_template_variables(app, "token", config)
+
+    assert variables["opsgenie_schedule_name"] == "Team Primary"
+    assert variables["opsgenie_current_user"] == "<@U999>"
+    assert variables["opsgenie_current_email"] == "oncall@example.com"
+    assert variables["opsgenie_current_name"] == "On Call User"
+    assert variables["opsgenie_current_start_datetime"] == "26.04.2026 10:00"
+    assert variables["opsgenie_current_end_time"] == "18:00"
+    assert variables["opsgenie_next_user"] == "<@U998>"
+    assert variables["opsgenie_next_email"] == "next@example.com"
+    assert variables["opsgenie_next_start_datetime"] == "27.04.2026 10:00"
+
+@pytest.mark.asyncio
+async def test_get_opsgenie_template_variables_keeps_current_placeholders_when_only_next_exists():
+    import bot
+
+    app = AsyncMock()
+    next_user = User("U998", "next", "Next User", "Ops")
+    config = {
+        **DEFAULT_CONFIG.copy(),
+        "opsgenie_schedule_name": "Team Primary",
+        "datetime_timezone": "UTC",
+    }
+    context = bot.OpsGenieContext(
+        "Team Primary",
+        bot.OpsGeniePeriod("", None, "", ""),
+        bot.OpsGeniePeriod("next@example.com", next_user, "2026-04-27T08:00:00Z", "2026-04-27T16:00:00Z"),
+    )
+
+    with patch('bot.resolve_opsgenie_on_call_context', new=AsyncMock(return_value=context)):
+        variables = await bot.get_opsgenie_template_variables(app, "token", config)
+
+    assert variables["opsgenie_current_user"] == "<no-user-set>"
+    assert variables["opsgenie_current_email"] == "<no-email-set>"
+    assert variables["opsgenie_current_start_datetime"] == "<unknown>"
+    assert variables["opsgenie_next_user"] == "<@U998>"
+    assert variables["opsgenie_next_start_datetime"] == "Mon, 27 Apr 2026 08:00"
+
+def test_render_reply_message_template_datetime_args_override_config():
+    import bot
+
+    config = {
+        **DEFAULT_CONFIG.copy(),
+        "date_format": "%d.%m.%Y",
+        "time_format": "%H:%M",
+        "datetime_timezone": "Europe/Berlin",
+    }
+    variables = bot.get_opsgenie_placeholder_variables(config)
+    raw_key = "__opsgenie_current_start_datetime_raw"
+    variables[raw_key] = "2026-04-26T08:00:00Z"
+
+    rendered = bot.render_reply_message_template(
+        "{{opsgenie_current_start_datetime(format='02.01.2006 15:04', timezone='UTC', locale='en_US')}}",
+        variables,
+        config,
+    )
+
+    assert rendered == "26.04.2026 08:00"
 
 @pytest.mark.asyncio
 async def test_schedule_reply_uses_placeholder_for_unmapped_opsgenie_user():

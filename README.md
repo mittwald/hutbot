@@ -4,9 +4,23 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
 
 Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
 
+- `{{opsgenie_schedule_name}}` for the configured schedule
 - `{{opsgenie_current_user}}` for a Slack `@mention`
 - `{{opsgenie_current_email}}` for the Opsgenie recipient email
 - `{{opsgenie_current_name}}` for the resolved Slack display name, or the Opsgenie email if no Slack match is found
+- `{{opsgenie_current_start_date}}`, `{{opsgenie_current_start_time}}`, and `{{opsgenie_current_start_datetime}}`
+- `{{opsgenie_current_end_date}}`, `{{opsgenie_current_end_time}}`, and `{{opsgenie_current_end_datetime}}`
+- `{{opsgenie_next_user}}`, `{{opsgenie_next_email}}`, and `{{opsgenie_next_name}}`
+- `{{opsgenie_next_start_date}}`, `{{opsgenie_next_start_time}}`, and `{{opsgenie_next_start_datetime}}`
+- `{{opsgenie_next_end_date}}`, `{{opsgenie_next_end_time}}`, and `{{opsgenie_next_end_datetime}}`
+
+Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments, for example `{{opsgenie_next_start_datetime(format='02.01.2006 15:04', timezone='Europe/Berlin', locale='de_DE')}}`. The default date/time output for Opsgenie variables and `/hutbot on-call` can be configured with:
+
+```bash
+/hutbot [config] set datetime-format "<date>" "<time>" [<timezone> <locale>]
+/hutbot [config] set date-format "<date>" "<time>" [<timezone> <locale>]
+/hutbot [config] set datefmt "<date>" "<time>" [<timezone> <locale>]
+```
 
 ## Step 1: Set Up the Slack App
 
