@@ -56,7 +56,8 @@ DEFAULT_CONFIG = {
     "only_work_days": False,
     "hours": [],
     "pattern": None,
-    "pattern_case_sensitive": False
+    "pattern_case_sensitive": False,
+    "forward_channel": ""
 }
 
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')
@@ -177,6 +178,8 @@ ENABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'enable\s+(only[_ -]?)?w
 DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)?work[_ -]?days')
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)')
+SET_FORWARD_CHANNEL_PATTERN = create_command_pattern(r'set\s+forward[_ -]?channel\s+(?P<channel>.+)')
+CLEAR_FORWARD_CHANNEL_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+forward[_ -]?channel')
 
 def log_debug(channel: Channel | None, *args: object) -> None:
     if channel and any(c.get('debug') for c in channel.configs.values()):
@@ -861,6 +864,11 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
         await add_included_team(app, channel, config_name, team, user, thread_ts)
     elif (match := CLEAR_INCLUDED_TEAM_PATTERN.match(command_text)):
         await clear_included_team(app, channel, config_name, user, thread_ts)
+    elif (match := SET_FORWARD_CHANNEL_PATTERN.match(command_text)):
+        channel_ref = strip_quotes(match.group("channel"))
+        await set_forward_channel(app, channel, config_name, channel_ref, user, thread_ts)
+    elif CLEAR_FORWARD_CHANNEL_PATTERN.match(command_text):
+        await clear_forward_channel(app, channel, config_name, user, thread_ts)
     elif (match := DELETE_CONFIG_PATTERN.match(command_text)):
         name = strip_quotes(match.group("name"))
         await delete_config(app, channel, name, user, thread_ts)
@@ -941,6 +949,44 @@ async def set_work_hours(app: AsyncApp, channel: Channel, config_name: str, star
     channel.configs[config_name]['hours'] = hours
     await save_configuration()
     await send_message(app, channel, user, f"*Work hours* set to {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'} in configuration `{config_name}`", thread_ts)
+
+async def set_forward_channel(app: AsyncApp, channel: Channel, config_name: str, channel_ref: str, user: User, thread_ts: str = "") -> None:
+    channel_id = None
+    for match in ID_PATTERN.finditer(channel_ref):
+        id = match.group(1)
+        if id and id[0] == '#':
+            channel_id = id[1:]
+            break
+    if not channel_id:
+        stripped = channel_ref.strip()
+        if re.match(r'^C[A-Z0-9]+$', stripped):
+            channel_id = stripped
+
+    if not channel_id:
+        await send_message(app, channel, user, f"Invalid channel: `{channel_ref}`. Use a #channel mention.", thread_ts)
+        return
+
+    try:
+        confirmation = (
+            f"Reply messages from #{channel.name} (config `{config_name}`) "
+            f"will now be forwarded here by Hutbot :palm_up_hand::tophat:"
+        )
+        await app.client.chat_postMessage(channel=channel_id, text=confirmation, mrkdwn=True)
+    except SlackApiError as e:
+        await send_message(app, channel, user, f"Cannot post to <#{channel_id}>: `{e.response['error']}`.", thread_ts)
+        return
+
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    channel.configs[config_name]['forward_channel'] = channel_id
+    await save_configuration()
+    await send_message(app, channel, user, f"*Forward channel* set to <#{channel_id}> in configuration `{config_name}`.", thread_ts)
+
+async def clear_forward_channel(app: AsyncApp, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> None:
+    if config_name in channel.configs:
+        channel.configs[config_name].pop('forward_channel', None)
+        await save_configuration()
+    await send_message(app, channel, user, f"*Forward channel* cleared in configuration `{config_name}`.", thread_ts)
 
 async def set_opsgenie(app: AsyncApp, channel: Channel, config_name: str, enabled: bool, user: User, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
@@ -1352,6 +1398,7 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         pattern = config.get('pattern')
         pattern_case_sensitive = config.get('pattern_case_sensitive')
         reply_message = config.get('reply_message')
+        forward_channel_id = config.get('forward_channel') or ''
         opsgenie_schedule_name = config.get('opsgenie_schedule_name')
         date_format = config.get('date_format') or DEFAULT_DATE_FORMAT
         time_format = config.get('time_format') or DEFAULT_TIME_FORMAT
@@ -1376,6 +1423,7 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
             f"*Only work days*: {'enabled' if only_work_days else 'disabled'}\n\n"
             f"*Work hours*: {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'}\n\n"
             f"*Pattern*: {f'`{pattern}` (case-sensitive)' if pattern_case_sensitive else f'`{pattern}` (case-insensitive)' if pattern else '<None>'}\n\n"
+            f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}\n\n"
             f"*Reply message*:\n{reply_message}"
         )
     await send_message(app, channel, user, message, thread_ts)
@@ -1456,6 +1504,8 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ("/hutbot [config] set work-hours <start> <end>", "Set active hours; 0:00 0:00 means all day."),
         ("/hutbot [config] set pattern \"<regex>\" [0|1]", "Set message pattern; 1 means case sensitive."),
         ("/hutbot [config] set message \"<reply message>\"", "Set reminder message."),
+        ("/hutbot [config] set forward-channel <#channel>", "Forward replies to another channel."),
+        ("/hutbot [config] clear forward-channel", "Remove the forward channel."),
         ("/hutbot [config] test", "Preview configured reply."),
         ("@Hutbot [config] test <message>", "Preview reply with <message> as {{message}}."),
         ("/hutbot delete config <name>", "Delete a configuration."),
@@ -1845,6 +1895,13 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
             config,
         )
         await send_message(app, channel, user, reply_message, ts)
+        forward_channel_id = config.get('forward_channel')
+        if forward_channel_id:
+            try:
+                forward_text = f"{reply_message}\n\n*Original message in #{channel.name}:* {permalink}"
+                await app.client.chat_postMessage(channel=forward_channel_id, text=forward_text, mrkdwn=True)
+            except SlackApiError as e:
+                log_error(f"Failed to forward reply to channel {forward_channel_id}:", e)
         if opsgenie_configured and opsgenie_enabled:
             log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name}...")
             await post_opsgenie_alert(app, opsgenie_token, channel, config, user, text, ts, permalink)

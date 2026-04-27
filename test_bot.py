@@ -13,6 +13,7 @@ from bot import (
     ScheduledReply, set_reply_message, schedule_reply,
     load_replies_cache, flush_replies_cache, restore_scheduled_replies,
     extract_message_text, _scheduled_replies_cache,
+    set_forward_channel, clear_forward_channel,
 )
 from slack_sdk.errors import SlackApiError
 import base64
@@ -1366,9 +1367,9 @@ async def test_process_command_help_uses_compact_command_reference():
 
     sent_message = mock_send_message.call_args.args[3]
     assert "*Show All Configurations:*" in sent_message
-    assert "Either use the command `/hutbot` or just @Hutbot me." in sent_message
+    assert "Either use the command `/hutbot` or just `@Hutbot` me." in sent_message
     assert "```/hutbot show config\n@Hutbot show config```" in sent_message
-    assert "Displays all configurations for #team-asylum." in sent_message
+    assert "Displays all configurations for `#team-asylum`." in sent_message
     assert "*Commands:*\n```" in sent_message
     assert "/hutbot [config] set wait-time <minutes>" in sent_message
     assert "Set reminder delay." in sent_message
@@ -1540,3 +1541,166 @@ async def test_schedule_reply_removes_entry_from_cache():
         await schedule_reply(app, "token", channel, config, "default", user, "x", ts)
 
     assert key not in bot._scheduled_replies_cache
+
+
+@pytest.mark.asyncio
+async def test_set_forward_channel_with_mention():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await set_forward_channel(app, channel, "default", "<#CFWDCHAN|forward-channel>", user, thread_ts)
+
+    assert channel.configs["default"]["forward_channel"] == "CFWDCHAN"
+    app.client.chat_postMessage.assert_awaited_once_with(
+        channel="CFWDCHAN",
+        text="Reply messages from #general (config `default`) will now be forwarded here by Hutbot :palm_up_hand::tophat:",
+        mrkdwn=True,
+    )
+    mock_send_message.assert_called_with(app, channel, user, "*Forward channel* set to <#CFWDCHAN> in configuration `default`.", thread_ts)
+
+
+@pytest.mark.asyncio
+async def test_set_forward_channel_with_bare_id():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await set_forward_channel(app, channel, "default", "CFWDCHAN", user)
+
+    assert channel.configs["default"]["forward_channel"] == "CFWDCHAN"
+    mock_send_message.assert_called_with(app, channel, user, "*Forward channel* set to <#CFWDCHAN> in configuration `default`.", "")
+
+
+@pytest.mark.asyncio
+async def test_set_forward_channel_rejects_invalid_ref():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_forward_channel(app, channel, "default", "not-a-channel", user, thread_ts)
+
+    assert channel.configs["default"].get("forward_channel") == ""
+    app.client.chat_postMessage.assert_not_awaited()
+    mock_send_message.assert_called_with(app, channel, user, "Invalid channel: `not-a-channel`. Use a #channel mention.", thread_ts)
+
+
+@pytest.mark.asyncio
+async def test_set_forward_channel_reports_api_error():
+    app = AsyncMock()
+    app.client.chat_postMessage.side_effect = SlackApiError("not_in_channel", {"error": "not_in_channel"})
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.send_message') as mock_send_message:
+        await set_forward_channel(app, channel, "default", "<#CFWDCHAN|forward-channel>", user, thread_ts)
+
+    assert channel.configs["default"].get("forward_channel") == ""
+    mock_send_message.assert_called_with(app, channel, user, "Cannot post to <#CFWDCHAN>: `not_in_channel`.", thread_ts)
+
+
+@pytest.mark.asyncio
+async def test_clear_forward_channel():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "forward_channel": "CFWDCHAN"}
+    channel = Channel(id="C12345", name="general", configs={"default": config})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send_message:
+        await clear_forward_channel(app, channel, "default", user, thread_ts)
+
+    assert "forward_channel" not in channel.configs["default"]
+    mock_send_message.assert_called_with(app, channel, user, "*Forward channel* cleared in configuration `default`.", thread_ts)
+
+
+@pytest.mark.asyncio
+async def test_show_config_displays_forward_channel():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "forward_channel": "CFWDCHAN"}
+    channel = Channel(id="C123", name="general", configs={"default": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('bot.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Forward channel*: <#CFWDCHAN>" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_show_config_displays_none_for_missing_forward_channel():
+    app = AsyncMock()
+    channel = Channel(id="C123", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('bot.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Forward channel*: <None>" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_schedule_reply_forwards_to_configured_channel():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p123"}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = {**DEFAULT_CONFIG.copy(), "wait_time": 0, "reply_message": "Anybody?", "forward_channel": "CFWDCHAN"}
+
+    with patch('bot.send_message'):
+        await schedule_reply(app, "token", channel, config, "default", user, "Help needed", "1234.1")
+
+    app.client.chat_postMessage.assert_awaited_once_with(
+        channel="CFWDCHAN",
+        text="Anybody?\n\n*Original message in #general:* https://slack.test/p123",
+        mrkdwn=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_reply_skips_forward_when_not_configured():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p123"}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = {**DEFAULT_CONFIG.copy(), "wait_time": 0, "reply_message": "Anybody?"}
+
+    with patch('bot.send_message'):
+        await schedule_reply(app, "token", channel, config, "default", user, "Help needed", "1234.1")
+
+    app.client.chat_postMessage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_command_set_forward_channel():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, "set forward-channel <#CFWDCHAN|logs>", channel, user, thread_ts)
+
+    assert channel.configs["default"]["forward_channel"] == "CFWDCHAN"
+
+
+@pytest.mark.asyncio
+async def test_process_command_clear_forward_channel():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "forward_channel": "CFWDCHAN"}
+    channel = Channel(id="C12345", name="general", configs={"default": config})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, "clear forward-channel", channel, user, thread_ts)
+
+    assert "forward_channel" not in channel.configs["default"]
