@@ -1473,9 +1473,8 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"Displays all configurations for #{channel.name}.\n\n"
         "*Commands:*\n"
         f"```\n{command_usage}\n```\n\n"
-        "`[config]` is optional; omitted commands use `default`. "
-        f"Supported reply variables: {supported_template_variables}. "
-        "OpsGenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments."
+        "`[config]` is optional; omitted commands use `default`.\n"
+        f"Supported reply variables: {supported_template_variables}."
     )
     await send_message(app, channel, user, help_text, thread_ts)
 
