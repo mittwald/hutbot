@@ -1260,6 +1260,27 @@ async def test_process_command_news_mentions_on_call_and_test_commands():
     assert "`@Hutbot [config] test <message>`" in sent_message
 
 @pytest.mark.asyncio
+async def test_process_command_help_uses_compact_command_reference():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="team-asylum", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.send_message') as mock_send_message:
+        await process_command(app, "help", channel, user)
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Show All Configurations:*" in sent_message
+    assert "Either use the command `/hutbot` or just @Hutbot me." in sent_message
+    assert "```/hutbot show config\n@Hutbot show config```" in sent_message
+    assert "Displays all configurations for #team-asylum." in sent_message
+    assert "*Commands:*\n```" in sent_message
+    assert "/hutbot [config] set wait-time <minutes>" in sent_message
+    assert "Set reminder delay." in sent_message
+    assert "@Hutbot [config] test <message>" in sent_message
+    assert "Preview reply with <message> as {{message}}." in sent_message
+    assert "*Enable OpsGenie Integration:*" not in sent_message
+
+@pytest.mark.asyncio
 async def test_process_command_test_uses_opsgenie_placeholders_when_unavailable():
     import bot
     app = AsyncMock()

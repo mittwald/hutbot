@@ -1410,88 +1410,48 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
 
 async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     supported_template_variables = ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
+    command_rows = [
+        ("/hutbot show config", "Show all configurations."),
+        ("/hutbot [config] enable opsgenie", "Enable OpsGenie alerts."),
+        ("/hutbot [config] disable opsgenie", "Disable OpsGenie alerts."),
+        ("/hutbot [config] set opsgenie-schedule <name>", "Set the OpsGenie schedule name."),
+        ("/hutbot [config] set datetime-format \"<date>\" \"<time>\" [<tz> <locale>]", "Set date/time formats."),
+        ("/hutbot [config] set wait-time <minutes>", "Set reminder delay."),
+        ("/hutbot list teams", "List available teams."),
+        ("/hutbot list opsgenie-schedules", "List OpsGenie schedules."),
+        ("/hutbot [config] on-call [schedule]", "Show current on-call user."),
+        ("/hutbot team of <@user>", "Show a user's team."),
+        ("/hutbot [config] add excluded-team <team>", "Add an ignored team."),
+        ("/hutbot [config] clear excluded-teams", "Clear ignored teams."),
+        ("/hutbot [config] add included-team <team>", "Add an allowed team."),
+        ("/hutbot [config] clear included-teams", "Clear allowed teams."),
+        ("/hutbot [config] enable bots", "Respond to bot messages."),
+        ("/hutbot [config] disable bots", "Ignore bot messages."),
+        ("/hutbot [config] enable only-work-days", "Respond only on work days."),
+        ("/hutbot [config] disable only-work-days", "Respond on all days."),
+        ("/hutbot [config] set work-hours <start> <end>", "Set active hours; 0:00 0:00 means all day."),
+        ("/hutbot [config] set pattern \"<regex>\" [0|1]", "Set message pattern; 1 means case sensitive."),
+        ("/hutbot [config] set message \"<reply message>\"", "Set reminder message."),
+        ("/hutbot [config] test", "Preview configured reply."),
+        ("@Hutbot [config] test <message>", "Preview reply with <message> as {{message}}."),
+        ("/hutbot delete config <name>", "Delete a configuration."),
+        ("/hutbot news", "Show what's new."),
+        ("/hutbot help", "Show this help."),
+    ]
+    command_width = max(len(command) for command, _ in command_rows)
+    command_usage = "\n".join(f"{command:<{command_width}}  {description}" for command, description in command_rows)
     help_text = (
-        "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's how you can configure me via /command or @mention:\n\n"
+        "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's a compact command reference:\n\n"
         "*Show All Configurations:*\n"
         "> Either use the command `/hutbot` or just @Hutbot me.\n"
         "```/hutbot show config\n"
         "@Hutbot show config```\n"
         f"Displays all configurations for #{channel.name}.\n\n"
-        "*Enable OpsGenie Integration:*\n"
-        "```/hutbot [config] enable opsgenie```\n"
-        "Enables the OpsGenie integration.\n\n"
-        "*Disable OpsGenie Integration:*\n"
-        "```/hutbot [config] disable opsgenie```\n"
-        "Disables the OpsGenie integration.\n\n"
-        "*Set OpsGenie Schedule:*\n"
-        "```/hutbot [config] set opsgenie-schedule <name>```\n"
-        "Sets the OpsGenie schedule name used for current on-call template variables.\n\n"
-        "*Set Date/Time Format:*\n"
-        "```/hutbot [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]\n"
-        "/hutbot [config] set date-format \"<date>\" \"<time>\" [<timezone> <locale>]\n"
-        "/hutbot [config] set datefmt \"<date>\" \"<time>\" [<timezone> <locale>]```\n"
-        "Sets default date/time formatting for `/hutbot on-call` and OpsGenie date/time template variables. Python `strftime` formats and Go layouts are supported.\n\n"
-        "*Set Wait Time:*\n"
-        "```/hutbot [config] set wait-time <minutes>```\n"
-        "Sets the wait time before I send a reminder. Replace `<minutes>` with the number of minutes you want.\n\n"
-        "*List Available Teams:*\n"
-        "```/hutbot list teams```\n"
-        "Lists the available teams.\n\n"
-        "*List OpsGenie Schedules:*\n"
-        "```/hutbot list opsgenie-schedules```\n"
-        "Lists the available OpsGenie schedules.\n\n"
-        "*Current On-call User:*\n"
-        "```/hutbot [config] on-call [schedule name]```\n"
-        "Prints the current on-call user from the configured OpsGenie schedule or the provided schedule name.\n\n"
-        "*Team of User:*\n"
-        "```/hutbot team of <user>```\n"
-        "Lists the team of a user. Replace `<user>` with @<user>.\n\n"
-        "*Add Excluded Team:*\n"
-        "```/hutbot [config] add excluded-team <team>```\n"
-        "Adds a team whose members I will not respond to. Replace `<team>` with the name of the team.\n\n"
-        "*Clear Excluded Teams:*\n"
-        "```/hutbot [config] clear excluded-teams```\n"
-        "Clears the list of excluded teams.\n\n"
-        "*Add Included Team:*\n"
-        "```/hutbot [config] add included-team <team>```\n"
-        "Adds a team whose members I will respond to *only*. Replace `<team>` with the name of the team.\n\n"
-        "*Clear Included Teams:*\n"
-        "```/hutbot [config] clear included-teams```\n"
-        "Clears the list of included teams.\n\n"
-        "*Include Bot Messages:*\n"
-        "```/hutbot [config] enable bots```\n"
-        "Also responds to messages from bots.\n\n"
-        "*Exclude Bot Messages:*\n"
-        "```/hutbot [config] disable bots```\n"
-        "Don't respond to messages from bots.\n\n"
-        "*Only Work Days:*\n"
-        "```/hutbot [config] enable only-work-days```\n"
-        "Only respond to messages on work days.\n\n"
-        "*All Days:*\n"
-        "```/hutbot [config] disable only-work-days```\n"
-        "Respond to messages on all days.\n\n"
-        "*Set Work Hours:*\n"
-        "```/hutbot [config] set work-hours <start-time> <end-time>```\n"
-        "Respond to messages during these hours. Set `0:00` `0:00` for all day.\n\n"
-        ":sparkles: *Set Message Pattern:* :new:\n"
-        "```/hutbot [config] set pattern \"<regex>\" [<case-sensitive>]```\n"
-        "Respond to messages matching the pattern, case sensitive with `1` (default) or `0`.\n\n"
-        "*Set Reply Message:*\n"
-        "```/hutbot [config] set message \"Hi {{user}}, your message in {{channel}} is still unanswered: {{message_link}}\"```\n"
-        f"Sets the reminder message I'll send. Supported variables: {supported_template_variables}. OpsGenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments.\n\n"
-        "*Test Reply Message:*\n"
-        "```/hutbot [config] test\n"
-        "@Hutbot [config] test <message>```\n"
-        "Previews the configured reply message and shows all supported template variables. In @mention commands, `<message>` is used as `{{message}}`.\n\n"
-        ":sparkles: *Delete Configuration:* :new:\n"
-        "```/hutbot delete config <name>```\n"
-        "Deletes a configuration. Replace `<name>` with the name of the config.\n\n"
-        ":sparkles: *What's New:* :new:\n"
-        "```/hutbot news```\n"
-        "Displays what's new.\n\n"
-        "*Help:*\n"
-        "```/hutbot help```\n"
-        "Displays this help message.\n"
+        "*Commands:*\n"
+        f"```\n{command_usage}\n```\n\n"
+        "`[config]` is optional; omitted commands use `default`. "
+        f"Supported reply variables: {supported_template_variables}. "
+        "OpsGenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments."
     )
     await send_message(app, channel, user, help_text, thread_ts)
 
