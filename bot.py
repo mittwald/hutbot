@@ -1421,26 +1421,32 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         opsgenie_priority = get_opsgenie_priority(config)
         replies_enabled = config.get('enabled', True)
 
+        rows = [
+            ("OpsGenie",           ('enabled' if opsgenie_enabled else 'disabled') + ('' if opsgenie_configured else ' (not configured)')),
+            ("OpsGenie schedule",  opsgenie_schedule_name),
+            ("OpsGenie priority",  opsgenie_priority),
+            ("Date format",        date_format),
+            ("Time format",        time_format),
+            ("Date/time timezone", datetime_timezone),
+            ("Date/time locale",   datetime_locale),
+            ("Wait time",          f"{wait_time_minutes} minutes"),
+            ("Included teams",     ' '.join(included_teams) if included_teams else '<None>'),
+            ("Excluded teams",     ' '.join(excluded_teams) if excluded_teams else '<None>'),
+            ("Include bots",       'enabled' if include_bots else 'disabled'),
+            ("Only work days",     'enabled' if only_work_days else 'disabled'),
+            ("Work hours",         f"{hours[0]} - {hours[1]}" if len(hours) == 2 else 'all day'),
+            ("Pattern",            f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<None>'),
+        ]
+        key_width = max(len(label) for label, _ in rows)
+        config_block = "\n".join(f"{label:<{key_width}}  {value}" for label, value in rows)
+        forward_channel_line = f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}"
+        reply_line = f"*Reply message*:\n{reply_message}" if reply_message else "*Reply message*: <None>"
+        enabled_label = 'enabled' if replies_enabled else 'disabled'
         message += (
-            f"\n\n---\n*Configuration*: `{config_name}`\n\n"
-            f"*Replies*: {'enabled' if replies_enabled else 'disabled'}\n\n"
-            f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
-            f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
-            f"*OpsGenie schedule*: `{opsgenie_schedule_name}`\n\n"
-            f"*OpsGenie priority*: `{opsgenie_priority}`\n\n"
-            f"*Date format*: `{date_format}`\n\n"
-            f"*Time format*: `{time_format}`\n\n"
-            f"*Date/time timezone*: `{datetime_timezone}`\n\n"
-            f"*Date/time locale*: `{datetime_locale}`\n\n"
-            f"*Wait time*: `{wait_time_minutes}` minutes\n\n"
-            f"*Included teams*: {' '.join(f'`{team}`' for team in included_teams) if included_teams else '<None>'}\n\n"
-            f"*Excluded teams*: {' '.join(f'`{team}`' for team in excluded_teams) if excluded_teams else '<None>'}\n\n"
-            f"*Include bots*: {'enabled' if include_bots else 'disabled'}\n\n"
-            f"*Only work days*: {'enabled' if only_work_days else 'disabled'}\n\n"
-            f"*Work hours*: {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'}\n\n"
-            f"*Pattern*: {f'`{pattern}` (case-sensitive)' if pattern_case_sensitive else f'`{pattern}` (case-insensitive)' if pattern else '<None>'}\n\n"
-            f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}\n\n"
-            f"*Reply message*:\n{reply_message}"
+            f"\n\n*Configuration*: `{config_name}` ({enabled_label})\n"
+            f"{reply_line}\n"
+            f"{forward_channel_line}\n"
+            f"```\n{config_block}\n```"
         )
     await send_message(app, channel, user, message, thread_ts)
 
