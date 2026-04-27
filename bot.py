@@ -2123,7 +2123,8 @@ async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: Us
             continue
 
         config = channel.configs.get(key[2])
-        if not user_matches_actor_criteria(config, reply_user, actor_is_bot):
+        no_restrictions = config is not None and not config.get('included_teams') and not config.get('excluded_teams')
+        if no_restrictions or not user_matches_actor_criteria(config, reply_user, actor_is_bot):
             keys_to_cancel.append(key)
 
     if not keys_to_cancel:
@@ -2187,7 +2188,8 @@ async def handle_reaction_added(app: AsyncApp, event):
             continue
 
         config = channel.configs.get(key[2])
-        if not user_matches_actor_criteria(config, reaction_user):
+        no_restrictions = config is not None and not config.get('included_teams') and not config.get('excluded_teams')
+        if no_restrictions or not user_matches_actor_criteria(config, reaction_user):
             keys_to_cancel.append(key)
 
     if not keys_to_cancel:
