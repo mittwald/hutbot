@@ -1465,15 +1465,15 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     command_width = max(len(command) for command, _ in command_rows)
     command_usage = "\n".join(f"{command:<{command_width}}  {description}" for command, description in command_rows)
     help_text = (
-        "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's a compact command reference:\n\n"
+        "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what I can do:\n\n"
         "*Show All Configurations:*\n"
-        "> Either use the command `/hutbot` or just @Hutbot me.\n"
+        "> Either use the command `/hutbot` or just `@Hutbot` me.\n"
         "```/hutbot show config\n"
         "@Hutbot show config```\n"
-        f"Displays all configurations for #{channel.name}.\n\n"
+        f"Displays all configurations for `#{channel.name}`.\n\n"
         "*Commands:*\n"
         f"```\n{command_usage}\n```\n\n"
-        "`[config]` is optional; omitted commands use `default`.\n"
+        "`[config]` is optional; omitted commands use `default`.\n\n"
         f"Supported reply variables: {supported_template_variables}."
     )
     await send_message(app, channel, user, help_text, thread_ts)
