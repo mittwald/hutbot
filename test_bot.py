@@ -14,6 +14,7 @@ from bot import (
     load_replies_cache, flush_replies_cache, restore_scheduled_replies,
     extract_message_text, _scheduled_replies_cache,
     set_forward_channel, clear_forward_channel,
+    set_replies_enabled,
 )
 from slack_sdk.errors import SlackApiError
 import base64
@@ -1704,3 +1705,124 @@ async def test_process_command_clear_forward_channel():
         await process_command(app, "clear forward-channel", channel, user, thread_ts)
 
     assert "forward_channel" not in channel.configs["default"]
+
+
+@pytest.mark.asyncio
+async def test_set_replies_enabled_enables():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": {**DEFAULT_CONFIG.copy(), "enabled": False}})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send:
+        await set_replies_enabled(app, channel, "default", True, user)
+
+    assert channel.configs["default"]["enabled"] is True
+    mock_send.assert_awaited_once()
+    assert "enabled" in mock_send.call_args[0][3]
+
+
+@pytest.mark.asyncio
+async def test_set_replies_enabled_disables():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.save_configuration'), patch('bot.send_message') as mock_send:
+        await set_replies_enabled(app, channel, "default", False, user)
+
+    assert channel.configs["default"]["enabled"] is False
+    assert "disabled" in mock_send.call_args[0][3]
+
+
+@pytest.mark.asyncio
+async def test_set_replies_enabled_creates_config():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await set_replies_enabled(app, channel, "newcfg", False, user)
+
+    assert "newcfg" in channel.configs
+    assert channel.configs["newcfg"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_skips_disabled_config():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={
+        "active": {**DEFAULT_CONFIG.copy(), "enabled": True, "wait_time": 0},
+        "silent": {**DEFAULT_CONFIG.copy(), "enabled": False, "wait_time": 0},
+    })
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.schedule_reply') as mock_schedule, patch('bot.flush_replies_cache'):
+        await handle_channel_message(app, "", channel, user, "hello", "1234.1")
+
+    called_config_names = [call[0][4] for call in mock_schedule.call_args_list]
+    assert "active" in called_config_names
+    assert "silent" not in called_config_names
+
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_enabled_by_default():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    config.pop("enabled", None)
+    channel = Channel(id="C12345", name="general", configs={"default": {**config, "wait_time": 0}})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.schedule_reply') as mock_schedule, patch('bot.flush_replies_cache'):
+        await handle_channel_message(app, "", channel, user, "hello", "1234.1")
+
+    assert mock_schedule.called
+
+
+@pytest.mark.asyncio
+async def test_show_config_displays_replies_enabled():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": {**DEFAULT_CONFIG.copy(), "enabled": True}})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.send_message') as mock_send:
+        await show_config(app, channel, user)
+
+    sent_message = mock_send.call_args[0][3]
+    assert "*Replies*: enabled" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_show_config_displays_replies_disabled():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": {**DEFAULT_CONFIG.copy(), "enabled": False}})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.send_message') as mock_send:
+        await show_config(app, channel, user)
+
+    sent_message = mock_send.call_args[0][3]
+    assert "*Replies*: disabled" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_process_command_enable_replies():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": {**DEFAULT_CONFIG.copy(), "enabled": False}})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, "enable", channel, user)
+
+    assert channel.configs["default"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_process_command_disable_replies():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, "disable", channel, user)
+
+    assert channel.configs["default"]["enabled"] is False

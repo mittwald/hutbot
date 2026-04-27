@@ -57,7 +57,8 @@ DEFAULT_CONFIG = {
     "hours": [],
     "pattern": None,
     "pattern_case_sensitive": False,
-    "forward_channel": ""
+    "forward_channel": "",
+    "enabled": True
 }
 
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')
@@ -180,6 +181,8 @@ SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)')
 SET_FORWARD_CHANNEL_PATTERN = create_command_pattern(r'set\s+forward[_ -]?channel\s+(?P<channel>.+)')
 CLEAR_FORWARD_CHANNEL_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+forward[_ -]?channel')
+ENABLE_REPLIES_PATTERN = create_command_pattern(r'enable$')
+DISABLE_REPLIES_PATTERN = create_command_pattern(r'disable$')
 
 def log_debug(channel: Channel | None, *args: object) -> None:
     if channel and any(c.get('debug') for c in channel.configs.values()):
@@ -869,6 +872,10 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
         await set_forward_channel(app, channel, config_name, channel_ref, user, thread_ts)
     elif CLEAR_FORWARD_CHANNEL_PATTERN.match(command_text):
         await clear_forward_channel(app, channel, config_name, user, thread_ts)
+    elif ENABLE_REPLIES_PATTERN.match(command_text):
+        await set_replies_enabled(app, channel, config_name, True, user, thread_ts)
+    elif DISABLE_REPLIES_PATTERN.match(command_text):
+        await set_replies_enabled(app, channel, config_name, False, user, thread_ts)
     elif (match := DELETE_CONFIG_PATTERN.match(command_text)):
         name = strip_quotes(match.group("name"))
         await delete_config(app, channel, name, user, thread_ts)
@@ -919,6 +926,13 @@ async def set_only_work_days(app: AsyncApp, channel: Channel, config_name: str, 
     channel.configs[config_name]['only_work_days'] = enabled
     await save_configuration()
     await send_message(app, channel, user, f"Messages will be handled {'*only on work days*' if enabled else '*on all days*'} in configuration `{config_name}`.", thread_ts)
+
+async def set_replies_enabled(app: AsyncApp, channel: Channel, config_name: str, enabled: bool, user: User, thread_ts: str = "") -> None:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    channel.configs[config_name]['enabled'] = enabled
+    await save_configuration()
+    await send_message(app, channel, user, f"Replies are now *{'enabled' if enabled else 'disabled'}* in configuration `{config_name}`.", thread_ts)
 
 def parse_time(time_str) -> datetime.time | None:
     if TIME_HOUR_PATTERN.match(time_str):
@@ -1405,9 +1419,11 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         datetime_timezone = config.get('datetime_timezone') or '<server local>'
         datetime_locale = config.get('datetime_locale') or '<default>'
         opsgenie_priority = get_opsgenie_priority(config)
+        replies_enabled = config.get('enabled', True)
 
         message += (
             f"\n\n---\n*Configuration*: `{config_name}`\n\n"
+            f"*Replies*: {'enabled' if replies_enabled else 'disabled'}\n\n"
             f"*OpsGenie integration*: {'enabled' if opsgenie_enabled else 'disabled'}"
             f"{'' if opsgenie_configured else ' (not configured)'}\n\n"
             f"*OpsGenie schedule*: `{opsgenie_schedule_name}`\n\n"
@@ -1501,6 +1517,8 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ("/hutbot [config] disable bots", "Ignore bot messages."),
         ("/hutbot [config] enable only-work-days", "Respond only on work days."),
         ("/hutbot [config] disable only-work-days", "Respond on all days."),
+        ("/hutbot [config] enable", "Enable sending replies for this config."),
+        ("/hutbot [config] disable", "Disable sending replies for this config."),
         ("/hutbot [config] set work-hours <start> <end>", "Set active hours; 0:00 0:00 means all day."),
         ("/hutbot [config] set pattern \"<regex>\" [0|1]", "Set message pattern; 1 means case sensitive."),
         ("/hutbot [config] set message \"<reply message>\"", "Set reminder message."),
@@ -2140,6 +2158,10 @@ async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: Us
 
 async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, actor_is_bot: bool = False):
     for config_name, config in channel.configs.items():
+        if not config.get('enabled', True):
+            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because replies are disabled.")
+            continue
+
         only_work_days = config.get('only_work_days')
         hours = config.get('hours')
         pattern = config.get('pattern')
