@@ -2092,6 +2092,7 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
     user = None
     if user_id:
         user = await get_user_by_id(app, user_id)
+        actor_is_bot = user_id == 'USLACKBOT'
     elif bot_id and (thread_ts or any(c.get('include_bots', False) for c in channel.configs.values())):
         actor_is_bot = True
         user = await get_user_by_id(app, bot_id)
