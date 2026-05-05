@@ -1407,9 +1407,6 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
             return f"\n{' ' * (key_width + 2)}".join(value)
         return value
 
-    def quote_block(text: str) -> str:
-        return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
-
     message = f"This is the configuration for #{channel.name}:"
     for config_name, config in sorted(channel.configs.items()):
         opsgenie_enabled = config.get('opsgenie')
@@ -1452,15 +1449,18 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         forward_channel_line = f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}"
         reply_line = f"*Reply message*:\n{reply_message}" if reply_message else "*Reply message*: <None>"
         enabled_label = 'enabled' if replies_enabled else 'disabled'
-        block = (
-            f"*Configuration*: `{config_name}` ({enabled_label})\n"
-            f"{reply_line}\n"
-            f"\n"
-            f"{forward_channel_line}\n"
-            f"\n"
+        quoted_block = (
+            f"> {reply_line.replace('\n', '\n> ')}\n"
+            f">\n"
+            f"> {forward_channel_line}\n"
+            f">\n"
+            f"> *Settings*:\n"
+        )
+        message += (
+            f"\n\n*Configuration*: `{config_name}` ({enabled_label})\n"
+            f"{quoted_block}"
             f"```\n{config_block}\n```"
         )
-        message += f"\n\n{quote_block(block)}"
     await send_message(app, channel, user, message, thread_ts)
 
 async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "") -> None:

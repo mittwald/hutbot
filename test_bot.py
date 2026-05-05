@@ -887,8 +887,8 @@ async def test_show_config():
         await show_config(app, channel, user, "")
 
         sent_message = mock_send_message.call_args.args[3]
-        assert "> *Configuration*: `default` (enabled)" in sent_message
-        assert "> *Reply message*:\n> Default message\n>\n> *Forward channel*: <None>\n>\n> ```" in sent_message
+        assert "\n\n*Configuration*: `default` (enabled)" in sent_message
+        assert "> *Reply message*:\n> Default message\n>\n> *Forward channel*: <None>\n>\n> *Settings*:\n```" in sent_message
         assert "OpsGenie schedule" in sent_message
         assert "OpsGenie priority   P4" in sent_message
         assert "Date format         %a, %d %b %Y" in sent_message
@@ -897,7 +897,7 @@ async def test_show_config():
         assert "Date/time locale    <default>" in sent_message
         assert "Wait time           10 minutes" in sent_message
         assert "Default message" in sent_message
-        assert "> *Configuration*: `alarms` (enabled)" in sent_message
+        assert "\n\n*Configuration*: `alarms` (enabled)" in sent_message
         assert "Wait time           5 minutes" in sent_message
         assert "Pattern             .*alarm.* (case-insensitive)" in sent_message
         assert "Alarm message" in sent_message
@@ -923,9 +923,9 @@ async def test_show_config_displays_multiline_team_values():
     sent_message = mock_send_message.call_args.args[3]
     assert (
         "Excluded teams      Cloud Hosting\n"
-        ">                     m-kubed (m³)\n"
-        ">                     Systemarchitektur Infrastruktur/Technik\n"
-        ">                     Site Reliability"
+        "                    m-kubed (m³)\n"
+        "                    Systemarchitektur Infrastruktur/Technik\n"
+        "                    Site Reliability"
     ) in sent_message
 
 @pytest.mark.asyncio
@@ -1815,7 +1815,7 @@ async def test_show_config_displays_replies_enabled():
         await show_config(app, channel, user)
 
     sent_message = mock_send.call_args[0][3]
-    assert "> *Configuration*: `default` (enabled)" in sent_message
+    assert "\n\n*Configuration*: `default` (enabled)" in sent_message
 
 
 @pytest.mark.asyncio
@@ -1828,7 +1828,7 @@ async def test_show_config_displays_replies_disabled():
         await show_config(app, channel, user)
 
     sent_message = mock_send.call_args[0][3]
-    assert "> *Configuration*: `default` (disabled)" in sent_message
+    assert "\n\n*Configuration*: `default` (disabled)" in sent_message
 
 
 @pytest.mark.asyncio
