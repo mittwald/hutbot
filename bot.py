@@ -1400,6 +1400,16 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         await send_message(app, channel, user, message, thread_ts)
         return
 
+    def format_table_value(value, key_width: int) -> str:
+        if isinstance(value, list):
+            if not value:
+                return '<None>'
+            return f"\n{' ' * (key_width + 2)}".join(value)
+        return value
+
+    def quote_block(text: str) -> str:
+        return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+
     message = f"This is the configuration for #{channel.name}:"
     for config_name, config in sorted(channel.configs.items()):
         opsgenie_enabled = config.get('opsgenie')
@@ -1430,24 +1440,27 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
             ("Date/time timezone", datetime_timezone),
             ("Date/time locale",   datetime_locale),
             ("Wait time",          f"{wait_time_minutes} minutes"),
-            ("Included teams",     ' '.join(included_teams) if included_teams else '<None>'),
-            ("Excluded teams",     ' '.join(excluded_teams) if excluded_teams else '<None>'),
+            ("Included teams",     included_teams),
+            ("Excluded teams",     excluded_teams),
             ("Include bots",       'enabled' if include_bots else 'disabled'),
             ("Only work days",     'enabled' if only_work_days else 'disabled'),
             ("Work hours",         f"{hours[0]} - {hours[1]}" if len(hours) == 2 else 'all day'),
             ("Pattern",            f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<None>'),
         ]
         key_width = max(len(label) for label, _ in rows)
-        config_block = "\n".join(f"{label:<{key_width}}  {value}" for label, value in rows)
+        config_block = "\n".join(f"{label:<{key_width}}  {format_table_value(value, key_width)}" for label, value in rows)
         forward_channel_line = f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}"
         reply_line = f"*Reply message*:\n{reply_message}" if reply_message else "*Reply message*: <None>"
         enabled_label = 'enabled' if replies_enabled else 'disabled'
-        message += (
-            f"\n\n*Configuration*: `{config_name}` ({enabled_label})\n"
+        block = (
+            f"*Configuration*: `{config_name}` ({enabled_label})\n"
             f"{reply_line}\n"
+            f"\n"
             f"{forward_channel_line}\n"
+            f"\n"
             f"```\n{config_block}\n```"
         )
+        message += f"\n\n{quote_block(block)}"
     await send_message(app, channel, user, message, thread_ts)
 
 async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "") -> None:
@@ -2148,7 +2161,12 @@ async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: Us
             continue
 
         config = channel.configs.get(key[2])
-        no_restrictions = config is not None and not config.get('included_teams') and not config.get('excluded_teams')
+        no_restrictions = (
+            config is not None
+            and not config.get('included_teams')
+            and not config.get('excluded_teams')
+            and (not actor_is_bot or not config.get('include_bots', False))
+        )
         if no_restrictions or not user_matches_actor_criteria(config, reply_user, actor_is_bot):
             keys_to_cancel.append(key)
 
