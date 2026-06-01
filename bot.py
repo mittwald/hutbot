@@ -766,11 +766,11 @@ async def fetch_user_by_id(app: AsyncApp, id: str, channel: Channel | None = Non
     slack_user = response.get('user')
     if not slack_user:
         return None
+    log_debug(channel, f"Retrieved user not in cache from Slack API: {json.dumps(slack_user)}")
     employees = await load_employees()
     mappings = load_employee_mappings()
     user_email, user = build_user(slack_user, employees, mappings)
     cache_user(user_email, user)
-    log_debug(channel, f"Retrieved user not in cache: {user}")
     return user
 
 async def get_user_by_id(app: AsyncApp, id: str, channel: Channel | None = None) -> User:
