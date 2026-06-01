@@ -684,6 +684,62 @@ async def update_usergroup_cache(app: AsyncApp) -> None:
       except SlackApiError as e:
           log_error(f"Failed to fetch usergroup list:", e)
 
+def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
+    user_id = user.get('id', '')
+    user_name = normalize_id(user.get('name', ''))
+    if user_name in mappings:
+        log(f"Applying employee mapping: {user_name} -> {mappings[user_name]}")
+        user_name = mappings[user_name]
+    user_name_normalized = normalize_user_name(user_name)
+    user_email = normalize_id(user.get('profile', {}).get('email', ''))
+    user_email_alias = normalize_id(user_email.split('@')[0])
+    user_email_alias_normalized = normalize_user_name(user_email_alias)
+    user_real_name = user.get('real_name', '').strip()
+    user_real_name_normalized = normalize_real_name(user_real_name)
+    user_team = TEAM_UNKNOWN
+
+    if len(employees) > 0:
+        # Try different variations of the username to find a match in employees
+        user_key_candidates = [
+            user_name,
+            user_name_normalized,
+            user_email_alias,
+            user_email_alias_normalized
+        ]
+        user_key = next((k for k in user_key_candidates if k in employees), None)
+
+        if not user_key:
+            # loop through all employees and try to match some form of the real name
+            for employee_key, employee in employees.items():
+                employee_real_name = employee.get('fullname', '').strip()
+                employee_real_name_normalized = normalize_real_name(employee_real_name)
+                employee_real_name_super_normalized = normalize_real_name_with_diagraphs(employee_real_name)
+                user_real_name_super_normalized = normalize_real_name_with_diagraphs(user_real_name)
+                if employee_real_name_normalized == user_real_name_normalized or \
+                employee_real_name_super_normalized == user_real_name_normalized or \
+                employee_real_name_super_normalized == user_real_name_super_normalized:
+                    user_key = employee_key
+                    # finally!
+                    break
+            if not user_key:
+                user_json = json.dumps(user)
+                if len(user_json) > 100:
+                    user_json = user_json[:97] + '...'
+                log_warning(f"Failed to map user @{user_name} to a employee: {user_json}")
+
+        if user_key:
+            user_team = employees[user_key].get('group', '').strip()
+
+    return user_email, User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
+
+def cache_user(user_email: str, u: User) -> None:
+    user_id_cache[u.name] = u
+    if user_email:
+        user_email_cache[user_email] = u
+    id_user_cache[u.id] = u
+    if u.team not in team_cache:
+        team_cache.add(u.team)
+
 async def update_user_cache(app: AsyncApp) -> None:
     global user_id_cache, user_email_cache, id_user_cache
     if not user_id_cache or not user_email_cache or not id_user_cache:
@@ -697,63 +753,30 @@ async def update_user_cache(app: AsyncApp) -> None:
                    not user.get('is_bot', False) and \
                    not user.get('is_restricted', False) and \
                    user.get('id', '') != 'USLACKBOT':
-                    user_id = user.get('id', '')
-                    user_name = normalize_id(user.get('name', ''))
-                    if user_name in mappings:
-                        log(f"Applying employee mapping: {user_name} -> {mappings[user_name]}")
-                        user_name = mappings[user_name]
-                    user_name_normalized = normalize_user_name(user_name)
-                    user_email = normalize_id(user.get('profile', {}).get('email', ''))
-                    user_email_alias = normalize_id(user_email.split('@')[0])
-                    user_email_alias_normalized = normalize_user_name(user_email_alias)
-                    user_real_name = user.get('real_name', '').strip()
-                    user_real_name_normalized = normalize_real_name(user_real_name)
-                    user_team = TEAM_UNKNOWN
-
-                    if len(employees) > 0:
-                        # Try different variations of the username to find a match in employees
-                        user_key_candidates = [
-                            user_name,
-                            user_name_normalized,
-                            user_email_alias,
-                            user_email_alias_normalized
-                        ]
-                        user_key = next((k for k in user_key_candidates if k in employees), None)
-
-                        if not user_key:
-                            # loop through all employees and try to match some form of the real name
-                            for employee_key, employee in employees.items():
-                                employee_real_name = employee.get('fullname', '').strip()
-                                employee_real_name_normalized = normalize_real_name(employee_real_name)
-                                employee_real_name_super_normalized = normalize_real_name_with_diagraphs(employee_real_name)
-                                user_real_name_super_normalized = normalize_real_name_with_diagraphs(user_real_name)
-                                if employee_real_name_normalized == user_real_name_normalized or \
-                                employee_real_name_super_normalized == user_real_name_normalized or \
-                                employee_real_name_super_normalized == user_real_name_super_normalized:
-                                    user_key = employee_key
-                                    # finally!
-                                    break
-                            if not user_key:
-                                user_json = json.dumps(user)
-                                if len(user_json) > 100:
-                                    user_json = user_json[:97] + '...'
-                                log_warning(f"Failed to map user @{user_name} to a employee: {user_json}")
-
-                        if user_key:
-                            user_team = employees[user_key].get('group', '').strip()
-
-                    user_id_cache[user_name] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
-                    if user_email:
-                        user_email_cache[user_email] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
-                    id_user_cache[user_id] = User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
-                    if user_team not in team_cache:
-                        team_cache.add(user_team)
+                    cache_user(*build_user(user, employees, mappings))
         except SlackApiError as e:
             log_error(f"Failed to fetch user list:", e)
+
+async def fetch_user_by_id(app: AsyncApp, id: str) -> User | None:
+    try:
+        response = await app.client.users_info(user=id)
+    except SlackApiError as e:
+        log_error(f"Failed to fetch user `{id}`:", e)
+        return None
+    slack_user = response.get('user')
+    if not slack_user:
+        return None
+    employees = await load_employees()
+    mappings = load_employee_mappings()
+    user_email, user = build_user(slack_user, employees, mappings)
+    cache_user(user_email, user)
+    return user
 
 async def get_user_by_id(app: AsyncApp, id: str) -> User:
     await update_user_cache(app)
     user = id_user_cache.get(id, None)
+    if not user:
+        user = await fetch_user_by_id(app, id)
     if not user:
         user = User(id=id, name=id, team=TEAM_UNKNOWN, real_name='')
     return user
