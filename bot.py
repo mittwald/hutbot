@@ -757,7 +757,7 @@ async def update_user_cache(app: AsyncApp) -> None:
         except SlackApiError as e:
             log_error(f"Failed to fetch user list:", e)
 
-async def fetch_user_by_id(app: AsyncApp, id: str) -> User | None:
+async def fetch_user_by_id(app: AsyncApp, id: str, channel: Channel | None = None) -> User | None:
     try:
         response = await app.client.users_info(user=id)
     except SlackApiError as e:
@@ -770,13 +770,14 @@ async def fetch_user_by_id(app: AsyncApp, id: str) -> User | None:
     mappings = load_employee_mappings()
     user_email, user = build_user(slack_user, employees, mappings)
     cache_user(user_email, user)
+    log_debug(channel, f"Retrieved user not in cache: {user}")
     return user
 
-async def get_user_by_id(app: AsyncApp, id: str) -> User:
+async def get_user_by_id(app: AsyncApp, id: str, channel: Channel | None = None) -> User:
     await update_user_cache(app)
     user = id_user_cache.get(id, None)
     if not user:
-        user = await fetch_user_by_id(app, id)
+        user = await fetch_user_by_id(app, id, channel)
     if not user:
         user = User(id=id, name=id, team=TEAM_UNKNOWN, real_name='')
     return user
@@ -1402,7 +1403,7 @@ async def get_team_of(app: AsyncApp, channel: Channel, username: str, user: User
         if id and id[0] == '@':
             user_id = id[1:]
             log_debug(channel, f"Looking up user with ID {user_id}...")
-            u = await get_user_by_id(app, user_id)
+            u = await get_user_by_id(app, user_id, channel)
             if u.id:
                 log_debug(channel, f"Found user {u}")
                 display_name = u.real_name if u.real_name else u.name
