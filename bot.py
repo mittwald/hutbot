@@ -746,14 +746,18 @@ async def update_user_cache(app: AsyncApp) -> None:
         employees = await load_employees()
         mappings = load_employee_mappings()
         try:
-            response = await app.client.users_list()
-            users = response['members']
-            for user in users:
-                if not user.get('deleted') and \
-                   not user.get('is_bot', False) and \
-                   not user.get('is_restricted', False) and \
-                   user.get('id', '') != 'USLACKBOT':
-                    cache_user(*build_user(user, employees, mappings))
+            cursor = None
+            while True:
+                response = await app.client.users_list(cursor=cursor, limit=200)
+                for user in response['members']:
+                    if not user.get('deleted') and \
+                       not user.get('is_bot', False) and \
+                       not user.get('is_restricted', False) and \
+                       user.get('id', '') != 'USLACKBOT':
+                        cache_user(*build_user(user, employees, mappings))
+                cursor = response.get('response_metadata', {}).get('next_cursor')
+                if not cursor:
+                    break
         except SlackApiError as e:
             log_error(f"Failed to fetch user list:", e)
 
