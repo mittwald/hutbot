@@ -2169,3 +2169,75 @@ async def test_scheduler_tick_ignores_message_trigger():
          patch('bot.run_action', new=AsyncMock()) as run:
         await bot.scheduler_tick(app, "token")
     assert run.await_count == 0
+
+
+# ----- Message-triggered rules honor actions/buttons -----
+
+@pytest.mark.asyncio
+async def test_schedule_reply_routes_to_action_for_non_reply_action():
+    app = AsyncMock()
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["action"] = bot.ACTION_DM_USER
+    cfg["action_target"] = "<@U1>"
+    cfg["reply_message"] = "hi"
+    channel = _mk_channel({"src": cfg})
+    user = User("U2", "x", "X", "T")
+    with patch('bot.get_message_permalink', new=AsyncMock(return_value='')), \
+         patch('bot.flush_replies_cache', new=AsyncMock()), \
+         patch('bot.send_message', new=AsyncMock()) as send, \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
+    assert run.await_count == 1
+    assert send.await_count == 0
+    assert run.await_args.args[4] == "src"
+    assert run.await_args.kwargs["context"]["thread_ts"] == "1.1"
+
+
+@pytest.mark.asyncio
+async def test_schedule_reply_routes_to_action_when_buttons_present():
+    app = AsyncMock()
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["action"] = bot.ACTION_REPLY
+    cfg["buttons"] = [{"label": "Ok", "target": "tgt"}]
+    cfg["reply_message"] = "hi"
+    channel = _mk_channel({"src": cfg})
+    user = User("U2", "x", "X", "T")
+    with patch('bot.get_message_permalink', new=AsyncMock(return_value='')), \
+         patch('bot.flush_replies_cache', new=AsyncMock()), \
+         patch('bot.send_message', new=AsyncMock()) as send, \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
+    assert run.await_count == 1
+    assert send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_reply_classic_when_plain_reply():
+    app = AsyncMock()
+    cfg = DEFAULT_CONFIG.copy()  # action reply, no buttons
+    cfg["reply_message"] = "hi"
+    channel = _mk_channel({"src": cfg})
+    user = User("U2", "x", "X", "T")
+    with patch('bot.get_message_permalink', new=AsyncMock(return_value='')), \
+         patch('bot.flush_replies_cache', new=AsyncMock()), \
+         patch('bot.send_message', new=AsyncMock()) as send, \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
+    assert send.await_count == 1
+    assert run.await_count == 0
+
+
+# ----- action_reply threads only within the same channel -----
+
+@pytest.mark.asyncio
+async def test_action_reply_threads_only_in_same_channel():
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "9"}
+    channel = _mk_channel({"d": DEFAULT_CONFIG.copy()})
+    # Same channel as the original message → threads.
+    await bot.action_reply(app, channel, {}, {"channel_id": "C12345", "message_ts": "7.7"}, "t", None)
+    assert app.client.chat_postMessage.call_args.kwargs.get("thread_ts") == "7.7"
+    # Different conversation (e.g. button on a DM) → must NOT thread.
+    app.client.chat_postMessage.reset_mock()
+    await bot.action_reply(app, channel, {}, {"channel_id": "D999", "message_ts": "7.7"}, "t", None)
+    assert "thread_ts" not in app.client.chat_postMessage.call_args.kwargs

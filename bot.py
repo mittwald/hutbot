@@ -2237,7 +2237,22 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
             ),
             config,
         )
-        await send_message(app, channel, user, reply_message, ts)
+        action = config.get('action', ACTION_REPLY)
+        buttons = config.get('buttons') or []
+        if action == ACTION_REPLY and not buttons:
+            # Classic behavior: a plain threaded reply on the original message.
+            await send_message(app, channel, user, reply_message, ts)
+        else:
+            # Honor the configured action (dm_user/group_dm/post_channel) and/or
+            # buttons. The message context lets the action thread on / reference
+            # the original message and reuse its template variables.
+            await run_action(app, opsgenie_token, channel, config, config_name, context={
+                'user': user,
+                'text': text,
+                'ts': ts,
+                'thread_ts': ts,
+                'channel_id': channel.id,
+            })
         forward_channel_id = config.get('forward_channel')
         if forward_channel_id:
             try:
@@ -2692,7 +2707,12 @@ async def _post_message(app: AsyncApp, channel_id: str, text: str, blocks: list 
 
 async def action_reply(app: AsyncApp, channel: Channel, config: dict, context: dict | None, text: str, blocks: list | None) -> dict | None:
     context = context or {}
-    thread_ts = context.get('thread_ts', '') or context.get('message_ts', '')
+    candidate = context.get('thread_ts', '') or context.get('message_ts', '')
+    # Only thread when the timestamp belongs to the channel we post to. A button
+    # on a message sent to another conversation (DM/mpim/other channel) carries a
+    # message_ts that is invalid as a thread_ts here, and Slack would reject it.
+    ctx_channel = context.get('channel_id')
+    thread_ts = candidate if candidate and (ctx_channel is None or ctx_channel == channel.id) else ""
     return await _post_message(app, channel.id, text, blocks, thread_ts)
 
 async def action_dm_user(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None) -> dict | None:
