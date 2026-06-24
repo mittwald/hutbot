@@ -1853,3 +1853,319 @@ async def test_process_command_disable_replies():
         await process_command(app, "disable", channel, user)
 
     assert channel.configs["default"]["enabled"] is False
+
+
+# ===========================================================================
+# Broader triggers / conditions / actions / buttons
+# ===========================================================================
+
+import asyncio
+import bot
+import outlook
+
+
+def _mk_channel(configs=None):
+    return Channel(id="C12345", name="general", configs=configs if configs is not None else {"default": DEFAULT_CONFIG.copy()})
+
+
+# ----- Setters -----
+
+@pytest.mark.asyncio
+async def test_set_trigger_valid_and_invalid():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('bot.save_configuration'), patch('bot.send_message') as send:
+        await process_command(app, "set trigger schedule", channel, user)
+        assert channel.configs["default"]["trigger"] == "schedule"
+        await process_command(app, "set trigger bogus", channel, user)
+        assert channel.configs["default"]["trigger"] == "schedule"  # unchanged
+        assert "Invalid *trigger*" in send.call_args_list[-1].args[3]
+
+
+@pytest.mark.asyncio
+async def test_set_action_normalizes_dashes():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, "set action dm-user", channel, user)
+        assert channel.configs["default"]["action"] == "dm_user"
+        await process_command(app, "set action group-dm", channel, user)
+        assert channel.configs["default"]["action"] == "group_dm"
+
+
+@pytest.mark.asyncio
+async def test_set_schedule_cron_valid_and_invalid():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('bot.save_configuration'), patch('bot.send_message') as send:
+        await process_command(app, "set cron 0 9 * * 1-5", channel, user)
+        assert channel.configs["default"]["schedule_cron"] == "0 9 * * 1-5"
+        await process_command(app, "set cron not a cron", channel, user)
+        assert channel.configs["default"]["schedule_cron"] == "0 9 * * 1-5"  # unchanged
+        assert "Invalid *cron*" in send.call_args_list[-1].args[3]
+
+
+@pytest.mark.asyncio
+async def test_set_condition_aliases():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, "set condition outlook", channel, user)
+        assert channel.configs["default"]["condition"] == bot.CONDITION_OUTLOOK
+        await process_command(app, "set condition none", channel, user)
+        assert channel.configs["default"]["condition"] == ""
+
+
+@pytest.mark.asyncio
+async def test_add_button_copy_on_write_and_clear():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    default_buttons_before = list(DEFAULT_CONFIG["buttons"])
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, 'add button "Approve" approve-flow', channel, user)
+        assert channel.configs["default"]["buttons"] == [{"label": "Approve", "target": "approve-flow"}]
+        # DEFAULT_CONFIG's list must not have been mutated (copy-on-write).
+        assert DEFAULT_CONFIG["buttons"] == default_buttons_before
+        await process_command(app, "clear buttons", channel, user)
+        assert channel.configs["default"]["buttons"] == []
+
+
+@pytest.mark.asyncio
+async def test_set_button_timeout_minutes_to_seconds():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, "set button-timeout 15", channel, user)
+        assert channel.configs["default"]["button_timeout"] == 900
+        await process_command(app, "set button-timeout-target escalate", channel, user)
+        assert channel.configs["default"]["button_timeout_target"] == "escalate"
+
+
+# ----- Trigger gating -----
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_skips_non_message_trigger():
+    app = AsyncMock()
+    msg_cfg = DEFAULT_CONFIG.copy()
+    sched_cfg = DEFAULT_CONFIG.copy()
+    sched_cfg["trigger"] = "schedule"
+    channel = _mk_channel({"msg": msg_cfg, "sched": sched_cfg})
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('bot.is_work_day', return_value=True), \
+         patch('bot.flush_replies_cache'), \
+         patch('bot.schedule_reply') as mock_schedule:
+        scheduled_messages.clear()
+        await handle_channel_message(app, "token", channel, user, "hello", "1.1")
+        assert mock_schedule.call_count == 1  # only the message-trigger config
+
+
+# ----- Conditions -----
+
+@pytest.mark.asyncio
+async def test_evaluate_condition_none_is_true():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    assert await bot.evaluate_condition(app, config) is True
+
+
+@pytest.mark.asyncio
+async def test_evaluate_condition_outlook_passes_negate():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    config["condition"] = bot.CONDITION_OUTLOOK
+    config["outlook_subject_pattern"] = "standup"
+    config["condition_negate"] = True
+    with patch('bot.outlook.calendar_condition_met', new=AsyncMock(return_value=False)) as met:
+        result = await bot.evaluate_condition(app, config)
+        assert result is False
+        met.assert_awaited_once_with("standup", "", True)
+
+
+@pytest.mark.asyncio
+async def test_outlook_stub_reads_env(monkeypatch):
+    monkeypatch.setenv("HUTBOT_OUTLOOK_STUB_EVENTS", json.dumps([
+        {"subject": "Daily standup", "body": "join here"},
+        {"subject": "1:1", "body": "private"},
+    ]))
+    events = await outlook.find_calendar_events("standup")
+    assert len(events) == 1 and events[0]["subject"] == "Daily standup"
+    assert await outlook.calendar_condition_met("standup") is True
+    assert await outlook.calendar_condition_met("standup", negate=True) is False
+    assert await outlook.calendar_condition_met("no-such-meeting") is False
+    assert await outlook.calendar_condition_met("no-such-meeting", negate=True) is True
+
+
+# ----- Actions -----
+
+def test_build_button_blocks_structure():
+    config = DEFAULT_CONFIG.copy()
+    config["buttons"] = [{"label": "Yes", "target": "yes-flow"}, {"label": "No", "target": "no-flow"}]
+    blocks = bot.build_button_blocks(config, "C12345", "src", "Pick one")
+    assert blocks[0]["type"] == "section"
+    elements = blocks[1]["elements"]
+    assert [e["action_id"] for e in elements] == ["hutbot_btn:0", "hutbot_btn:1"]
+    payload = json.loads(elements[0]["value"])
+    assert payload == {"channel": "C12345", "config": "src", "index": 0, "target": "yes-flow"}
+
+
+@pytest.mark.asyncio
+async def test_run_action_reply_posts_with_buttons():
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "99.1"}
+    config = DEFAULT_CONFIG.copy()
+    config["action"] = bot.ACTION_REPLY
+    config["reply_message"] = "Hi there"
+    config["buttons"] = [{"label": "Ok", "target": "tgt"}]
+    config["button_timeout"] = 0  # no timeout watch
+    channel = _mk_channel({"src": config})
+    posted = await bot.run_action(app, "token", channel, config, "src", context=None)
+    assert posted == {"channel": "C12345", "ts": "99.1"}
+    kwargs = app.client.chat_postMessage.call_args.kwargs
+    assert kwargs["channel"] == "C12345"
+    assert kwargs["text"] == "Hi there"
+    assert kwargs["blocks"][1]["type"] == "actions"
+
+
+@pytest.mark.asyncio
+async def test_action_dm_user_opens_dm_and_posts():
+    app = AsyncMock()
+    app.client.conversations_open.return_value = {"channel": {"id": "D999"}}
+    app.client.chat_postMessage.return_value = {"ts": "1.1"}
+    config = DEFAULT_CONFIG.copy()
+    config["action"] = bot.ACTION_DM_USER
+    config["action_target"] = "<@U777>"
+    channel = _mk_channel({"src": config})
+    with patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U777", "alice", "Alice", "Team"))):
+        posted = await bot.run_action(app, "token", channel, config, "src")
+    app.client.conversations_open.assert_awaited_once_with(users=["U777"])
+    assert app.client.chat_postMessage.call_args.kwargs["channel"] == "D999"
+    assert posted["channel"] == "D999"
+
+
+@pytest.mark.asyncio
+async def test_action_group_dm_resolves_members_and_opens_mpim():
+    app = AsyncMock()
+    app.client.conversations_open.return_value = {"channel": {"id": "G888"}}
+    app.client.chat_postMessage.return_value = {"ts": "2.2"}
+    config = DEFAULT_CONFIG.copy()
+    config["action"] = bot.ACTION_GROUP_DM
+    config["action_target"] = "@oncall"
+    channel = _mk_channel({"src": config})
+    with patch('bot.get_usergroup_by_handle', new=AsyncMock(return_value=Usergroup("S1", "oncall", "On Call"))), \
+         patch('bot.get_usergroup_members', new=AsyncMock(return_value=["U1", "U2", "U3"])):
+        posted = await bot.run_action(app, "token", channel, config, "src")
+    app.client.conversations_open.assert_awaited_once_with(users=["U1", "U2", "U3"])
+    assert app.client.chat_postMessage.call_args.kwargs["channel"] == "G888"
+    assert posted["channel"] == "G888"
+
+
+# ----- Buttons: press + timeout -----
+
+@pytest.mark.asyncio
+async def test_handle_button_press_routes_to_target_and_cancels_timeout():
+    app = AsyncMock()
+    target_config = DEFAULT_CONFIG.copy()
+    target_config["trigger"] = "manual"
+    channel = _mk_channel({"tgt": target_config})
+    body = {
+        "channel": {"id": "C12345"},
+        "container": {"message_ts": "10.1"},
+        "user": {"id": "U9"},
+        "message": {"ts": "10.1"},
+    }
+    action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0, "target": "tgt"})}
+    with patch('bot.cancel_pending_button', new=AsyncMock()) as cancel, \
+         patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot.handle_button_press(app, "token", body, action)
+    cancel.assert_awaited_once_with("C12345", "10.1")
+    assert run.await_count == 1
+    assert run.await_args.args[3] is target_config
+    assert run.await_args.args[4] == "tgt"
+
+
+@pytest.mark.asyncio
+async def test_register_and_cancel_pending_button():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    config["buttons"] = [{"label": "Ok", "target": "tgt"}]
+    config["button_timeout"] = 3600
+    config["button_timeout_target"] = "escalate"
+    bot.pending_buttons.clear()
+    with patch('bot.flush_button_cache', new=AsyncMock()):
+        await bot.register_pending_button(app, "token", "C12345", "10.1", "C12345", "src", config)
+        assert ("C12345", "10.1") in bot.pending_buttons
+        await bot.cancel_pending_button("C12345", "10.1")
+        assert ("C12345", "10.1") not in bot.pending_buttons
+    await asyncio.sleep(0)  # let the cancelled task settle
+
+
+@pytest.mark.asyncio
+async def test_button_timeout_runs_target():
+    app = AsyncMock()
+    escalate = DEFAULT_CONFIG.copy()
+    escalate["trigger"] = "manual"
+    channel = _mk_channel({"escalate": escalate})
+    bot.pending_buttons.clear()
+    with patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.flush_button_cache', new=AsyncMock()), \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot._button_timeout_task(app, "token", "C12345", "10.1", "C12345", "escalate", 0)
+    assert run.await_count == 1
+    assert run.await_args.args[4] == "escalate"
+
+
+# ----- Scheduler -----
+
+@pytest.mark.asyncio
+async def test_scheduler_tick_fires_due_schedule_when_condition_met():
+    app = AsyncMock()
+    sched = DEFAULT_CONFIG.copy()
+    sched["trigger"] = "schedule"
+    sched["schedule_cron"] = "* * * * *"
+    channel = _mk_channel({"sched": sched})
+    bot._scheduler_last_check = datetime.datetime.now(datetime.timezone.utc)
+    with patch.dict('bot.channel_config', {"C12345": {"sched": sched}}, clear=True), \
+         patch('bot._cron_due', return_value=True), \
+         patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.evaluate_condition', new=AsyncMock(return_value=True)), \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot.scheduler_tick(app, "token")
+    assert run.await_count == 1
+    assert run.await_args.args[4] == "sched"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_tick_skips_when_condition_not_met():
+    app = AsyncMock()
+    sched = DEFAULT_CONFIG.copy()
+    sched["trigger"] = "schedule"
+    sched["schedule_cron"] = "* * * * *"
+    channel = _mk_channel({"sched": sched})
+    bot._scheduler_last_check = datetime.datetime.now(datetime.timezone.utc)
+    with patch.dict('bot.channel_config', {"C12345": {"sched": sched}}, clear=True), \
+         patch('bot._cron_due', return_value=True), \
+         patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.evaluate_condition', new=AsyncMock(return_value=False)), \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot.scheduler_tick(app, "token")
+    assert run.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_tick_ignores_message_trigger():
+    app = AsyncMock()
+    msg = DEFAULT_CONFIG.copy()  # trigger defaults to "message"
+    bot._scheduler_last_check = datetime.datetime.now(datetime.timezone.utc)
+    with patch.dict('bot.channel_config', {"C12345": {"default": msg}}, clear=True), \
+         patch('bot._cron_due', return_value=True), \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot.scheduler_tick(app, "token")
+    assert run.await_count == 0

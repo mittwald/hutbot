@@ -26,6 +26,12 @@ from employee_list import (
     normalize_real_name_with_diagraphs,
     normalize_user_name,
 )
+import outlook
+
+try:
+    from croniter import croniter
+except ImportError:  # pragma: no cover - dependency optional at runtime
+    croniter = None
 
 ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
 User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
@@ -39,6 +45,23 @@ DEFAULT_DATE_FORMAT = "%a, %d %b %Y"
 DEFAULT_TIME_FORMAT = "%H:%M"
 DEFAULT_OPSGENIE_PRIORITY = "P4"
 OPSGENIE_PRIORITIES = {"P1", "P2", "P3", "P4", "P5"}
+TRIGGER_MESSAGE = "message"
+TRIGGER_SCHEDULE = "schedule"
+TRIGGER_MANUAL = "manual"
+TRIGGERS = {TRIGGER_MESSAGE, TRIGGER_SCHEDULE, TRIGGER_MANUAL}
+
+CONDITION_NONE = ""
+CONDITION_OUTLOOK = "outlook_calendar"
+CONDITIONS = {CONDITION_NONE, CONDITION_OUTLOOK}
+
+ACTION_REPLY = "reply"
+ACTION_DM_USER = "dm_user"
+ACTION_GROUP_DM = "group_dm"
+ACTION_POST_CHANNEL = "post_channel"
+ACTIONS = {ACTION_REPLY, ACTION_DM_USER, ACTION_GROUP_DM, ACTION_POST_CHANNEL}
+
+BUTTON_ACTION_PREFIX = "hutbot_btn"
+
 DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
@@ -58,11 +81,29 @@ DEFAULT_CONFIG = {
     "pattern": None,
     "pattern_case_sensitive": False,
     "forward_channel": "",
-    "enabled": True
+    "enabled": True,
+    # Trigger: how the rule starts. "message" keeps the classic behavior.
+    "trigger": TRIGGER_MESSAGE,
+    "schedule_cron": "",
+    "schedule_timezone": "",
+    # Condition: optional gate evaluated when a schedule trigger fires.
+    "condition": CONDITION_NONE,
+    "condition_negate": False,
+    "outlook_subject_pattern": "",
+    "outlook_body_pattern": "",
+    # Action: what the rule does when it fires.
+    "action": ACTION_REPLY,
+    "action_target": "",
+    # Buttons: interactive buttons attached to the sent message.
+    "buttons": [],
+    "button_timeout": 0,
+    "button_timeout_target": "",
 }
 
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')
 SCHEDULED_REPLIES_CACHE_FILE = os.environ.get('HUTBOT_SCHEDULED_REPLIES_CACHE_FILE', 'scheduled_replies.json')
+BUTTON_CACHE_FILE = os.environ.get('HUTBOT_BUTTON_CACHE_FILE', 'button_states.json')
+SCHEDULER_INTERVAL = int(os.environ.get('HUTBOT_SCHEDULER_INTERVAL', '30'))
 TEAM_UNKNOWN = '<unknown>'
 
 IGNORED_MESSAGE_SUBTYPES = set(['channel_join',
@@ -79,6 +120,14 @@ IGNORED_MESSAGE_SUBTYPES = set(['channel_join',
 channel_config = {}
 scheduled_messages = {}
 _scheduled_replies_cache: dict[tuple, dict] = {}
+
+# Pending interactive-button messages awaiting a press, keyed by (channel_id, message_ts).
+# Value: {'task': asyncio.Task, 'channel_id', 'message_ts', 'config_name', 'target', 'run_at'}.
+pending_buttons: dict[tuple, dict] = {}
+_button_states_cache: dict[tuple, dict] = {}
+
+# Timestamp of the scheduler's previous tick; cron occurrences in (last tick, now] fire.
+_scheduler_last_check: datetime.datetime | None = None
 
 user_id_cache = {}
 user_email_cache = {}
@@ -183,6 +232,21 @@ SET_FORWARD_CHANNEL_PATTERN = create_command_pattern(r'set\s+forward[_ -]?channe
 CLEAR_FORWARD_CHANNEL_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+forward[_ -]?channel')
 ENABLE_REPLIES_PATTERN = create_command_pattern(r'enable$')
 DISABLE_REPLIES_PATTERN = create_command_pattern(r'disable$')
+SET_TRIGGER_PATTERN = create_command_pattern(r'set\s+trigger\s+(?P<trigger>.+)')
+SET_CRON_PATTERN = create_command_pattern(r'set\s+(schedule[_ -]?)?cron\s+(?P<cron>.+)')
+SET_SCHEDULE_TIMEZONE_PATTERN = create_command_pattern(r'set\s+schedule[_ -]?(time)?zone\s+(?P<tz>.+)')
+SET_CONDITION_PATTERN = create_command_pattern(r'set\s+condition\s+(?P<condition>.+)')
+SET_OUTLOOK_SUBJECT_PATTERN = create_command_pattern(r'set\s+outlook[_ -]?subject\s+(?P<pattern>.+)')
+SET_OUTLOOK_BODY_PATTERN = create_command_pattern(r'set\s+outlook[_ -]?body\s+(?P<pattern>.+)')
+ENABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'enable\s+(condition[_ -]?)?negate')
+DISABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'disable\s+(condition[_ -]?)?negate')
+SET_ACTION_PATTERN = create_command_pattern(r'set\s+action\s+(?P<action>.+)')
+SET_TARGET_PATTERN = create_command_pattern(r'set\s+target\s+(?P<target>.+)')
+ADD_BUTTON_PATTERN = create_command_pattern(r'add\s+button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<target>\S+)')
+CLEAR_BUTTONS_PATTERN = create_command_pattern(r'clear\s+buttons?')
+SET_BUTTON_TIMEOUT_TARGET_PATTERN = create_command_pattern(r'set\s+button[_ -]?timeout[_ -]?target\s+(?P<target>.+)')
+SET_BUTTON_TIMEOUT_PATTERN = create_command_pattern(r'set\s+button[_ -]?timeout\s+(?P<minutes>.+)')
+RUN_PATTERN = re.compile(r'^(run|fire)$', re.IGNORECASE)
 
 def log_debug(channel: Channel | None, *args: object) -> None:
     if channel and any(c.get('debug') for c in channel.configs.values()):
@@ -900,6 +964,36 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
         await set_forward_channel(app, channel, config_name, channel_ref, user, thread_ts)
     elif CLEAR_FORWARD_CHANNEL_PATTERN.match(command_text):
         await clear_forward_channel(app, channel, config_name, user, thread_ts)
+    elif (match := SET_TRIGGER_PATTERN.match(command_text)):
+        await set_trigger(app, channel, config_name, match.group("trigger"), user, thread_ts)
+    elif (match := SET_CRON_PATTERN.match(command_text)):
+        await set_schedule_cron(app, channel, config_name, match.group("cron"), user, thread_ts)
+    elif (match := SET_SCHEDULE_TIMEZONE_PATTERN.match(command_text)):
+        await set_schedule_timezone(app, channel, config_name, match.group("tz"), user, thread_ts)
+    elif (match := SET_CONDITION_PATTERN.match(command_text)):
+        await set_condition(app, channel, config_name, match.group("condition"), user, thread_ts)
+    elif (match := SET_OUTLOOK_SUBJECT_PATTERN.match(command_text)):
+        await set_outlook_pattern(app, channel, config_name, "outlook_subject_pattern", match.group("pattern"), user, thread_ts)
+    elif (match := SET_OUTLOOK_BODY_PATTERN.match(command_text)):
+        await set_outlook_pattern(app, channel, config_name, "outlook_body_pattern", match.group("pattern"), user, thread_ts)
+    elif ENABLE_CONDITION_NEGATE_PATTERN.match(command_text):
+        await set_condition_negate(app, channel, config_name, True, user, thread_ts)
+    elif DISABLE_CONDITION_NEGATE_PATTERN.match(command_text):
+        await set_condition_negate(app, channel, config_name, False, user, thread_ts)
+    elif (match := SET_ACTION_PATTERN.match(command_text)):
+        await set_action(app, channel, config_name, match.group("action"), user, thread_ts)
+    elif (match := SET_TARGET_PATTERN.match(command_text)):
+        await set_action_target(app, channel, config_name, match.group("target"), user, thread_ts)
+    elif (match := ADD_BUTTON_PATTERN.match(command_text)):
+        await add_button(app, channel, config_name, match.group("label"), match.group("target"), user, thread_ts)
+    elif CLEAR_BUTTONS_PATTERN.match(command_text):
+        await clear_buttons(app, channel, config_name, user, thread_ts)
+    elif (match := SET_BUTTON_TIMEOUT_TARGET_PATTERN.match(command_text)):
+        await set_button_timeout_target(app, channel, config_name, match.group("target"), user, thread_ts)
+    elif (match := SET_BUTTON_TIMEOUT_PATTERN.match(command_text)):
+        await set_button_timeout(app, channel, config_name, match.group("minutes"), user, thread_ts)
+    elif RUN_PATTERN.match(command_text):
+        await run_config_now(app, opsgenie_token, channel, config_name, user, thread_ts)
     elif ENABLE_REPLIES_PATTERN.match(command_text):
         await set_replies_enabled(app, channel, config_name, True, user, thread_ts)
     elif DISABLE_REPLIES_PATTERN.match(command_text):
@@ -1284,6 +1378,150 @@ async def delete_config(app: AsyncApp, channel: Channel, config_name: str, user:
     await save_configuration()
     await send_message(app, channel, user, f"Configuration `{config_name}` has been deleted.", thread_ts)
 
+# ----- Setters for trigger / condition / action / button fields -----
+
+def _ensure_config(channel: Channel, config_name: str) -> dict:
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    return channel.configs[config_name]
+
+async def set_trigger(app: AsyncApp, channel: Channel, config_name: str, value: str, user: User, thread_ts: str = "") -> None:
+    value = strip_quotes(value).strip().lower()
+    value = {'msg': TRIGGER_MESSAGE, 'cron': TRIGGER_SCHEDULE, 'scheduled': TRIGGER_SCHEDULE}.get(value, value)
+    if value not in TRIGGERS:
+        supported = ", ".join(f"`{t}`" for t in sorted(TRIGGERS))
+        await send_message(app, channel, user, f"Invalid *trigger*. Must be one of {supported}.", thread_ts)
+        return
+    _ensure_config(channel, config_name)['trigger'] = value
+    await save_configuration()
+    await send_message(app, channel, user, f"*Trigger* set to `{value}` in configuration `{config_name}`.", thread_ts)
+
+async def set_schedule_cron(app: AsyncApp, channel: Channel, config_name: str, cron_expr: str, user: User, thread_ts: str = "") -> None:
+    cron_expr = strip_quotes(cron_expr).strip()
+    if not cron_expr:
+        await send_message(app, channel, user, "Invalid *cron* expression. Must be non-empty.", thread_ts)
+        return
+    if croniter is not None and not croniter.is_valid(cron_expr):
+        await send_message(app, channel, user, f"Invalid *cron* expression: `{cron_expr}`. Use 5-field cron, e.g. `0 9 * * 1-5`.", thread_ts)
+        return
+    _ensure_config(channel, config_name)['schedule_cron'] = cron_expr
+    await save_configuration()
+    note = "" if croniter is not None else " (not validated — `croniter` not installed)"
+    await send_message(app, channel, user, f"*Cron schedule* set to `{cron_expr}` in configuration `{config_name}`{note}.", thread_ts)
+
+async def set_schedule_timezone(app: AsyncApp, channel: Channel, config_name: str, tz_name: str, user: User, thread_ts: str = "") -> None:
+    tz_name = strip_quotes(tz_name).strip()
+    if tz_name:
+        try:
+            ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            await send_message(app, channel, user, f"Unknown timezone: `{tz_name}`. Use an IANA name, e.g. `Europe/Berlin`.", thread_ts)
+            return
+    _ensure_config(channel, config_name)['schedule_timezone'] = tz_name
+    await save_configuration()
+    await send_message(app, channel, user, f"*Schedule timezone* set to `{tz_name or '<server local>'}` in configuration `{config_name}`.", thread_ts)
+
+async def set_condition(app: AsyncApp, channel: Channel, config_name: str, value: str, user: User, thread_ts: str = "") -> None:
+    value = strip_quotes(value).strip().lower()
+    value = {'none': CONDITION_NONE, 'off': CONDITION_NONE, '': CONDITION_NONE,
+             'outlook': CONDITION_OUTLOOK, 'calendar': CONDITION_OUTLOOK, 'outlook_calendar': CONDITION_OUTLOOK}.get(value, value)
+    if value not in CONDITIONS:
+        await send_message(app, channel, user, "Invalid *condition*. Must be `none` or `outlook`.", thread_ts)
+        return
+    _ensure_config(channel, config_name)['condition'] = value
+    await save_configuration()
+    label = value or 'none'
+    await send_message(app, channel, user, f"*Condition* set to `{label}` in configuration `{config_name}`.", thread_ts)
+
+async def set_outlook_pattern(app: AsyncApp, channel: Channel, config_name: str, field: str, pattern_str: str, user: User, thread_ts: str = "") -> None:
+    pattern_str = strip_quotes(pattern_str)
+    try:
+        re.compile(pattern_str)
+    except re.error as e:
+        await send_message(app, channel, user, f"Invalid pattern: `{e}`", thread_ts)
+        return
+    _ensure_config(channel, config_name)[field] = pattern_str
+    await save_configuration()
+    which = "subject" if field == "outlook_subject_pattern" else "body"
+    await send_message(app, channel, user, f"*Outlook {which} pattern* set to `{pattern_str}` in configuration `{config_name}`.", thread_ts)
+
+async def set_condition_negate(app: AsyncApp, channel: Channel, config_name: str, enabled: bool, user: User, thread_ts: str = "") -> None:
+    _ensure_config(channel, config_name)['condition_negate'] = enabled
+    await save_configuration()
+    await send_message(app, channel, user, f"*Condition negation* {'*enabled*' if enabled else '*disabled*'} in configuration `{config_name}`.", thread_ts)
+
+async def set_action(app: AsyncApp, channel: Channel, config_name: str, value: str, user: User, thread_ts: str = "") -> None:
+    value = strip_quotes(value).strip().lower().replace('-', '_')
+    if value not in ACTIONS:
+        supported = ", ".join(f"`{a}`" for a in sorted(ACTIONS))
+        await send_message(app, channel, user, f"Invalid *action*. Must be one of {supported}.", thread_ts)
+        return
+    _ensure_config(channel, config_name)['action'] = value
+    await save_configuration()
+    await send_message(app, channel, user, f"*Action* set to `{value}` in configuration `{config_name}`.", thread_ts)
+
+async def set_action_target(app: AsyncApp, channel: Channel, config_name: str, target: str, user: User, thread_ts: str = "") -> None:
+    target = strip_quotes(target).strip()
+    if not target:
+        await send_message(app, channel, user, "Invalid *target*. Must be non-empty.", thread_ts)
+        return
+    _ensure_config(channel, config_name)['action_target'] = target
+    await save_configuration()
+    await send_message(app, channel, user, f"*Action target* set to `{target}` in configuration `{config_name}`.", thread_ts)
+
+async def add_button(app: AsyncApp, channel: Channel, config_name: str, label: str, target: str, user: User, thread_ts: str = "") -> None:
+    label = strip_quotes(label).strip()
+    target = strip_quotes(target).strip()
+    if not label:
+        await send_message(app, channel, user, "Invalid *button label*. Must be non-empty.", thread_ts)
+        return
+    if not target:
+        await send_message(app, channel, user, "Invalid *button target*. Must reference a configuration name.", thread_ts)
+        return
+    config = _ensure_config(channel, config_name)
+    # Copy-on-write so we never mutate a shared default list.
+    config['buttons'] = list(config.get('buttons') or []) + [{'label': label, 'target': target}]
+    await save_configuration()
+    warning = "" if target in channel.configs else f" :warning: (configuration `{target}` does not exist yet)"
+    await send_message(app, channel, user, f"Added button `{label}` → `{target}` in configuration `{config_name}`{warning}.", thread_ts)
+
+async def clear_buttons(app: AsyncApp, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> None:
+    _ensure_config(channel, config_name)['buttons'] = []
+    await save_configuration()
+    await send_message(app, channel, user, f"Cleared *buttons* in configuration `{config_name}`.", thread_ts)
+
+async def set_button_timeout(app: AsyncApp, channel: Channel, config_name: str, minutes_str: str, user: User, thread_ts: str = "") -> None:
+    try:
+        minutes = int(strip_quotes(minutes_str).strip())
+    except ValueError:
+        await send_message(app, channel, user, "Invalid *button timeout*. Must be a number of minutes between 0 and 1440.", thread_ts)
+        return
+    if minutes < 0 or minutes > 1440:
+        await send_message(app, channel, user, "Invalid *button timeout*. Must be between 0 and 1440 minutes.", thread_ts)
+        return
+    _ensure_config(channel, config_name)['button_timeout'] = minutes * 60
+    await save_configuration()
+    label = f"`{minutes}` minutes" if minutes else "disabled"
+    await send_message(app, channel, user, f"*Button timeout* set to {label} in configuration `{config_name}`.", thread_ts)
+
+async def set_button_timeout_target(app: AsyncApp, channel: Channel, config_name: str, target: str, user: User, thread_ts: str = "") -> None:
+    target = strip_quotes(target).strip()
+    if not target:
+        await send_message(app, channel, user, "Invalid *button timeout target*. Must reference a configuration name.", thread_ts)
+        return
+    _ensure_config(channel, config_name)['button_timeout_target'] = target
+    await save_configuration()
+    warning = "" if target in channel.configs else f" :warning: (configuration `{target}` does not exist yet)"
+    await send_message(app, channel, user, f"*Button timeout target* set to `{target}` in configuration `{config_name}`{warning}.", thread_ts)
+
+async def run_config_now(app: AsyncApp, opsgenie_token: str, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> None:
+    config = channel.configs.get(config_name)
+    if not config:
+        await send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
+        return
+    await send_message(app, channel, user, f"Running configuration `{config_name}` now…", thread_ts)
+    await run_action(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel.id, 'user': user})
+
 async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]:
     # Regular expression to find @username patterns
     matches = MENTION_PATTERN.findall(message)
@@ -1456,8 +1694,11 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
         datetime_locale = config.get('datetime_locale') or '<default>'
         opsgenie_priority = get_opsgenie_priority(config)
         replies_enabled = config.get('enabled', True)
+        trigger = config.get('trigger', TRIGGER_MESSAGE)
+        action = config.get('action', ACTION_REPLY)
 
         rows = [
+            ("Trigger",            trigger),
             ("OpsGenie",           ('enabled' if opsgenie_enabled else 'disabled') + ('' if opsgenie_configured else ' (not configured)')),
             ("OpsGenie schedule",  opsgenie_schedule_name),
             ("OpsGenie priority",  opsgenie_priority),
@@ -1473,6 +1714,27 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
             ("Work hours",         f"{hours[0]} - {hours[1]}" if len(hours) == 2 else 'all day'),
             ("Pattern",            f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<None>'),
         ]
+
+        if trigger == TRIGGER_SCHEDULE:
+            rows.append(("Cron", config.get('schedule_cron') or '<None>'))
+            rows.append(("Schedule timezone", config.get('schedule_timezone') or '<server local>'))
+        condition = config.get('condition') or ''
+        if condition:
+            negate = ' (negated)' if config.get('condition_negate') else ''
+            rows.append(("Condition", f"{condition}{negate}"))
+            if config.get('outlook_subject_pattern'):
+                rows.append(("Outlook subject", config.get('outlook_subject_pattern')))
+            if config.get('outlook_body_pattern'):
+                rows.append(("Outlook body", config.get('outlook_body_pattern')))
+        if action != ACTION_REPLY:
+            rows.append(("Action", action))
+            rows.append(("Action target", config.get('action_target') or '<None>'))
+        buttons = config.get('buttons') or []
+        if buttons:
+            rows.append(("Buttons", [f"{b.get('label')} → {b.get('target')}" for b in buttons]))
+            button_timeout_minutes = (config.get('button_timeout') or 0) // 60
+            if button_timeout_minutes:
+                rows.append(("Button timeout", f"{button_timeout_minutes} minutes → {config.get('button_timeout_target') or '<None>'}"))
         key_width = max(len(label) for label, _ in rows)
         config_block = "\n".join(f"{label:<{key_width}}  {format_table_value(value, key_width)}" for label, value in rows)
         forward_channel_line = f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}"
@@ -1572,6 +1834,21 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ("/hutbot [config] set message \"<reply message>\"", "Set reminder message."),
         ("/hutbot [config] set forward-channel <#channel>", "Forward replies to another channel."),
         ("/hutbot [config] clear forward-channel", "Remove the forward channel."),
+        ("/hutbot [config] set trigger <message|schedule|manual>", "Set how the rule starts."),
+        ("/hutbot [config] set cron <expr>", "Set the cron schedule, e.g. 0 9 * * 1-5."),
+        ("/hutbot [config] set schedule-timezone <tz>", "Set the cron timezone (IANA name)."),
+        ("/hutbot [config] set condition <none|outlook>", "Gate a schedule on a condition."),
+        ("/hutbot [config] set outlook-subject <regex>", "Match Outlook event subject (stub)."),
+        ("/hutbot [config] set outlook-body <regex>", "Match Outlook event body (stub)."),
+        ("/hutbot [config] enable negate", "Invert the condition (e.g. no matching event)."),
+        ("/hutbot [config] disable negate", "Stop inverting the condition."),
+        ("/hutbot [config] set action <reply|dm-user|group-dm|post-channel>", "Set what the rule does."),
+        ("/hutbot [config] set target <@user|@group|#channel>", "Set the action recipient."),
+        ("/hutbot [config] add button \"<label>\" <target-config>", "Add a button that runs <target-config>."),
+        ("/hutbot [config] clear buttons", "Remove all buttons."),
+        ("/hutbot [config] set button-timeout <minutes>", "Run a target if no button is pressed in time."),
+        ("/hutbot [config] set button-timeout-target <config>", "Config to run on button timeout."),
+        ("/hutbot [config] run", "Run this configuration's action now."),
         ("/hutbot [config] test", "Preview configured reply."),
         ("@Hutbot [config] test <message>", "Preview reply with <message> as {{message}}."),
         ("/hutbot delete config <name>", "Delete a configuration."),
@@ -2212,6 +2489,9 @@ async def handle_thread_response(app: AsyncApp, channel: Channel, reply_user: Us
 
 async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel: Channel, user: User, text: str, ts: str, actor_is_bot: bool = False):
     for config_name, config in channel.configs.items():
+        if config.get('trigger', TRIGGER_MESSAGE) != TRIGGER_MESSAGE:
+            # Schedule/manual rules are driven by the scheduler or buttons, not messages.
+            continue
         if not config.get('enabled', True):
             log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because replies are disabled.")
             continue
@@ -2306,6 +2586,389 @@ async def handle_command_event(app: AsyncApp, command: dict, opsgenie_token: str
     user = await get_user_by_id(app, user_id)
     await process_command(app, text, channel, user, opsgenie_token=opsgenie_token)
 
+# ---------------------------------------------------------------------------
+# Trigger / condition / action engine
+#
+# A "rule" is a named channel config. Its `trigger` decides how it starts
+# (message | schedule | manual), its `condition` optionally gates it, and its
+# `action` decides what it does. Buttons and button-timeouts reference other
+# named configs (trigger == manual) in the same channel as their targets.
+# ---------------------------------------------------------------------------
+
+def parse_channel_ref(channel_ref: str) -> str | None:
+    """Resolve a `#channel` mention or raw `Cxxxx` id to a channel id."""
+    for match in ID_PATTERN.finditer(channel_ref):
+        ident = match.group(1)
+        if ident and ident[0] == '#':
+            return ident[1:]
+    stripped = channel_ref.strip()
+    if re.match(r'^[CGD][A-Z0-9]+$', stripped):
+        return stripped
+    return None
+
+async def resolve_user_target(app: AsyncApp, target: str) -> User | None:
+    target = target.strip()
+    if not target:
+        return None
+    for match in ID_PATTERN.finditer(target):
+        ident = match.group(1)
+        if ident and ident[0] == '@':
+            return await get_user_by_id(app, ident[1:])
+    if re.match(r'^[UW][A-Z0-9]+$', target):
+        return await get_user_by_id(app, target)
+    if target.startswith('@'):
+        return await get_user_by_name(app, normalize_id(target[1:]))
+    if '@' in target:
+        return await get_user_by_email(app, target)
+    return await get_user_by_name(app, normalize_id(target))
+
+async def resolve_usergroup_target(app: AsyncApp, target: str) -> Usergroup | None:
+    target = target.strip()
+    if not target:
+        return None
+    for match in re.finditer(r'<!subteam\^([A-Z0-9]+)', target):
+        return await get_usergroup_by_id(app, match.group(1))
+    if re.match(r'^S[A-Z0-9]+$', target):
+        return await get_usergroup_by_id(app, target)
+    handle = target[1:] if target.startswith('@') else target
+    return await get_usergroup_by_handle(app, handle)
+
+async def get_usergroup_members(app: AsyncApp, usergroup_id: str) -> list[str]:
+    try:
+        response = await app.client.usergroups_users_list(usergroup=usergroup_id)
+        return response.get('users', [])
+    except SlackApiError as e:
+        log_error(f"Failed to fetch members of usergroup {usergroup_id}:", e)
+        return []
+
+def build_button_blocks(config: dict, def_channel_id: str, config_name: str, text: str) -> list | None:
+    buttons = config.get('buttons') or []
+    if not buttons:
+        return None
+    elements = []
+    for i, button in enumerate(buttons):
+        label = (button.get('label') or f'Button {i + 1}')[:75]
+        target = button.get('target') or ''
+        value = json.dumps({"channel": def_channel_id, "config": config_name, "index": i, "target": target})
+        elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": label, "emoji": True},
+            "action_id": f"{BUTTON_ACTION_PREFIX}:{i}",
+            "value": value[:2000],
+        })
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {"type": "actions", "block_id": f"{BUTTON_ACTION_PREFIX}:{config_name}", "elements": elements},
+    ]
+
+async def render_action_text(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None) -> str:
+    template = config.get('reply_message') or ''
+    context = context or {}
+    user = context.get('user')
+    if user is None:
+        user = User(id=bot_user_id or '', name='hutbot', real_name='Hutbot', team=TEAM_UNKNOWN)
+    text = context.get('text', '')
+    ts = context.get('ts', '')
+    permalink = await get_message_permalink(app, channel, ts) if ts else ""
+    template_variables = find_template_variables(template)
+    variables = await build_reply_template_variables(
+        app, opsgenie_token, channel, config, config_name, user, text, ts, permalink,
+        include_opsgenie=bool(OPSGENIE_TEMPLATE_VARIABLES.intersection(template_variables)),
+    )
+    return render_reply_message_template(template, variables, config)
+
+async def _post_message(app: AsyncApp, channel_id: str, text: str, blocks: list | None, thread_ts: str = "") -> dict | None:
+    kwargs = {"channel": channel_id, "text": text, "mrkdwn": True}
+    if blocks:
+        kwargs["blocks"] = blocks
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
+    try:
+        response = await app.client.chat_postMessage(**kwargs)
+        return {"channel": channel_id, "ts": response.get("ts")}
+    except SlackApiError as e:
+        log_error(f"Failed to post message to {channel_id}:", e)
+        return None
+
+async def action_reply(app: AsyncApp, channel: Channel, config: dict, context: dict | None, text: str, blocks: list | None) -> dict | None:
+    context = context or {}
+    thread_ts = context.get('thread_ts', '') or context.get('message_ts', '')
+    return await _post_message(app, channel.id, text, blocks, thread_ts)
+
+async def action_dm_user(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None) -> dict | None:
+    target = (config.get('action_target') or '').strip()
+    user = await resolve_user_target(app, target)
+    if not user or not user.id:
+        log_error(f"Action dm_user: cannot resolve user target '{target}'.")
+        return None
+    try:
+        opened = await app.client.conversations_open(users=[user.id])
+        dm_id = opened['channel']['id']
+    except SlackApiError as e:
+        log_error(f"Action dm_user: failed to open DM with {target}:", e)
+        return None
+    return await _post_message(app, dm_id, text, blocks)
+
+async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None) -> dict | None:
+    target = (config.get('action_target') or '').strip()
+    usergroup = await resolve_usergroup_target(app, target)
+    if not usergroup or not usergroup.id:
+        log_error(f"Action group_dm: cannot resolve usergroup '{target}'.")
+        return None
+    members = await get_usergroup_members(app, usergroup.id)
+    if not members:
+        log_error(f"Action group_dm: usergroup '{target}' has no members.")
+        return None
+    # Slack multi-person DMs allow at most 8 members besides the bot.
+    if len(members) > 8:
+        log_warning(f"Action group_dm: usergroup '{target}' has {len(members)} members; using first 8 (Slack mpim limit).")
+        members = members[:8]
+    try:
+        opened = await app.client.conversations_open(users=members)
+        mpim_id = opened['channel']['id']
+    except SlackApiError as e:
+        log_error(f"Action group_dm: failed to open group DM for '{target}':", e)
+        return None
+    return await _post_message(app, mpim_id, text, blocks)
+
+async def action_post_channel(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None) -> dict | None:
+    target = (config.get('action_target') or '').strip() or (config.get('forward_channel') or '')
+    channel_id = parse_channel_ref(target)
+    if not channel_id:
+        log_error(f"Action post_channel: invalid channel target '{target}'.")
+        return None
+    return await _post_message(app, channel_id, text, blocks)
+
+async def run_action(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None, _depth: int = 0) -> dict | None:
+    if _depth > 5:
+        log_warning(f"Action chain too deep at config '{config_name}'; aborting to avoid loops.")
+        return None
+    action = config.get('action', ACTION_REPLY)
+    text = await render_action_text(app, opsgenie_token, channel, config, config_name, context)
+    blocks = build_button_blocks(config, channel.id, config_name, text)
+    log(f"Running action '{action}' for config '{config_name}' in #{channel.name}.")
+    if action == ACTION_REPLY:
+        posted = await action_reply(app, channel, config, context, text, blocks)
+    elif action == ACTION_DM_USER:
+        posted = await action_dm_user(app, channel, config, text, blocks)
+    elif action == ACTION_GROUP_DM:
+        posted = await action_group_dm(app, channel, config, text, blocks)
+    elif action == ACTION_POST_CHANNEL:
+        posted = await action_post_channel(app, channel, config, text, blocks)
+    else:
+        log_error(f"Unknown action '{action}' for config '{config_name}'.")
+        return None
+    if posted and posted.get('ts') and config.get('buttons'):
+        await register_pending_button(app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config)
+    return posted
+
+async def evaluate_condition(app: AsyncApp, config: dict) -> bool:
+    condition = config.get('condition', CONDITION_NONE)
+    if not condition:
+        return True
+    if condition == CONDITION_OUTLOOK:
+        return await outlook.calendar_condition_met(
+            config.get('outlook_subject_pattern', ''),
+            config.get('outlook_body_pattern', ''),
+            bool(config.get('condition_negate', False)),
+        )
+    log_warning(f"Unknown condition '{condition}'; treating as met.")
+    return True
+
+# ----- Button-press timeout tracking + persistence (mirrors scheduled replies) -----
+
+async def load_button_cache() -> None:
+    global _button_states_cache
+    try:
+        async with aiofiles.open(BUTTON_CACHE_FILE, 'r') as f:
+            entries = json.loads(await f.read())
+            _button_states_cache = {
+                (e['posted_channel_id'], e['message_ts']): e for e in entries
+            }
+            log(f"Loaded {len(_button_states_cache)} pending button states from cache.")
+    except FileNotFoundError:
+        _button_states_cache = {}
+    except Exception as e:
+        log_error("Failed to load button states cache:", e)
+        _button_states_cache = {}
+
+async def flush_button_cache() -> None:
+    try:
+        async with aiofiles.open(BUTTON_CACHE_FILE, 'w') as f:
+            await f.write(json.dumps(list(_button_states_cache.values()), indent=2))
+    except Exception as e:
+        log_error("Failed to flush button states cache:", e)
+
+async def register_pending_button(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, def_channel_id: str, config_name: str, config: dict) -> None:
+    timeout = config.get('button_timeout') or 0
+    target = config.get('button_timeout_target') or ''
+    if not message_ts or not posted_channel_id or timeout <= 0 or not target:
+        return
+    key = (posted_channel_id, message_ts)
+    run_at = (datetime.datetime.now() + datetime.timedelta(seconds=timeout)).isoformat()
+    entry = {
+        'posted_channel_id': posted_channel_id,
+        'message_ts': message_ts,
+        'def_channel_id': def_channel_id,
+        'config_name': config_name,
+        'target': target,
+        'run_at': run_at,
+    }
+    task = asyncio.create_task(_button_timeout_task(app, opsgenie_token, posted_channel_id, message_ts, def_channel_id, target, timeout))
+    pending_buttons[key] = {'task': task, **entry}
+    _button_states_cache[key] = entry
+    await flush_button_cache()
+
+async def _button_timeout_task(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, def_channel_id: str, target: str, timeout: float) -> None:
+    key = (posted_channel_id, message_ts)
+    try:
+        await asyncio.sleep(timeout)
+        channel = await get_channel_by_id(app, def_channel_id)
+        target_config = channel.configs.get(target)
+        if target_config:
+            log(f"Button on message {message_ts} not pressed within timeout; running '{target}' in #{channel.name}.")
+            await run_action(app, opsgenie_token, channel, target_config, target, context={'channel_id': posted_channel_id})
+        else:
+            log_warning(f"Button timeout target '{target}' not found in #{channel.name}.")
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        log_error(f"Button timeout task failed for message {message_ts}:", e)
+    finally:
+        pending_buttons.pop(key, None)
+        _button_states_cache.pop(key, None)
+        await flush_button_cache()
+
+async def cancel_pending_button(posted_channel_id: str, message_ts: str) -> None:
+    key = (posted_channel_id, message_ts)
+    entry = pending_buttons.pop(key, None)
+    _button_states_cache.pop(key, None)
+    if entry:
+        entry['task'].cancel()
+        await flush_button_cache()
+
+async def restore_pending_buttons(app: AsyncApp, opsgenie_token: str) -> None:
+    entries = list(_button_states_cache.items())
+    invalid_keys = []
+    restored = 0
+    log(f"Restoring {len(entries)} pending button timeouts from cache...")
+    for key, entry in entries:
+        def_channel_id = entry.get('def_channel_id')
+        target = entry.get('target')
+        if not def_channel_id or def_channel_id not in channel_config or target not in channel_config.get(def_channel_id, {}):
+            log_warning(f"Skipping cached button state for message {entry.get('message_ts')}: target '{target}' no longer configured.")
+            invalid_keys.append(key)
+            continue
+        run_at = datetime.datetime.fromisoformat(entry['run_at'])
+        remaining = max(0.0, (run_at - datetime.datetime.now()).total_seconds())
+        task = asyncio.create_task(_button_timeout_task(app, opsgenie_token, entry['posted_channel_id'], entry['message_ts'], def_channel_id, target, remaining))
+        pending_buttons[key] = {'task': task, **entry}
+        restored += 1
+    for key in invalid_keys:
+        _button_states_cache.pop(key, None)
+    if invalid_keys:
+        await flush_button_cache()
+    log(f"Restored {restored} pending button timeouts.")
+
+# ----- Scheduler (cron triggers) -----
+
+def _resolve_schedule_timezone(config: dict):
+    tz_name = config.get('schedule_timezone') or config.get('datetime_timezone') or ''
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            log_warning(f"Unknown schedule timezone '{tz_name}'; using server local time.")
+    return None
+
+def _cron_due(cron_expr: str, config: dict, last: datetime.datetime, now: datetime.datetime) -> bool:
+    tz = _resolve_schedule_timezone(config)
+    base = last.astimezone(tz) if tz else last.astimezone()
+    current = now.astimezone(tz) if tz else now.astimezone()
+    try:
+        nxt = croniter(cron_expr, base).get_next(datetime.datetime)
+    except (ValueError, KeyError) as e:
+        log_warning(f"Invalid cron expression '{cron_expr}': {e}")
+        return False
+    return nxt <= current
+
+async def run_scheduler(app: AsyncApp, opsgenie_token: str) -> None:
+    global _scheduler_last_check
+    if croniter is None:
+        log_warning("croniter is not installed; scheduled triggers are disabled.")
+        return
+    _scheduler_last_check = datetime.datetime.now(datetime.timezone.utc)
+    log(f"Scheduler started (interval {SCHEDULER_INTERVAL}s).")
+    while True:
+        await asyncio.sleep(SCHEDULER_INTERVAL)
+        try:
+            await scheduler_tick(app, opsgenie_token)
+        except Exception as e:
+            log_error("Scheduler tick failed:", e)
+
+async def scheduler_tick(app: AsyncApp, opsgenie_token: str) -> None:
+    global _scheduler_last_check
+    now = datetime.datetime.now(datetime.timezone.utc)
+    last = _scheduler_last_check or now
+    _scheduler_last_check = now
+    for channel_id, configs in list(channel_config.items()):
+        for config_name, config in list(configs.items()):
+            if config.get('trigger') != TRIGGER_SCHEDULE:
+                continue
+            if not config.get('enabled', True):
+                continue
+            cron_expr = config.get('schedule_cron') or ''
+            if not cron_expr:
+                continue
+            if croniter is not None and not croniter.is_valid(cron_expr):
+                log_warning(f"Schedule '{config_name}' in channel {channel_id} has invalid cron '{cron_expr}'.")
+                continue
+            if not _cron_due(cron_expr, config, last, now):
+                continue
+            channel = await get_channel_by_id(app, channel_id)
+            if not await evaluate_condition(app, config):
+                log(f"Schedule '{config_name}' in #{channel.name} fired but condition not met.")
+                continue
+            log(f"Schedule '{config_name}' in #{channel.name} firing.")
+            try:
+                await run_action(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel_id})
+            except Exception as e:
+                log_error(f"Schedule '{config_name}' action failed:", e)
+
+async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, action: dict) -> None:
+    container = body.get('container', {}) or {}
+    message = body.get('message', {}) or {}
+    posted_channel_id = (body.get('channel', {}) or {}).get('id') or container.get('channel_id', '')
+    message_ts = container.get('message_ts') or message.get('ts', '')
+    await cancel_pending_button(posted_channel_id, message_ts)
+
+    payload = {}
+    raw_value = action.get('value', '')
+    if raw_value:
+        try:
+            payload = json.loads(raw_value)
+        except json.JSONDecodeError:
+            payload = {}
+    def_channel_id = payload.get('channel') or posted_channel_id
+    target = payload.get('target') or ''
+    presser_id = (body.get('user', {}) or {}).get('id', '')
+    presser = await get_user_by_id(app, presser_id) if presser_id else None
+    presser_name = presser.name if presser else '?'
+    if not target:
+        log_warning(f"Button pressed by @{presser_name} with no target; ignoring.")
+        return
+    channel = await get_channel_by_id(app, def_channel_id)
+    target_config = channel.configs.get(target)
+    if not target_config:
+        log_warning(f"Button target config '{target}' not found in #{channel.name}.")
+        return
+    log(f"Button pressed by @{presser_name}; running '{target}' in #{channel.name}.")
+    await run_action(app, opsgenie_token, channel, target_config, target, context={
+        'channel_id': posted_channel_id,
+        'user': presser,
+        'message_ts': message_ts,
+    })
+
 def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
 
     @app.event("message")
@@ -2320,6 +2983,11 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
     async def handle_command(ack, body, logger):
         await ack()
         await handle_command_event(app, body, opsgenie_token)
+
+    @app.action(re.compile(rf"^{BUTTON_ACTION_PREFIX}:"))
+    async def handle_button_action(ack, body, action, logger):
+        await ack()
+        await handle_button_press(app, opsgenie_token, body, action)
 
 async def restore_scheduled_replies(app: AsyncApp, opsgenie_token: str) -> None:
     entries = list(_scheduled_replies_cache.items())
@@ -2377,6 +3045,7 @@ async def main() -> None:
 
     handler = None
     heartbeat_task = None
+    scheduler_task = None
     try:
         app = AsyncApp(token=slack_bot_token)
         await load_configuration(app)
@@ -2385,12 +3054,15 @@ async def main() -> None:
         await update_user_cache(app)
         await load_replies_cache()
         await restore_scheduled_replies(app, opsgenie_token)
+        await load_button_cache()
+        await restore_pending_buttons(app, opsgenie_token)
         register_app_handlers(app, opsgenie_token=opsgenie_token)
         handler = AsyncSocketModeHandler(app, slack_app_token)
         if opsgenie_token and opsgenie_heartbeat_name:
             global opsgenie_configured
             opsgenie_configured = True
             heartbeat_task = asyncio.create_task(send_heartbeat(opsgenie_token, opsgenie_heartbeat_name))
+        scheduler_task = asyncio.create_task(run_scheduler(app, opsgenie_token))
         await handler.start_async()
     except asyncio.CancelledError:
         pass
@@ -2403,12 +3075,13 @@ async def main() -> None:
         try:
             if handler:
                 await handler.close_async()
-            if heartbeat_task:
-                heartbeat_task.cancel()
-                try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
-                    pass
+            for background_task in (heartbeat_task, scheduler_task):
+                if background_task:
+                    background_task.cancel()
+                    try:
+                        await background_task
+                    except asyncio.CancelledError:
+                        pass
         except BaseException as e:
             pass
 

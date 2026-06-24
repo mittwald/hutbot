@@ -31,6 +31,10 @@ spec:
               value: {{ printf "%s/%s" .Values.persistence.mountPath "bot.json" }}
             - name: HUTBOT_EMPLOYEE_CACHE_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "employees.json" }}
+            - name: HUTBOT_SCHEDULED_REPLIES_CACHE_FILE
+              value: {{ printf "%s/%s" .Values.persistence.mountPath "scheduled_replies.json" }}
+            - name: HUTBOT_BUTTON_CACHE_FILE
+              value: {{ printf "%s/%s" .Values.persistence.mountPath "button_states.json" }}
           volumeMounts:
             - name: config
               mountPath: {{ .Values.persistence.mountPath }}

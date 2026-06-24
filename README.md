@@ -28,6 +28,42 @@ Opsgenie alert priority defaults to `P4` and can be configured per channel confi
 /hutbot [config] set opsgenie-priority <P1|P2|P3|P4|P5>
 ```
 
+## Triggers, conditions, and actions
+
+Beyond the classic "reply if a message goes unanswered" behavior, each named config is a **rule**
+with a `trigger`, an optional `condition`, and an `action`. The trigger defaults to `message`, so
+existing configs keep working unchanged.
+
+- **Triggers** (`/hutbot [config] set trigger <message|schedule|manual>`)
+  - `message` — the classic behavior (matches channel messages by pattern/teams/hours).
+  - `schedule` — fires on a cron schedule. Set it with `set cron "<expr>"` (5-field cron, e.g.
+    `0 9 * * 1-5`) and optionally `set schedule-timezone <IANA tz>`.
+  - `manual` — never fires on its own; used as the target of a button or a button timeout.
+
+- **Conditions** (`/hutbot [config] set condition <none|outlook>`) gate a `schedule` trigger.
+  - `outlook` — matches Outlook calendar entries by `set outlook-subject <regex>` /
+    `set outlook-body <regex>`. Use `enable negate` to fire when *no* matching entry exists.
+    **Note:** the Outlook integration is currently a stub (events come from the
+    `HUTBOT_OUTLOOK_STUB_EVENTS` env var); the real implementation lands in a later task.
+
+- **Actions** (`/hutbot [config] set action <reply|dm-user|group-dm|post-channel>`) decide what the
+  rule does, using `reply_message` (with the usual `{{variables}}`) as the body.
+  - `reply` — post in the rule's channel.
+  - `dm-user` — DM a single user. Set the recipient with `set target <@user>`.
+  - `group-dm` — open one group DM (mpim) with all members of a Slack user group and post once.
+    Set the group with `set target <@usergroup>` (Slack caps a group DM at 8 members).
+  - `post-channel` — post to another channel. Set it with `set target <#channel>`.
+
+- **Buttons** attach interactive buttons to the message a rule sends:
+  - `/hutbot [config] add button "<label>" <target-config>` — clicking the button runs
+    `<target-config>` (typically a `manual` rule).
+  - `/hutbot [config] clear buttons`
+  - `/hutbot [config] set button-timeout <minutes>` and
+    `/hutbot [config] set button-timeout-target <config>` — if no button is pressed within the
+    timeout, the target config runs. Pending button timeouts survive restarts.
+
+Use `/hutbot [config] run` to fire a configuration's action immediately (handy for testing).
+
 ## Step 1: Set Up the Slack App
 
 1. **Create a New Slack App**
@@ -81,7 +117,14 @@ Opsgenie alert priority defaults to `P4` and can be configured per channel confi
      - `message.im`
      - `message.mpim`
 
-6. **Add Slash Command**
+6. **Enable Interactivity** (required for buttons)
+
+   - Go to **"Interactivity & Shortcuts"**.
+   - Turn on **"Interactivity"**.
+   - Because the app uses **Socket Mode**, no Request URL is needed — interactive
+     button presses (`block_actions`) are delivered over the same socket.
+
+7. **Add Slash Command**
 
    - Go to **"Slash Commands"**.
    - Click **"Create New Command"**.
@@ -89,7 +132,7 @@ Opsgenie alert priority defaults to `P4` and can be configured per channel confi
    - Set the short description to `Configure @Hutbot`.
    - Click **"Save"**.
 
-7. **Install the App**
+8. **Install the App**
 
    - Go to **"Install App"**.
    - Click **"Install App to Workspace"** and authorize the app.
