@@ -102,6 +102,82 @@ existing configs keep working unchanged.
 
 Use `/hutbot [config] run` to fire a configuration's action immediately (handy for testing).
 
+## Web configuration UI
+
+Hutbot can serve a small web UI from the **same bot process** (no separate service) that lets a
+logged-in user view and edit the Hutbot rule configuration for the Slack channels they belong to. It
+shows configuration only — there is no message log or analytics. It is **disabled by default**.
+
+The UI is intended to run behind a Keycloak-fronting reverse proxy (e.g. oauth2-proxy). The proxy
+authenticates the user and passes their email in a trusted HTTP header. Hutbot resolves that email to
+a Slack user (reusing the same employee-list / Slack mapping the bot already uses), determines their
+team, and lists the channels that (a) have a Hutbot config **and** (b) the user is a member of.
+Editing is gated by channel membership.
+
+> **Security model:** Hutbot **trusts** the configured header. You **must** ensure the bot's HTTP port
+> is only reachable through the authenticating proxy (in Kubernetes the Helm chart's NetworkPolicy plus
+> a ClusterIP Service + Ingress do this). Anyone able to reach the port directly could spoof the header.
+
+### Enabling it locally
+
+```bash
+export HUTBOT_UI_ENABLED=1
+# optional overrides:
+export HUTBOT_UI_PORT=8080            # default 8080
+export HUTBOT_UI_HOST=0.0.0.0         # default 0.0.0.0
+export HUTBOT_UI_USER_HEADER=X-Forwarded-Email   # default
+python bot.py
+```
+
+Then test with a manual header:
+
+```bash
+curl -H "X-Forwarded-Email: you@yourcompany.com" http://localhost:8080/api/me
+curl -H "X-Forwarded-Email: you@yourcompany.com" http://localhost:8080/api/channels
+```
+
+Open http://localhost:8080/ in a browser (send the header via a browser extension or your local proxy
+during development). Without a valid, resolvable header the API returns `403`.
+
+### Header per proxy
+
+Set `HUTBOT_UI_USER_HEADER` to match the header your proxy sends:
+
+- **oauth2-proxy** → `X-Forwarded-Email` (default)
+- **Keycloak gatekeeper (louketo)** → `X-Auth-Email`
+- **custom nginx `auth_request`** → whatever header you configure
+
+### Endpoints
+
+- `GET /healthz` — unauthenticated, for Kubernetes probes.
+- `GET /api/me`, `GET /api/meta`, `GET /api/channels` — require a resolvable user.
+- `GET`/`PUT`/`POST`/`DELETE` `/api/channels/{id}/configs[/{name}]` — require a resolvable user, and
+  channel routes additionally require membership of the channel.
+
+### Kubernetes / Helm
+
+Enable the UI through the chart with the following `values.yaml` keys under `ui:`:
+
+```yaml
+ui:
+  enabled: true
+  port: 8080
+  userHeader: "X-Forwarded-Email"
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: true
+    className: "nginx"
+    host: "hutbot.internal.example.com"
+    annotations: {}   # put your Keycloak/oauth2-proxy auth annotations here
+    tls: []
+```
+
+When `ui.enabled` is `true` the chart renders a Service, exposes the container port, adds `/healthz`
+readiness/liveness probes, and opens the NetworkPolicy ingress for that port; the Ingress is rendered
+when `ui.ingress.enabled` is also `true`. The Keycloak integration itself (oauth2-proxy / annotations)
+is the operator's responsibility — Hutbot only consumes the resulting header.
+
 ## Step 1: Set Up the Slack App
 
 1. **Create a New Slack App**

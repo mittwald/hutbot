@@ -22,6 +22,22 @@ employeeList:
 
 resources: {}
 
+# Web UI served by the bot over HTTP
+ui:
+  enabled: false
+  port: 8080
+  host: "0.0.0.0"
+  # Trusted reverse-proxy header carrying the authenticated user's email.
+  userHeader: "X-Forwarded-Email"
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tls: []   # list of {secretName, hosts: []}
+
 # Persistence configuration for storing the bot config file on a PersistentVolumeClaim
 persistence:
   enabled: true

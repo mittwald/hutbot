@@ -13,6 +13,15 @@ spec:
       app: {{ .Release.Name }}
   policyTypes:
   - Egress
+  {{- if .Values.ui.enabled }}
+  - Ingress
+  {{- end }}
+  {{- if .Values.ui.enabled }}
+  ingress:
+  - ports:
+    - port: {{ .Values.ui.port }}
+      protocol: TCP
+  {{- end }}
   egress:
 {{- if $rules }}
 {{- range $rule := $rules }}
