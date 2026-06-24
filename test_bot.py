@@ -1045,6 +1045,7 @@ async def test_set_reply_message_rejects_unknown_arg_invalid_timezone_and_locale
 async def test_schedule_reply_renders_template_variables():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    app.client.chat_postMessage.return_value = {"ts": "1234.1"}
     channel = Channel(id="C12345", name="general", configs={})
     user = User("U12345", "test", "Test User", "Testers")
     config = DEFAULT_CONFIG.copy()
@@ -1055,21 +1056,21 @@ async def test_schedule_reply_renders_template_variables():
         "Message={{message}} Link={{message_link}}"
     )
 
-    with patch('bot.send_message') as mock_send_message:
+    with patch('bot.flush_replies_cache', new=AsyncMock()):
         await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
 
-        mock_send_message.assert_called_with(
-            app,
-            channel,
-            user,
-            "Hi <@U12345> (Test User) from Testers in #general/general. Config=alerts Wait=0 Ts=1234.1 Message=Original text Link=https://slack.test/message",
-            "1234.1"
-        )
+    app.client.chat_postMessage.assert_awaited_once_with(
+        channel="C12345",
+        text="Hi <@U12345> (Test User) from Testers in #general/general. Config=alerts Wait=0 Ts=1234.1 Message=Original text Link=https://slack.test/message",
+        mrkdwn=True,
+        thread_ts="1234.1",
+    )
 
 @pytest.mark.asyncio
 async def test_schedule_reply_cleans_up_scheduled_message_after_send():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    app.client.chat_postMessage.return_value = {"ts": "1234.1"}
     channel = Channel(id="C12345", name="general", configs={})
     user = User("U12345", "test", "Test User", "Testers")
     config = DEFAULT_CONFIG.copy()
@@ -1080,16 +1081,17 @@ async def test_schedule_reply_cleans_up_scheduled_message_after_send():
     scheduled_messages.clear()
     scheduled_messages[key] = ScheduledReply(task=AsyncMock(), user_id=user.id)
 
-    with patch('bot.send_message') as mock_send_message:
+    with patch('bot.flush_replies_cache', new=AsyncMock()):
         await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", ts)
 
-    mock_send_message.assert_called_once()
+    app.client.chat_postMessage.assert_awaited_once()
     assert key not in scheduled_messages
 
 @pytest.mark.asyncio
 async def test_schedule_reply_renders_opsgenie_template_variables():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    app.client.chat_postMessage.return_value = {"ts": "1234.1"}
     channel = Channel(id="C12345", name="general", configs={})
     user = User("U12345", "test", "Test User", "Testers")
     config = DEFAULT_CONFIG.copy()
@@ -1101,16 +1103,15 @@ async def test_schedule_reply_renders_opsgenie_template_variables():
         "opsgenie_current_user": "<@U999>",
         "opsgenie_current_email": "oncall@example.com",
         "opsgenie_current_name": "On Call User",
-    })), patch('bot.send_message') as mock_send_message:
+    })), patch('bot.flush_replies_cache', new=AsyncMock()):
         await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
 
-        mock_send_message.assert_called_with(
-            app,
-            channel,
-            user,
-            "On call: <@U999> / oncall@example.com / On Call User",
-            "1234.1"
-        )
+    app.client.chat_postMessage.assert_awaited_once_with(
+        channel="C12345",
+        text="On call: <@U999> / oncall@example.com / On Call User",
+        mrkdwn=True,
+        thread_ts="1234.1",
+    )
 
 @pytest.mark.asyncio
 async def test_get_opsgenie_template_variables_renders_current_and_next_periods():
@@ -1196,6 +1197,7 @@ def test_render_reply_message_template_datetime_args_override_config():
 async def test_schedule_reply_uses_placeholder_for_unmapped_opsgenie_user():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    app.client.chat_postMessage.return_value = {"ts": "1234.1"}
     channel = Channel(id="C12345", name="general", configs={})
     user = User("U12345", "test", "Test User", "Testers")
     config = DEFAULT_CONFIG.copy()
@@ -1207,21 +1209,21 @@ async def test_schedule_reply_uses_placeholder_for_unmapped_opsgenie_user():
         "opsgenie_current_user": "<unknown-oncall>",
         "opsgenie_current_email": "oncall@example.com",
         "opsgenie_current_name": "oncall@example.com",
-    })), patch('bot.send_message') as mock_send_message:
+    })), patch('bot.flush_replies_cache', new=AsyncMock()):
         await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
 
-        mock_send_message.assert_called_with(
-            app,
-            channel,
-            user,
-            "On call: <unknown-oncall> / oncall@example.com / oncall@example.com",
-            "1234.1"
-        )
+    app.client.chat_postMessage.assert_awaited_once_with(
+        channel="C12345",
+        text="On call: <unknown-oncall> / oncall@example.com / oncall@example.com",
+        mrkdwn=True,
+        thread_ts="1234.1",
+    )
 
 @pytest.mark.asyncio
 async def test_schedule_reply_keeps_plain_message_unchanged():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    app.client.chat_postMessage.return_value = {"ts": "1234.1"}
     channel = Channel(id="C12345", name="general", configs={})
     user = User("U12345", "test", "Test User", "Testers")
     config = DEFAULT_CONFIG.copy()
@@ -1229,11 +1231,11 @@ async def test_schedule_reply_keeps_plain_message_unchanged():
     config["reply_message"] = "Anybody?"
 
     with patch('bot.get_opsgenie_template_variables', new=AsyncMock()) as mock_get_opsgenie_template_variables, \
-         patch('bot.send_message') as mock_send_message:
+         patch('bot.flush_replies_cache', new=AsyncMock()):
         await schedule_reply(app, "token", channel, config, "default", user, "Original text", "1234.1")
 
-        mock_get_opsgenie_template_variables.assert_not_awaited()
-        mock_send_message.assert_called_with(app, channel, user, "Anybody?", "1234.1")
+    mock_get_opsgenie_template_variables.assert_not_awaited()
+    app.client.chat_postMessage.assert_awaited_once_with(channel="C12345", text="Anybody?", mrkdwn=True, thread_ts="1234.1")
 
 @pytest.mark.asyncio
 async def test_post_opsgenie_alert_uses_configured_priority():
@@ -1341,6 +1343,7 @@ async def test_process_command_mention_test_uses_trailing_text_as_message():
     import bot
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/message"}
+    app.client.chat_postMessage.return_value = {"ts": "1234.1"}
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
     channel.configs["default"]["reply_message"] = "Preview: {{message}} {{timestamp}} {{message_link}}"
     user = User("U12345", "test", "Test User", "Testers")
@@ -1555,6 +1558,7 @@ async def test_schedule_reply_removes_entry_from_cache():
     import bot
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": ""}
+    app.client.chat_postMessage.return_value = {"ts": "reply-ts"}
     channel = Channel(id="C12345", name="general", configs={})
     user = User("U12345", "test", "Test User", "Testers")
     config = DEFAULT_CONFIG.copy()
@@ -1679,14 +1683,16 @@ async def test_show_config_displays_none_for_missing_forward_channel():
 async def test_schedule_reply_forwards_to_configured_channel():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p123"}
+    app.client.chat_postMessage.return_value = {"ts": "reply-ts"}
     channel = Channel(id="C12345", name="general", configs={})
     user = User("U12345", "test", "Test User", "Testers")
     config = {**DEFAULT_CONFIG.copy(), "wait_time": 0, "reply_message": "Anybody?", "forward_channel": "CFWDCHAN"}
 
-    with patch('bot.send_message'):
+    with patch('bot.flush_replies_cache', new=AsyncMock()):
         await schedule_reply(app, "token", channel, config, "default", user, "Help needed", "1234.1")
 
-    app.client.chat_postMessage.assert_awaited_once_with(
+    # The reply itself + the forward both post; assert the forward call is present.
+    app.client.chat_postMessage.assert_any_await(
         channel="CFWDCHAN",
         text="Anybody?\n\n*Original message in #general:* https://slack.test/p123",
         mrkdwn=True,
@@ -1697,14 +1703,16 @@ async def test_schedule_reply_forwards_to_configured_channel():
 async def test_schedule_reply_skips_forward_when_not_configured():
     app = AsyncMock()
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p123"}
+    app.client.chat_postMessage.return_value = {"ts": "reply-ts"}
     channel = Channel(id="C12345", name="general", configs={})
     user = User("U12345", "test", "Test User", "Testers")
     config = {**DEFAULT_CONFIG.copy(), "wait_time": 0, "reply_message": "Anybody?"}
 
-    with patch('bot.send_message'):
+    with patch('bot.flush_replies_cache', new=AsyncMock()):
         await schedule_reply(app, "token", channel, config, "default", user, "Help needed", "1234.1")
 
-    app.client.chat_postMessage.assert_not_awaited()
+    # Only the reply is posted (to the originating channel), no forward.
+    app.client.chat_postMessage.assert_awaited_once_with(channel="C12345", text="Anybody?", mrkdwn=True, thread_ts="1234.1")
 
 
 @pytest.mark.asyncio
@@ -1928,11 +1936,44 @@ async def test_add_button_copy_on_write_and_clear():
     default_buttons_before = list(DEFAULT_CONFIG["buttons"])
     with patch('bot.save_configuration'), patch('bot.send_message'):
         await process_command(app, 'add button "Approve" approve-flow', channel, user)
-        assert channel.configs["default"]["buttons"] == [{"label": "Approve", "target": "approve-flow"}]
+        # Bare target ⇒ config action (back-compat).
+        assert channel.configs["default"]["buttons"] == [{"label": "Approve", "action": "config", "value": "approve-flow"}]
         # DEFAULT_CONFIG's list must not have been mutated (copy-on-write).
         assert DEFAULT_CONFIG["buttons"] == default_buttons_before
         await process_command(app, "clear buttons", channel, user)
         assert channel.configs["default"]["buttons"] == []
+
+
+@pytest.mark.asyncio
+async def test_add_button_typed_actions():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('bot.save_configuration'), patch('bot.send_message') as send:
+        await process_command(app, 'add button "Ack" ack "Got it"', channel, user)
+        await process_command(app, 'add button "FAQ" message "See the wiki"', channel, user)
+        await process_command(app, 'add button "Help" alert', channel, user)
+        await process_command(app, 'add button "Wait" delay 3', channel, user)
+        await process_command(app, 'add button "Run" config approve-flow', channel, user)
+    assert channel.configs["default"]["buttons"] == [
+        {"label": "Ack", "action": "ack", "value": "Got it"},
+        {"label": "FAQ", "action": "message", "value": "See the wiki"},
+        {"label": "Help", "action": "alert", "value": ""},
+        {"label": "Wait", "action": "delay", "value": "3"},
+        {"label": "Run", "action": "config", "value": "approve-flow"},
+    ]
+    # invalid delay rejected
+    await process_command(app, 'add button "Bad" delay nope', channel, user)
+    assert len(channel.configs["default"]["buttons"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_migrate_normalizes_legacy_buttons():
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["buttons"] = [{"label": "Old", "target": "legacy-flow"}]
+    config = {"C12345": {"default": cfg}}
+    migrated = await migrate_and_apply_defaults(AsyncMock(), config)
+    assert migrated["C12345"]["default"]["buttons"] == [{"label": "Old", "action": "config", "value": "legacy-flow"}]
 
 
 @pytest.mark.asyncio
@@ -2005,13 +2046,17 @@ async def test_outlook_stub_reads_env(monkeypatch):
 
 def test_build_button_blocks_structure():
     config = DEFAULT_CONFIG.copy()
-    config["buttons"] = [{"label": "Yes", "target": "yes-flow"}, {"label": "No", "target": "no-flow"}]
+    config["buttons"] = [
+        {"label": "Yes", "action": "config", "value": "yes-flow"},
+        {"label": "No", "action": "ack", "value": ""},
+    ]
     blocks = bot.build_button_blocks(config, "C12345", "src", "Pick one")
     assert blocks[0]["type"] == "section"
     elements = blocks[1]["elements"]
     assert [e["action_id"] for e in elements] == ["hutbot_btn:0", "hutbot_btn:1"]
+    # Payload only locates the button; the definition is resolved server-side.
     payload = json.loads(elements[0]["value"])
-    assert payload == {"channel": "C12345", "config": "src", "index": 0, "target": "yes-flow"}
+    assert payload == {"channel": "C12345", "config": "src", "index": 0}
 
 
 @pytest.mark.asyncio
@@ -2021,11 +2066,13 @@ async def test_run_action_reply_posts_with_buttons():
     config = DEFAULT_CONFIG.copy()
     config["action"] = bot.ACTION_REPLY
     config["reply_message"] = "Hi there"
-    config["buttons"] = [{"label": "Ok", "target": "tgt"}]
+    config["buttons"] = [{"label": "Ok", "action": "config", "value": "tgt"}]
     config["button_timeout"] = 0  # no timeout watch
     channel = _mk_channel({"src": config})
-    posted = await bot.run_action(app, "token", channel, config, "src", context=None)
-    assert posted == {"channel": "C12345", "ts": "99.1"}
+    with patch('bot.register_escalation', new=AsyncMock()) as reg:
+        posted = await bot.run_action(app, "token", channel, config, "src", context=None)
+    assert posted == {"channel": "C12345", "ts": "99.1", "text": "Hi there"}
+    reg.assert_awaited_once()  # buttons present ⇒ escalation registered
     kwargs = app.client.chat_postMessage.call_args.kwargs
     assert kwargs["channel"] == "C12345"
     assert kwargs["text"] == "Hi there"
@@ -2072,14 +2119,16 @@ async def test_handle_button_press_routes_to_target_and_cancels_timeout():
     app = AsyncMock()
     target_config = DEFAULT_CONFIG.copy()
     target_config["trigger"] = "manual"
-    channel = _mk_channel({"tgt": target_config})
+    src_config = DEFAULT_CONFIG.copy()
+    src_config["buttons"] = [{"label": "Go", "action": "config", "value": "tgt"}]
+    channel = _mk_channel({"src": src_config, "tgt": target_config})
     body = {
         "channel": {"id": "C12345"},
         "container": {"message_ts": "10.1"},
         "user": {"id": "U9"},
         "message": {"ts": "10.1"},
     }
-    action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0, "target": "tgt"})}
+    action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
     with patch('bot.cancel_pending_button', new=AsyncMock()) as cancel, \
          patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
@@ -2092,34 +2141,120 @@ async def test_handle_button_press_routes_to_target_and_cancels_timeout():
 
 
 @pytest.mark.asyncio
-async def test_register_and_cancel_pending_button():
+async def test_button_press_ack_cancels_without_running_config():
+    app = AsyncMock()
+    src_config = DEFAULT_CONFIG.copy()
+    src_config["buttons"] = [{"label": "Got it", "action": "ack", "value": "Thanks!"}]
+    channel = _mk_channel({"src": src_config})
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
+    action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+    with patch('bot.cancel_pending_button', new=AsyncMock()) as cancel, \
+         patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
+         patch('bot._post_message', new=AsyncMock()) as post, \
+         patch('bot.run_action', new=AsyncMock()) as run:
+        await bot.handle_button_press(app, "token", body, action)
+    cancel.assert_awaited_once_with("C12345", "10.1")
+    run.assert_not_awaited()
+    post.assert_awaited_once_with(app, "C12345", "Thanks!", None, "10.1")
+
+
+@pytest.mark.asyncio
+async def test_button_press_alert_fires_opsgenie_with_orig_context():
+    app = AsyncMock()
+    src_config = DEFAULT_CONFIG.copy()
+    src_config["opsgenie"] = True
+    src_config["buttons"] = [{"label": "Help needed", "action": "alert", "value": ""}]
+    channel = _mk_channel({"src": src_config})
+    bot.pending_buttons.clear()
+    bot.pending_buttons[("C12345", "10.1")] = {"task": None, "orig": {"user_id": "U5", "text": "help", "ts": "9.9", "permalink": "p"}}
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
+    action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+    with patch('bot.cancel_pending_button', new=AsyncMock()), \
+         patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
+         patch('bot.fire_opsgenie_from_orig', new=AsyncMock()) as fire:
+        await bot.handle_button_press(app, "token", body, action)
+    fire.assert_awaited_once()
+    assert fire.await_args.args[3] is src_config
+    assert fire.await_args.args[4] == {"user_id": "U5", "text": "help", "ts": "9.9", "permalink": "p"}
+
+
+@pytest.mark.asyncio
+async def test_button_press_delay_reschedules():
+    app = AsyncMock()
+    src_config = DEFAULT_CONFIG.copy()
+    src_config["buttons"] = [{"label": "Wait", "action": "delay", "value": "3"}]
+    channel = _mk_channel({"src": src_config})
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
+    action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+    with patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
+         patch('bot.cancel_pending_button', new=AsyncMock()) as cancel, \
+         patch('bot.reschedule_escalation', new=AsyncMock()) as resched:
+        await bot.handle_button_press(app, "token", body, action)
+    resched.assert_awaited_once_with(app, "token", "C12345", "10.1", 3)
+    cancel.assert_not_awaited()  # delay reschedules, does not cancel
+
+
+@pytest.mark.asyncio
+async def test_register_and_cancel_escalation():
     app = AsyncMock()
     config = DEFAULT_CONFIG.copy()
-    config["buttons"] = [{"label": "Ok", "target": "tgt"}]
+    config["buttons"] = [{"label": "Ok", "action": "config", "value": "tgt"}]
     config["button_timeout"] = 3600
     config["button_timeout_target"] = "escalate"
     bot.pending_buttons.clear()
     with patch('bot.flush_button_cache', new=AsyncMock()):
-        await bot.register_pending_button(app, "token", "C12345", "10.1", "C12345", "src", config)
-        assert ("C12345", "10.1") in bot.pending_buttons
+        await bot.register_escalation(app, "token", "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
+        entry = bot.pending_buttons.get(("C12345", "10.1"))
+        assert entry is not None
+        assert entry["escalation_kind"] == "config" and entry["escalation_target"] == "escalate"
         await bot.cancel_pending_button("C12345", "10.1")
         assert ("C12345", "10.1") not in bot.pending_buttons
     await asyncio.sleep(0)  # let the cancelled task settle
 
 
 @pytest.mark.asyncio
-async def test_button_timeout_runs_target():
+async def test_escalation_task_runs_config_target():
     app = AsyncMock()
     escalate = DEFAULT_CONFIG.copy()
     escalate["trigger"] = "manual"
     channel = _mk_channel({"escalate": escalate})
+    key = ("C12345", "10.1")
     bot.pending_buttons.clear()
+    bot.pending_buttons[key] = {
+        "task": None, "posted_channel_id": "C12345", "message_ts": "10.1",
+        "def_channel_id": "C12345", "config_name": "src",
+        "escalation_kind": "config", "escalation_target": "escalate", "orig": {},
+    }
     with patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('bot.flush_button_cache', new=AsyncMock()), \
          patch('bot.run_action', new=AsyncMock()) as run:
-        await bot._button_timeout_task(app, "token", "C12345", "10.1", "C12345", "escalate", 0)
+        await bot._escalation_task(app, "token", key, 0)
     assert run.await_count == 1
     assert run.await_args.args[4] == "escalate"
+
+
+@pytest.mark.asyncio
+async def test_escalation_task_alert_fires_opsgenie():
+    app = AsyncMock()
+    src = DEFAULT_CONFIG.copy()
+    src["opsgenie"] = True
+    channel = _mk_channel({"src": src})
+    key = ("C12345", "10.1")
+    bot.pending_buttons.clear()
+    bot.pending_buttons[key] = {
+        "task": None, "posted_channel_id": "C12345", "message_ts": "10.1",
+        "def_channel_id": "C12345", "config_name": "src",
+        "escalation_kind": "alert", "escalation_target": "", "orig": {"user_id": "U5", "text": "t", "ts": "9.9", "permalink": "p"},
+    }
+    with patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.flush_button_cache', new=AsyncMock()), \
+         patch('bot.fire_opsgenie_from_orig', new=AsyncMock()) as fire:
+        await bot._escalation_task(app, "token", key, 0)
+    fire.assert_awaited_once()
+    assert fire.await_args.args[3] is src
 
 
 # ----- Scheduler -----
@@ -2184,47 +2319,28 @@ async def test_schedule_reply_routes_to_action_for_non_reply_action():
     user = User("U2", "x", "X", "T")
     with patch('bot.get_message_permalink', new=AsyncMock(return_value='')), \
          patch('bot.flush_replies_cache', new=AsyncMock()), \
-         patch('bot.send_message', new=AsyncMock()) as send, \
-         patch('bot.run_action', new=AsyncMock()) as run:
+         patch('bot.run_action', new=AsyncMock(return_value={"channel": "C", "ts": "1", "text": "hi"})) as run:
         await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
     assert run.await_count == 1
-    assert send.await_count == 0
     assert run.await_args.args[4] == "src"
     assert run.await_args.kwargs["context"]["thread_ts"] == "1.1"
 
 
 @pytest.mark.asyncio
-async def test_schedule_reply_routes_to_action_when_buttons_present():
+async def test_schedule_reply_always_routes_through_run_action():
+    # Even a plain default config (action=reply, no buttons) now uses the unified engine.
     app = AsyncMock()
     cfg = DEFAULT_CONFIG.copy()
-    cfg["action"] = bot.ACTION_REPLY
-    cfg["buttons"] = [{"label": "Ok", "target": "tgt"}]
     cfg["reply_message"] = "hi"
     channel = _mk_channel({"src": cfg})
     user = User("U2", "x", "X", "T")
     with patch('bot.get_message_permalink', new=AsyncMock(return_value='')), \
          patch('bot.flush_replies_cache', new=AsyncMock()), \
          patch('bot.send_message', new=AsyncMock()) as send, \
-         patch('bot.run_action', new=AsyncMock()) as run:
+         patch('bot.run_action', new=AsyncMock(return_value={"channel": "C", "ts": "1", "text": "hi"})) as run:
         await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
     assert run.await_count == 1
     assert send.await_count == 0
-
-
-@pytest.mark.asyncio
-async def test_schedule_reply_classic_when_plain_reply():
-    app = AsyncMock()
-    cfg = DEFAULT_CONFIG.copy()  # action reply, no buttons
-    cfg["reply_message"] = "hi"
-    channel = _mk_channel({"src": cfg})
-    user = User("U2", "x", "X", "T")
-    with patch('bot.get_message_permalink', new=AsyncMock(return_value='')), \
-         patch('bot.flush_replies_cache', new=AsyncMock()), \
-         patch('bot.send_message', new=AsyncMock()) as send, \
-         patch('bot.run_action', new=AsyncMock()) as run:
-        await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
-    assert send.await_count == 1
-    assert run.await_count == 0
 
 
 # ----- action_reply threads only within the same channel -----
@@ -2241,3 +2357,172 @@ async def test_action_reply_threads_only_in_same_channel():
     app.client.chat_postMessage.reset_mock()
     await bot.action_reply(app, channel, {}, {"channel_id": "D999", "message_ts": "7.7"}, "t", None)
     assert "thread_ts" not in app.client.chat_postMessage.call_args.kwargs
+
+
+# ----- OpsGenie gating: inline when no buttons, escalation when buttons present -----
+
+@pytest.mark.asyncio
+async def test_schedule_reply_fires_opsgenie_inline_without_buttons():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "p"}
+    app.client.chat_postMessage.return_value = {"ts": "1"}
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["opsgenie"] = True
+    channel = _mk_channel({"src": cfg})
+    user = User("U2", "x", "X", "T")
+    with patch('bot.opsgenie_configured', True), \
+         patch('bot.flush_replies_cache', new=AsyncMock()), \
+         patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert:
+        await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
+    alert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_schedule_reply_defers_opsgenie_when_buttons_present():
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "p"}
+    app.client.chat_postMessage.return_value = {"ts": "1"}
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["opsgenie"] = True
+    cfg["button_timeout"] = 600
+    cfg["buttons"] = [{"label": "Ack", "action": "ack", "value": ""}]
+    channel = _mk_channel({"src": cfg})
+    user = User("U2", "x", "X", "T")
+    with patch('bot.opsgenie_configured', True), \
+         patch('bot.flush_replies_cache', new=AsyncMock()), \
+         patch('bot.flush_button_cache', new=AsyncMock()), \
+         patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert:
+        bot.pending_buttons.clear()
+        await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
+        # Alert is owned by the escalation, not fired inline. The escalation is
+        # keyed by the *posted reply* ts ("1" from the mock), not the original.
+        alert.assert_not_awaited()
+        entry = bot.pending_buttons.get(("C12345", "1"))
+        assert entry is not None and entry["escalation_kind"] == "alert"
+        # original message context captured for the deferred alert
+        assert entry["orig"]["text"] == "orig" and entry["orig"]["ts"] == "1.1"
+        await bot.cancel_pending_button("C12345", "1")
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_fire_opsgenie_from_orig():
+    app = AsyncMock()
+    channel = _mk_channel()
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["opsgenie"] = True
+    orig = {"user_id": "U5", "text": "help", "ts": "9.9", "permalink": "link"}
+    with patch('bot.opsgenie_configured', True), \
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
+         patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert:
+        await bot.fire_opsgenie_from_orig(app, "tok", channel, cfg, orig)
+    alert.assert_awaited_once()
+    args = alert.await_args.args
+    assert args[5] == "help" and args[6] == "9.9" and args[7] == "link"
+
+    # Disabled OpsGenie ⇒ no alert.
+    with patch('bot.opsgenie_configured', True), \
+         patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert2:
+        await bot.fire_opsgenie_from_orig(app, "tok", channel, DEFAULT_CONFIG.copy(), orig)
+    alert2.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_register_escalation_alert_without_timeout_keeps_record():
+    # An `alert` button with no timeout still needs a record (carries orig context).
+    app = AsyncMock()
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["opsgenie"] = True
+    cfg["button_timeout"] = 0
+    cfg["buttons"] = [{"label": "Help", "action": "alert", "value": ""}]
+    bot.pending_buttons.clear()
+    with patch('bot.opsgenie_configured', True), patch('bot.flush_button_cache', new=AsyncMock()):
+        await bot.register_escalation(app, "tok", "C12345", "1.1", "C12345", "src", cfg, {"text": "t", "ts": "1.1"})
+    entry = bot.pending_buttons.get(("C12345", "1.1"))
+    assert entry is not None
+    assert entry["escalation_kind"] == "alert"
+    assert entry["task"] is None  # no timer, but record kept
+    assert entry["run_at"] == ""
+
+
+# ----- Default button: auto-press on timeout -----
+
+@pytest.mark.asyncio
+async def test_set_default_button_command():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('bot.save_configuration'), patch('bot.send_message'):
+        await process_command(app, 'set default-button "Yes"', channel, user)
+        assert channel.configs["default"]["default_button"] == "Yes"
+        await process_command(app, "clear default-button", channel, user)
+        assert channel.configs["default"]["default_button"] == ""
+
+
+def test_escalation_kind_prefers_default_button():
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["buttons"] = [{"label": "Yes", "action": "message", "value": "Help text"}]
+    cfg["default_button"] = "Yes"
+    cfg["button_timeout_target"] = "some-config"  # default button still wins
+    assert bot._escalation_kind(cfg) == (bot.ESCALATION_BUTTON, "Yes")
+    # Unknown default-button label falls back to the config target.
+    cfg["default_button"] = "Nope"
+    assert bot._escalation_kind(cfg) == (bot.ESCALATION_CONFIG, "some-config")
+
+
+@pytest.mark.asyncio
+async def test_escalation_task_auto_presses_default_button():
+    app = AsyncMock()
+    src = DEFAULT_CONFIG.copy()
+    src["buttons"] = [
+        {"label": "Yes", "action": "message", "value": "Here is the help"},
+        {"label": "No", "action": "ack", "value": ""},
+    ]
+    channel = _mk_channel({"src": src})
+    key = ("C12345", "10.1")
+    bot.pending_buttons.clear()
+    bot.pending_buttons[key] = {
+        "task": None, "posted_channel_id": "C12345", "message_ts": "10.1",
+        "def_channel_id": "C12345", "config_name": "src",
+        "escalation_kind": "button", "escalation_target": "Yes", "orig": {},
+    }
+    with patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.flush_button_cache', new=AsyncMock()), \
+         patch('bot._post_message', new=AsyncMock()) as post:
+        await bot._escalation_task(app, "token", key, 0)
+    # auto-pressed "Yes" (message) ⇒ posts the help text in the thread
+    post.assert_awaited_once_with(app, "C12345", "Here is the help", None, "10.1")
+
+
+@pytest.mark.asyncio
+async def test_need_help_yes_no_workflow_end_to_end():
+    # "Need help?" with Yes (message) / No (ack); wait 5m ⇒ auto-press Yes.
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "p"}
+    app.client.chat_postMessage.return_value = {"ts": "R1"}
+    ch = Channel(id="C1", name="support", configs={})
+    u = User("U1", "dave", "Dave", "T")
+    with patch('bot.save_configuration', new=AsyncMock()), patch('bot.send_message', new=AsyncMock()), \
+         patch('bot.flush_replies_cache', new=AsyncMock()), patch('bot.flush_button_cache', new=AsyncMock()):
+        await process_command(app, 'set message Need help?', ch, u)
+        await process_command(app, 'add button "Yes" message "Here is the help doc"', ch, u)
+        await process_command(app, 'add button "No" ack', ch, u)
+        await process_command(app, 'set button-timeout 5', ch, u)
+        await process_command(app, 'set default-button "Yes"', ch, u)
+        cfg = ch.configs["default"]
+
+        # Fire the reply; an auto-press-Yes escalation is registered (no inline message yet).
+        bot.pending_buttons.clear()
+        await bot.schedule_reply(app, "tok", ch, cfg, "default", u, "orig", "M1", wait_time_override=0)
+        entry = bot.pending_buttons.get(("C1", "R1"))
+        assert entry is not None and entry["escalation_kind"] == "button" and entry["escalation_target"] == "Yes"
+        # Drop the live 5-minute timer; we trigger the escalation manually below.
+        if entry["task"]:
+            entry["task"].cancel()
+
+        # No press within timeout ⇒ escalation auto-presses Yes ⇒ posts the help message.
+        with patch('bot.get_channel_by_id', new=AsyncMock(return_value=Channel("C1", "support", ch.configs))), \
+             patch('bot._post_message', new=AsyncMock()) as post:
+            await bot._escalation_task(app, "tok", ("C1", "R1"), 0)
+        post.assert_awaited_once_with(app, "C1", "Here is the help doc", None, "R1")
+    await asyncio.sleep(0)  # let the cancelled timer settle

@@ -54,13 +54,38 @@ existing configs keep working unchanged.
     Set the group with `set target <@usergroup>` (Slack caps a group DM at 8 members).
   - `post-channel` — post to another channel. Set it with `set target <#channel>`.
 
-- **Buttons** attach interactive buttons to the message a rule sends:
-  - `/hutbot [config] add button "<label>" <target-config>` — clicking the button runs
-    `<target-config>` (typically a `manual` rule).
+- **Buttons** attach interactive buttons to the message a rule sends (including the classic
+  unanswered-message reply). Each button is added incrementally with a typed action:
+  - `/hutbot [config] add button "<label>" config <config>` — run another config (e.g. a `manual` rule).
+  - `/hutbot [config] add button "<label>" ack [text]` — acknowledge/dismiss: stop the escalation
+    (incl. a pending OpsGenie alert) and optionally post `text`.
+  - `/hutbot [config] add button "<label>" message <text>` — post a fixed message.
+  - `/hutbot [config] add button "<label>" alert` — send the OpsGenie alert now.
+  - `/hutbot [config] add button "<label>" delay <minutes>` — delay the escalation/alert by N minutes.
   - `/hutbot [config] clear buttons`
-  - `/hutbot [config] set button-timeout <minutes>` and
-    `/hutbot [config] set button-timeout-target <config>` — if no button is pressed within the
-    timeout, the target config runs. Pending button timeouts survive restarts.
+  - `/hutbot [config] set button-timeout <minutes>` — escalate if no button is pressed in time.
+  - `/hutbot [config] set default-button "<label>"` — on timeout, **auto-press** this button (e.g. a
+    "Yes" default). Otherwise `set button-timeout-target <config>` runs a config, or — if OpsGenie is
+    enabled — the escalation sends the OpsGenie alert. Pending escalations survive restarts.
+  - A bare `add button "<label>" <config>` (no action keyword) is still treated as `config <config>`.
+
+- **"Need help?" example** — a question that defaults to "Yes" if ignored:
+  ```bash
+  /hutbot helpcheck set message Need help?
+  /hutbot helpcheck add button "Yes" message "Here's the help doc: …"
+  /hutbot helpcheck add button "No" ack
+  /hutbot helpcheck set button-timeout 5
+  /hutbot helpcheck set default-button "Yes"
+  ```
+  Pressing *Yes* posts the help message; *No* dismisses it; if nobody clicks within 5 minutes, Hutbot
+  auto-presses *Yes* and posts the help message.
+
+- **OpsGenie + buttons workflow**: when a reply config has OpsGenie enabled **and** buttons, the alert
+  is no longer sent immediately — it becomes the button-gated escalation. A typical setup:
+  `set button-timeout 5`, plus buttons `Acknowledge (ack)`, `Help needed (alert)`, `Delay (delay 3)`.
+  Acknowledge cancels the alert, *Help needed* sends it now, *Delay* pushes it out, and if nobody
+  presses anything within 5 minutes the alert fires automatically. (A reply config with OpsGenie but
+  **no** buttons keeps alerting immediately, as before.)
 
 Use `/hutbot [config] run` to fire a configuration's action immediately (handy for testing).
 

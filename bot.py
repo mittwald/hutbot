@@ -62,6 +62,20 @@ ACTIONS = {ACTION_REPLY, ACTION_DM_USER, ACTION_GROUP_DM, ACTION_POST_CHANNEL}
 
 BUTTON_ACTION_PREFIX = "hutbot_btn"
 
+# What a button does when pressed.
+BUTTON_ACTION_CONFIG = "config"    # run another named config
+BUTTON_ACTION_ACK = "ack"          # acknowledge/dismiss (cancel escalation), optional ack text
+BUTTON_ACTION_MESSAGE = "message"  # post a fixed inline message
+BUTTON_ACTION_ALERT = "alert"      # send the OpsGenie alert now
+BUTTON_ACTION_DELAY = "delay"      # delay the pending escalation by N minutes
+BUTTON_ACTIONS = {BUTTON_ACTION_CONFIG, BUTTON_ACTION_ACK, BUTTON_ACTION_MESSAGE, BUTTON_ACTION_ALERT, BUTTON_ACTION_DELAY}
+
+# What a buttoned message escalates to if no button is pressed within the timeout.
+ESCALATION_NONE = "none"
+ESCALATION_CONFIG = "config"
+ESCALATION_ALERT = "alert"
+ESCALATION_BUTTON = "button"  # auto-press a named button (the "default" button)
+
 DEFAULT_CONFIG = {
     "wait_time": 30 * 60,
     "reply_message": "Anybody?",
@@ -98,6 +112,7 @@ DEFAULT_CONFIG = {
     "buttons": [],
     "button_timeout": 0,
     "button_timeout_target": "",
+    "default_button": "",  # label of the button to auto-press if none is pressed in time
 }
 
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')
@@ -242,10 +257,12 @@ ENABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'enable\s+(condition[_
 DISABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'disable\s+(condition[_ -]?)?negate')
 SET_ACTION_PATTERN = create_command_pattern(r'set\s+action\s+(?P<action>.+)')
 SET_TARGET_PATTERN = create_command_pattern(r'set\s+target\s+(?P<target>.+)')
-ADD_BUTTON_PATTERN = create_command_pattern(r'add\s+button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<target>\S+)')
+ADD_BUTTON_PATTERN = create_command_pattern(r'add\s+button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<spec>.+)')
 CLEAR_BUTTONS_PATTERN = create_command_pattern(r'clear\s+buttons?')
 SET_BUTTON_TIMEOUT_TARGET_PATTERN = create_command_pattern(r'set\s+button[_ -]?timeout[_ -]?target\s+(?P<target>.+)')
 SET_BUTTON_TIMEOUT_PATTERN = create_command_pattern(r'set\s+button[_ -]?timeout\s+(?P<minutes>.+)')
+CLEAR_DEFAULT_BUTTON_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+default[_ -]?button')
+SET_DEFAULT_BUTTON_PATTERN = create_command_pattern(r'set\s+default[_ -]?button\s+(?P<label>.+)')
 RUN_PATTERN = re.compile(r'^(run|fire)$', re.IGNORECASE)
 
 def log_debug(channel: Channel | None, *args: object) -> None:
@@ -647,6 +664,16 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
             for key, value in DEFAULT_CONFIG.items():
                 if key not in single_config:
                     single_config[key] = value
+            # Normalize legacy {label, target} buttons to {label, action, value}.
+            buttons = single_config.get('buttons')
+            if isinstance(buttons, list):
+                normalized = []
+                for button in buttons:
+                    if not isinstance(button, dict):
+                        continue
+                    action, value = normalize_button(button)
+                    normalized.append({'label': button.get('label', ''), 'action': action, 'value': value})
+                single_config['buttons'] = normalized
     return config
 
 
@@ -985,9 +1012,13 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel: C
     elif (match := SET_TARGET_PATTERN.match(command_text)):
         await set_action_target(app, channel, config_name, match.group("target"), user, thread_ts)
     elif (match := ADD_BUTTON_PATTERN.match(command_text)):
-        await add_button(app, channel, config_name, match.group("label"), match.group("target"), user, thread_ts)
+        await add_button(app, channel, config_name, match.group("label"), match.group("spec"), user, thread_ts)
     elif CLEAR_BUTTONS_PATTERN.match(command_text):
         await clear_buttons(app, channel, config_name, user, thread_ts)
+    elif CLEAR_DEFAULT_BUTTON_PATTERN.match(command_text):
+        await clear_default_button(app, channel, config_name, user, thread_ts)
+    elif (match := SET_DEFAULT_BUTTON_PATTERN.match(command_text)):
+        await set_default_button(app, channel, config_name, match.group("label"), user, thread_ts)
     elif (match := SET_BUTTON_TIMEOUT_TARGET_PATTERN.match(command_text)):
         await set_button_timeout_target(app, channel, config_name, match.group("target"), user, thread_ts)
     elif (match := SET_BUTTON_TIMEOUT_PATTERN.match(command_text)):
@@ -1469,26 +1500,69 @@ async def set_action_target(app: AsyncApp, channel: Channel, config_name: str, t
     await save_configuration()
     await send_message(app, channel, user, f"*Action target* set to `{target}` in configuration `{config_name}`.", thread_ts)
 
-async def add_button(app: AsyncApp, channel: Channel, config_name: str, label: str, target: str, user: User, thread_ts: str = "") -> None:
+async def add_button(app: AsyncApp, channel: Channel, config_name: str, label: str, spec: str, user: User, thread_ts: str = "") -> None:
     label = strip_quotes(label).strip()
-    target = strip_quotes(target).strip()
     if not label:
         await send_message(app, channel, user, "Invalid *button label*. Must be non-empty.", thread_ts)
         return
-    if not target:
-        await send_message(app, channel, user, "Invalid *button target*. Must reference a configuration name.", thread_ts)
+
+    # spec is either "<action> [arg]" or a bare config name (back-compat).
+    spec = spec.strip()
+    parts = spec.split(None, 1)
+    first = parts[0].lower() if parts else ""
+    if first in BUTTON_ACTIONS:
+        action = first
+        value = strip_quotes(parts[1]).strip() if len(parts) > 1 else ""
+    else:
+        action = BUTTON_ACTION_CONFIG
+        value = strip_quotes(spec).strip()
+
+    if action in (BUTTON_ACTION_CONFIG, BUTTON_ACTION_MESSAGE) and not value:
+        what = "a configuration name" if action == BUTTON_ACTION_CONFIG else "a message"
+        await send_message(app, channel, user, f"Invalid *button*. `{action}` needs {what}.", thread_ts)
         return
+    if action == BUTTON_ACTION_DELAY:
+        try:
+            minutes = int(value)
+        except ValueError:
+            await send_message(app, channel, user, "Invalid *button*. `delay` needs a number of minutes.", thread_ts)
+            return
+        if minutes <= 0 or minutes > 1440:
+            await send_message(app, channel, user, "Invalid *button*. `delay` minutes must be between 1 and 1440.", thread_ts)
+            return
+        value = str(minutes)
+
     config = _ensure_config(channel, config_name)
     # Copy-on-write so we never mutate a shared default list.
-    config['buttons'] = list(config.get('buttons') or []) + [{'label': label, 'target': target}]
+    config['buttons'] = list(config.get('buttons') or []) + [{'label': label, 'action': action, 'value': value}]
     await save_configuration()
-    warning = "" if target in channel.configs else f" :warning: (configuration `{target}` does not exist yet)"
-    await send_message(app, channel, user, f"Added button `{label}` → `{target}` in configuration `{config_name}`{warning}.", thread_ts)
+
+    warning = ""
+    if action == BUTTON_ACTION_CONFIG and value not in channel.configs:
+        warning = f" :warning: (configuration `{value}` does not exist yet)"
+    descriptor = f"`{action}`" + (f" → `{value}`" if value else "")
+    await send_message(app, channel, user, f"Added button `{label}` ({descriptor}) in configuration `{config_name}`{warning}.", thread_ts)
 
 async def clear_buttons(app: AsyncApp, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> None:
     _ensure_config(channel, config_name)['buttons'] = []
     await save_configuration()
     await send_message(app, channel, user, f"Cleared *buttons* in configuration `{config_name}`.", thread_ts)
+
+async def set_default_button(app: AsyncApp, channel: Channel, config_name: str, label: str, user: User, thread_ts: str = "") -> None:
+    label = strip_quotes(label).strip()
+    if not label:
+        await send_message(app, channel, user, "Invalid *default button*. Must reference a button label.", thread_ts)
+        return
+    config = _ensure_config(channel, config_name)
+    config['default_button'] = label
+    await save_configuration()
+    warning = "" if _find_button_index(config, label) is not None else f" :warning: (no button labelled `{label}` yet)"
+    await send_message(app, channel, user, f"*Default button* (auto-pressed on timeout) set to `{label}` in configuration `{config_name}`{warning}.", thread_ts)
+
+async def clear_default_button(app: AsyncApp, channel: Channel, config_name: str, user: User, thread_ts: str = "") -> None:
+    _ensure_config(channel, config_name)['default_button'] = ''
+    await save_configuration()
+    await send_message(app, channel, user, f"Cleared *default button* in configuration `{config_name}`.", thread_ts)
 
 async def set_button_timeout(app: AsyncApp, channel: Channel, config_name: str, minutes_str: str, user: User, thread_ts: str = "") -> None:
     try:
@@ -1731,10 +1805,24 @@ async def show_config(app: AsyncApp, channel: Channel, user: User, thread_ts: st
             rows.append(("Action target", config.get('action_target') or '<None>'))
         buttons = config.get('buttons') or []
         if buttons:
-            rows.append(("Buttons", [f"{b.get('label')} → {b.get('target')}" for b in buttons]))
+            def _button_label(b):
+                action, value = normalize_button(b)
+                return f"{b.get('label')} → {action}" + (f":{value}" if value else "")
+            rows.append(("Buttons", [_button_label(b) for b in buttons]))
             button_timeout_minutes = (config.get('button_timeout') or 0) // 60
             if button_timeout_minutes:
-                rows.append(("Button timeout", f"{button_timeout_minutes} minutes → {config.get('button_timeout_target') or '<None>'}"))
+                kind, target = _escalation_kind(config)
+                if kind == ESCALATION_BUTTON:
+                    escalates_to = f"auto-press `{target}`"
+                elif kind == ESCALATION_CONFIG:
+                    escalates_to = f"run `{target}`"
+                elif kind == ESCALATION_ALERT:
+                    escalates_to = "OpsGenie alert"
+                else:
+                    escalates_to = "nothing"
+                rows.append(("Button timeout", f"{button_timeout_minutes} minutes → {escalates_to}"))
+            if config.get('default_button'):
+                rows.append(("Default button", config.get('default_button')))
         key_width = max(len(label) for label, _ in rows)
         config_block = "\n".join(f"{label:<{key_width}}  {format_table_value(value, key_width)}" for label, value in rows)
         forward_channel_line = f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}"
@@ -1844,10 +1932,15 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ("/hutbot [config] disable negate", "Stop inverting the condition."),
         ("/hutbot [config] set action <reply|dm-user|group-dm|post-channel>", "Set what the rule does."),
         ("/hutbot [config] set target <@user|@group|#channel>", "Set the action recipient."),
-        ("/hutbot [config] add button \"<label>\" <target-config>", "Add a button that runs <target-config>."),
+        ("/hutbot [config] add button \"<label>\" config <config>", "Button runs another config."),
+        ("/hutbot [config] add button \"<label>\" ack [text]", "Button acknowledges/dismisses (stops escalation)."),
+        ("/hutbot [config] add button \"<label>\" message <text>", "Button posts a fixed message."),
+        ("/hutbot [config] add button \"<label>\" alert", "Button sends the OpsGenie alert now."),
+        ("/hutbot [config] add button \"<label>\" delay <minutes>", "Button delays the OpsGenie alert/escalation."),
         ("/hutbot [config] clear buttons", "Remove all buttons."),
-        ("/hutbot [config] set button-timeout <minutes>", "Run a target if no button is pressed in time."),
+        ("/hutbot [config] set button-timeout <minutes>", "Escalate if no button is pressed in time."),
         ("/hutbot [config] set button-timeout-target <config>", "Config to run on button timeout."),
+        ("/hutbot [config] set default-button \"<label>\"", "Auto-press this button on timeout."),
         ("/hutbot [config] run", "Run this configuration's action now."),
         ("/hutbot [config] test", "Preview configured reply."),
         ("@Hutbot [config] test <message>", "Preview reply with <message> as {{message}}."),
@@ -2220,47 +2313,29 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel: Channel, c
     try:
         await asyncio.sleep(actual_wait)
         permalink = await get_message_permalink(app, channel, ts)
-        template_variables = find_template_variables(reply_message_template)
-        reply_message = render_reply_message_template(
-            reply_message_template,
-            await build_reply_template_variables(
-                app,
-                opsgenie_token,
-                channel,
-                config,
-                config_name,
-                user,
-                text,
-                ts,
-                permalink,
-                include_opsgenie=bool(OPSGENIE_TEMPLATE_VARIABLES.intersection(template_variables)),
-            ),
-            config,
-        )
-        action = config.get('action', ACTION_REPLY)
-        buttons = config.get('buttons') or []
-        if action == ACTION_REPLY and not buttons:
-            # Classic behavior: a plain threaded reply on the original message.
-            await send_message(app, channel, user, reply_message, ts)
-        else:
-            # Honor the configured action (dm_user/group_dm/post_channel) and/or
-            # buttons. The message context lets the action thread on / reference
-            # the original message and reuse its template variables.
-            await run_action(app, opsgenie_token, channel, config, config_name, context={
-                'user': user,
-                'text': text,
-                'ts': ts,
-                'thread_ts': ts,
-                'channel_id': channel.id,
-            })
+        # Single unified send path: the reply (and any configured action/buttons)
+        # goes through the action engine. The message context lets the reply thread
+        # on the original message and reuse its template variables.
+        posted = await run_action(app, opsgenie_token, channel, config, config_name, context={
+            'user': user,
+            'text': text,
+            'ts': ts,
+            'thread_ts': ts,
+            'channel_id': channel.id,
+            'permalink': permalink,
+        })
+        reply_message = (posted or {}).get('text', '')
         forward_channel_id = config.get('forward_channel')
-        if forward_channel_id:
+        if forward_channel_id and reply_message:
             try:
                 forward_text = f"{reply_message}\n\n*Original message in #{channel.name}:* {permalink}"
                 await app.client.chat_postMessage(channel=forward_channel_id, text=forward_text, mrkdwn=True)
             except SlackApiError as e:
                 log_error(f"Failed to forward reply to channel {forward_channel_id}:", e)
-        if opsgenie_configured and opsgenie_enabled:
+        # OpsGenie: fire immediately for a classic (button-less) reply. When buttons
+        # are configured, the alert is owned by the button escalation instead, so it
+        # can be acknowledged / sent now / delayed.
+        if opsgenie_configured and opsgenie_enabled and not (config.get('buttons') or []):
             log(f"Attempting to send OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name}...")
             await post_opsgenie_alert(app, opsgenie_token, channel, config, user, text, ts, permalink)
     except asyncio.CancelledError as e:
@@ -2656,6 +2731,25 @@ async def get_usergroup_members(app: AsyncApp, usergroup_id: str) -> list[str]:
         log_error(f"Failed to fetch members of usergroup {usergroup_id}:", e)
         return []
 
+def normalize_button(button: dict) -> tuple[str, str]:
+    """Return (action, value) for a button, tolerating the legacy {label, target} form."""
+    action = button.get('action') or BUTTON_ACTION_CONFIG
+    if action == BUTTON_ACTION_CONFIG:
+        value = button.get('value') or button.get('target') or ''
+    else:
+        value = button.get('value', '') or ''
+    return action, value
+
+def _find_button_index(config: dict | None, label: str) -> int | None:
+    """Index of the first button matching `label` (case-insensitive), or None."""
+    if not config or not label:
+        return None
+    target = label.strip().casefold()
+    for i, button in enumerate(config.get('buttons') or []):
+        if (button.get('label') or '').strip().casefold() == target:
+            return i
+    return None
+
 def build_button_blocks(config: dict, def_channel_id: str, config_name: str, text: str) -> list | None:
     buttons = config.get('buttons') or []
     if not buttons:
@@ -2663,8 +2757,10 @@ def build_button_blocks(config: dict, def_channel_id: str, config_name: str, tex
     elements = []
     for i, button in enumerate(buttons):
         label = (button.get('label') or f'Button {i + 1}')[:75]
-        target = button.get('target') or ''
-        value = json.dumps({"channel": def_channel_id, "config": config_name, "index": i, "target": target})
+        # The button definition is resolved server-side from the originating config
+        # by index, so the payload only needs to locate it (avoids Slack's 2000-char
+        # value cap for long inline-message buttons).
+        value = json.dumps({"channel": def_channel_id, "config": config_name, "index": i})
         elements.append({
             "type": "button",
             "text": {"type": "plain_text", "text": label, "emoji": True},
@@ -2684,7 +2780,9 @@ async def render_action_text(app: AsyncApp, opsgenie_token: str, channel: Channe
         user = User(id=bot_user_id or '', name='hutbot', real_name='Hutbot', team=TEAM_UNKNOWN)
     text = context.get('text', '')
     ts = context.get('ts', '')
-    permalink = await get_message_permalink(app, channel, ts) if ts else ""
+    permalink = context.get('permalink')
+    if permalink is None:
+        permalink = await get_message_permalink(app, channel, ts) if ts else ""
     template_variables = find_template_variables(template)
     variables = await build_reply_template_variables(
         app, opsgenie_token, channel, config, config_name, user, text, ts, permalink,
@@ -2698,12 +2796,20 @@ async def _post_message(app: AsyncApp, channel_id: str, text: str, blocks: list 
         kwargs["blocks"] = blocks
     if thread_ts:
         kwargs["thread_ts"] = thread_ts
-    try:
-        response = await app.client.chat_postMessage(**kwargs)
-        return {"channel": channel_id, "ts": response.get("ts")}
-    except SlackApiError as e:
-        log_error(f"Failed to post message to {channel_id}:", e)
-        return None
+    retries = 3
+    delay = 1
+    for attempt in range(retries):
+        try:
+            response = await app.client.chat_postMessage(**kwargs)
+            return {"channel": channel_id, "ts": response.get("ts")}
+        except SlackApiError as e:
+            if attempt < retries - 1:
+                log_warning(f"Failed to post message to {channel_id}, retrying in {delay} seconds ({attempt + 1}/{retries})...", e)
+                await asyncio.sleep(delay)
+                delay *= 2
+            else:
+                log_error(f"Failed to post message to {channel_id} after {retries} attempts:", e)
+                return None
 
 async def action_reply(app: AsyncApp, channel: Channel, config: dict, context: dict | None, text: str, blocks: list | None) -> dict | None:
     context = context or {}
@@ -2778,9 +2884,11 @@ async def run_action(app: AsyncApp, opsgenie_token: str, channel: Channel, confi
     else:
         log_error(f"Unknown action '{action}' for config '{config_name}'.")
         return None
-    if posted and posted.get('ts') and config.get('buttons'):
-        await register_pending_button(app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config)
-    return posted
+    if not posted:
+        return None
+    if posted.get('ts') and config.get('buttons'):
+        await register_escalation(app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config, context)
+    return {**posted, 'text': text}
 
 async def evaluate_condition(app: AsyncApp, config: dict) -> bool:
     condition = config.get('condition', CONDITION_NONE)
@@ -2819,41 +2927,126 @@ async def flush_button_cache() -> None:
     except Exception as e:
         log_error("Failed to flush button states cache:", e)
 
-async def register_pending_button(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, def_channel_id: str, config_name: str, config: dict) -> None:
-    timeout = config.get('button_timeout') or 0
+def _escalation_kind(config: dict) -> tuple[str, str]:
+    """Decide what a buttoned message escalates to if no button is pressed in time."""
+    default_button = config.get('default_button') or ''
+    if default_button and _find_button_index(config, default_button) is not None:
+        return ESCALATION_BUTTON, default_button
     target = config.get('button_timeout_target') or ''
-    if not message_ts or not posted_channel_id or timeout <= 0 or not target:
+    if target:
+        return ESCALATION_CONFIG, target
+    if opsgenie_configured and config.get('opsgenie'):
+        return ESCALATION_ALERT, ''
+    return ESCALATION_NONE, ''
+
+async def register_escalation(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, def_channel_id: str, config_name: str, config: dict, context: dict | None = None) -> None:
+    """Record a buttoned message so ack/alert/delay/timeout can act on it later.
+
+    A record is stored for every buttoned message (it carries the original message
+    context an `alert` button needs); an escalation timer is started only when a
+    timeout is set and there is something to escalate to.
+    """
+    if not message_ts or not posted_channel_id:
         return
+    context = context or {}
+    user = context.get('user')
+    timeout = config.get('button_timeout') or 0
+    kind, target = _escalation_kind(config)
     key = (posted_channel_id, message_ts)
-    run_at = (datetime.datetime.now() + datetime.timedelta(seconds=timeout)).isoformat()
+    has_timer = timeout > 0 and kind != ESCALATION_NONE
     entry = {
         'posted_channel_id': posted_channel_id,
         'message_ts': message_ts,
         'def_channel_id': def_channel_id,
         'config_name': config_name,
-        'target': target,
-        'run_at': run_at,
+        'escalation_kind': kind,
+        'escalation_target': target,
+        'timeout': timeout,
+        'run_at': (datetime.datetime.now() + datetime.timedelta(seconds=timeout)).isoformat() if has_timer else '',
+        'orig': {
+            'user_id': user.id if user else context.get('user_id', ''),
+            'text': context.get('text', ''),
+            'ts': context.get('ts', ''),
+            'permalink': context.get('permalink', ''),
+        },
     }
-    task = asyncio.create_task(_button_timeout_task(app, opsgenie_token, posted_channel_id, message_ts, def_channel_id, target, timeout))
+    task = asyncio.create_task(_escalation_task(app, opsgenie_token, key, timeout)) if has_timer else None
     pending_buttons[key] = {'task': task, **entry}
     _button_states_cache[key] = entry
     await flush_button_cache()
 
-async def _button_timeout_task(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, def_channel_id: str, target: str, timeout: float) -> None:
-    key = (posted_channel_id, message_ts)
-    try:
-        await asyncio.sleep(timeout)
-        channel = await get_channel_by_id(app, def_channel_id)
+async def fire_opsgenie_from_orig(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict | None, orig: dict) -> None:
+    if not (opsgenie_configured and config and config.get('opsgenie')):
+        log_warning(f"OpsGenie alert requested in #{channel.name} but OpsGenie is not enabled/configured.")
+        return
+    orig = orig or {}
+    user_id = orig.get('user_id', '')
+    user = await get_user_by_id(app, user_id) if user_id else User(id='', name='hutbot', real_name='Hutbot', team=TEAM_UNKNOWN)
+    log(f"Sending OpsGenie alert in #{channel.name} (orig message {orig.get('ts', '')}).")
+    await post_opsgenie_alert(app, opsgenie_token, channel, config, user, orig.get('text', ''), orig.get('ts', ''), orig.get('permalink', ''))
+
+async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel: Channel, posted_channel_id: str, message_ts: str, src_config: dict | None, button: dict, entry: dict | None, presser: User | None = None) -> None:
+    """Run a button's action. Shared by a real press and an auto-press on timeout.
+
+    `delay` is handled by the caller (it is only meaningful for a live press).
+    """
+    action, value = normalize_button(button)
+    if action == BUTTON_ACTION_CONFIG:
+        target_config = channel.configs.get(value)
+        if not target_config:
+            log_warning(f"Button target config '{value}' not found in #{channel.name}.")
+            return
+        await run_action(app, opsgenie_token, channel, target_config, value, context={
+            'channel_id': posted_channel_id,
+            'user': presser,
+            'message_ts': message_ts,
+        })
+    elif action == BUTTON_ACTION_MESSAGE:
+        if value:
+            await _post_message(app, posted_channel_id, value, None, message_ts)
+    elif action == BUTTON_ACTION_ACK:
+        if value:
+            await _post_message(app, posted_channel_id, value, None, message_ts)
+    elif action == BUTTON_ACTION_ALERT:
+        await fire_opsgenie_from_orig(app, opsgenie_token, channel, src_config, (entry or {}).get('orig', {}))
+    else:
+        log_warning(f"Unsupported button action '{action}' in #{channel.name}.")
+
+async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> None:
+    kind = entry.get('escalation_kind', ESCALATION_NONE)
+    channel = await get_channel_by_id(app, entry['def_channel_id'])
+    if kind == ESCALATION_BUTTON:
+        # Auto-press the configured default button.
+        src_config = channel.configs.get(entry.get('config_name'))
+        idx = _find_button_index(src_config, entry.get('escalation_target', ''))
+        if idx is None:
+            log_warning(f"Default button '{entry.get('escalation_target')}' not found in #{channel.name}.")
+            return
+        log(f"No button pressed on message {entry['message_ts']}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
+        await dispatch_button_action(app, opsgenie_token, channel, entry['posted_channel_id'], entry['message_ts'], src_config, (src_config['buttons'])[idx], entry)
+    elif kind == ESCALATION_CONFIG:
+        target = entry.get('escalation_target', '')
         target_config = channel.configs.get(target)
         if target_config:
-            log(f"Button on message {message_ts} not pressed within timeout; running '{target}' in #{channel.name}.")
-            await run_action(app, opsgenie_token, channel, target_config, target, context={'channel_id': posted_channel_id})
+            log(f"Escalating button on message {entry['message_ts']}: running '{target}' in #{channel.name}.")
+            await run_action(app, opsgenie_token, channel, target_config, target, context={'channel_id': entry['posted_channel_id']})
         else:
-            log_warning(f"Button timeout target '{target}' not found in #{channel.name}.")
+            log_warning(f"Escalation target '{target}' not found in #{channel.name}.")
+    elif kind == ESCALATION_ALERT:
+        src_config = channel.configs.get(entry.get('config_name'))
+        await fire_opsgenie_from_orig(app, opsgenie_token, channel, src_config, entry.get('orig', {}))
+
+async def _escalation_task(app: AsyncApp, opsgenie_token: str, key: tuple, timeout: float) -> None:
+    try:
+        await asyncio.sleep(timeout)
+        entry = pending_buttons.get(key)
+        if entry:
+            log(f"No button pressed on message {key[1]} within timeout; escalating.")
+            await _run_escalation(app, opsgenie_token, entry)
     except asyncio.CancelledError:
         return
     except Exception as e:
-        log_error(f"Button timeout task failed for message {message_ts}:", e)
+        log_error(f"Escalation task failed for message {key[1]}:", e)
     finally:
         pending_buttons.pop(key, None)
         _button_states_cache.pop(key, None)
@@ -2864,31 +3057,52 @@ async def cancel_pending_button(posted_channel_id: str, message_ts: str) -> None
     entry = pending_buttons.pop(key, None)
     _button_states_cache.pop(key, None)
     if entry:
-        entry['task'].cancel()
+        if entry.get('task'):
+            entry['task'].cancel()
         await flush_button_cache()
+
+async def reschedule_escalation(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, minutes: int) -> bool:
+    key = (posted_channel_id, message_ts)
+    entry = pending_buttons.get(key)
+    if not entry:
+        log_warning(f"No pending escalation to delay for message {message_ts}.")
+        return False
+    if entry.get('task'):
+        entry['task'].cancel()
+    extra = minutes * 60
+    record = {k: v for k, v in entry.items() if k != 'task'}
+    record['timeout'] = extra
+    record['run_at'] = (datetime.datetime.now() + datetime.timedelta(seconds=extra)).isoformat()
+    task = asyncio.create_task(_escalation_task(app, opsgenie_token, key, extra))
+    pending_buttons[key] = {'task': task, **record}
+    _button_states_cache[key] = record
+    await flush_button_cache()
+    return True
 
 async def restore_pending_buttons(app: AsyncApp, opsgenie_token: str) -> None:
     entries = list(_button_states_cache.items())
     invalid_keys = []
     restored = 0
-    log(f"Restoring {len(entries)} pending button timeouts from cache...")
+    log(f"Restoring {len(entries)} pending button escalations from cache...")
     for key, entry in entries:
         def_channel_id = entry.get('def_channel_id')
-        target = entry.get('target')
-        if not def_channel_id or def_channel_id not in channel_config or target not in channel_config.get(def_channel_id, {}):
-            log_warning(f"Skipping cached button state for message {entry.get('message_ts')}: target '{target}' no longer configured.")
+        if not def_channel_id or def_channel_id not in channel_config:
+            log_warning(f"Skipping cached button state for message {entry.get('message_ts')}: channel {def_channel_id} no longer configured.")
             invalid_keys.append(key)
             continue
-        run_at = datetime.datetime.fromisoformat(entry['run_at'])
-        remaining = max(0.0, (run_at - datetime.datetime.now()).total_seconds())
-        task = asyncio.create_task(_button_timeout_task(app, opsgenie_token, entry['posted_channel_id'], entry['message_ts'], def_channel_id, target, remaining))
+        run_at = entry.get('run_at')
+        if run_at:
+            remaining = max(0.0, (datetime.datetime.fromisoformat(run_at) - datetime.datetime.now()).total_seconds())
+            task = asyncio.create_task(_escalation_task(app, opsgenie_token, key, remaining))
+        else:
+            task = None
         pending_buttons[key] = {'task': task, **entry}
         restored += 1
     for key in invalid_keys:
         _button_states_cache.pop(key, None)
     if invalid_keys:
         await flush_button_cache()
-    log(f"Restored {restored} pending button timeouts.")
+    log(f"Restored {restored} pending button escalations.")
 
 # ----- Scheduler (cron triggers) -----
 
@@ -2960,7 +3174,6 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
     message = body.get('message', {}) or {}
     posted_channel_id = (body.get('channel', {}) or {}).get('id') or container.get('channel_id', '')
     message_ts = container.get('message_ts') or message.get('ts', '')
-    await cancel_pending_button(posted_channel_id, message_ts)
 
     payload = {}
     raw_value = action.get('value', '')
@@ -2970,24 +3183,35 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
         except json.JSONDecodeError:
             payload = {}
     def_channel_id = payload.get('channel') or posted_channel_id
-    target = payload.get('target') or ''
+    src_config_name = payload.get('config') or ''
+    index = payload.get('index')
+
     presser_id = (body.get('user', {}) or {}).get('id', '')
     presser = await get_user_by_id(app, presser_id) if presser_id else None
     presser_name = presser.name if presser else '?'
-    if not target:
-        log_warning(f"Button pressed by @{presser_name} with no target; ignoring.")
-        return
+
     channel = await get_channel_by_id(app, def_channel_id)
-    target_config = channel.configs.get(target)
-    if not target_config:
-        log_warning(f"Button target config '{target}' not found in #{channel.name}.")
+    src_config = channel.configs.get(src_config_name)
+    buttons = (src_config or {}).get('buttons') or []
+    if index is None or not isinstance(index, int) or index < 0 or index >= len(buttons):
+        log_warning(f"Button pressed by @{presser_name} could not be resolved (config '{src_config_name}', index {index}).")
         return
-    log(f"Button pressed by @{presser_name}; running '{target}' in #{channel.name}.")
-    await run_action(app, opsgenie_token, channel, target_config, target, context={
-        'channel_id': posted_channel_id,
-        'user': presser,
-        'message_ts': message_ts,
-    })
+    btn_action, btn_value = normalize_button(buttons[index])
+    entry = pending_buttons.get((posted_channel_id, message_ts))
+    log(f"Button '{buttons[index].get('label')}' ({btn_action}) pressed by @{presser_name} in #{channel.name}.")
+
+    if btn_action == BUTTON_ACTION_DELAY:
+        try:
+            minutes = int(btn_value)
+        except ValueError:
+            minutes = 0
+        if minutes > 0:
+            await reschedule_escalation(app, opsgenie_token, posted_channel_id, message_ts, minutes)
+        return
+
+    # Every other button stops the pending escalation, then runs its action.
+    await cancel_pending_button(posted_channel_id, message_ts)
+    await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, src_config, buttons[index], entry, presser)
 
 def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
 
