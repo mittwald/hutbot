@@ -56,18 +56,18 @@ existing configs keep working unchanged.
 
 - **Buttons** attach interactive buttons to the message a rule sends (including the classic
   unanswered-message reply). Each button is added incrementally with a typed action:
-  - `/hutbot [config] add button "<label>" config <config>` — run another config (e.g. a `manual` rule).
-  - `/hutbot [config] add button "<label>" ack [text]` — acknowledge/dismiss: stop the escalation
-    (incl. a pending OpsGenie alert) and optionally post `text`.
+  - `/hutbot [config] add button "<label>" config <config>` — run another config (a `manual` rule).
+  - `/hutbot [config] add button "<label>" ack [text]` — acknowledge/dismiss: stop the escalation and
+    optionally post `text`.
   - `/hutbot [config] add button "<label>" message <text>` — post a fixed message.
-  - `/hutbot [config] add button "<label>" alert` — send the OpsGenie alert now.
-  - `/hutbot [config] add button "<label>" delay <minutes>` — delay the escalation/alert by N minutes.
+  - `/hutbot [config] add button "<label>" delay <minutes>` — delay the escalation by N minutes.
   - `/hutbot [config] clear buttons`
-  - `/hutbot [config] set button-timeout <minutes>` — escalate if no button is pressed in time.
-  - `/hutbot [config] set default-button "<label>"` — on timeout, **auto-press** this button (e.g. a
-    "Yes" default). Otherwise `set button-timeout-target <config>` runs a config, or — if OpsGenie is
-    enabled — the escalation sends the OpsGenie alert. Pending escalations survive restarts.
+  - `/hutbot [config] set button-timeout <minutes>` — escalate if no button is pressed in time, then
+    either `set default-button "<label>"` (auto-press that button) or `set button-timeout-target
+    <config>` (run that config). Pending escalations survive restarts.
   - A bare `add button "<label>" <config>` (no action keyword) is still treated as `config <config>`.
+  - A button/timeout that runs a config passes the **original message context** to it, so the target's
+    templates and any OpsGenie alert reference the original message.
 
 - **"Need help?" example** — a question that defaults to "Yes" if ignored:
   ```bash
@@ -80,12 +80,25 @@ existing configs keep working unchanged.
   Pressing *Yes* posts the help message; *No* dismisses it; if nobody clicks within 5 minutes, Hutbot
   auto-presses *Yes* and posts the help message.
 
-- **OpsGenie + buttons workflow**: when a reply config has OpsGenie enabled **and** buttons, the alert
-  is no longer sent immediately — it becomes the button-gated escalation. A typical setup:
-  `set button-timeout 5`, plus buttons `Acknowledge (ack)`, `Help needed (alert)`, `Delay (delay 3)`.
-  Acknowledge cancels the alert, *Help needed* sends it now, *Delay* pushes it out, and if nobody
-  presses anything within 5 minutes the alert fires automatically. (A reply config with OpsGenie but
-  **no** buttons keeps alerting immediately, as before.)
+- **OpsGenie is just a config property**: any config that runs and has OpsGenie enabled sends an alert
+  (with `set opsgenie-message "<template>"` to customise the alert text; default is the original
+  message). So to **button-gate** an alert, put OpsGenie on a *separate* `manual` config and run it
+  from a button or the button-timeout — don't put OpsGenie on the question config itself (or it would
+  alert as soon as the question is posted). Example:
+  ```bash
+  # question — no OpsGenie
+  /hutbot incident set message Incident — on it?
+  /hutbot incident add button "I've got it" ack
+  /hutbot incident set button-timeout 5
+  /hutbot incident set button-timeout-target page-oncall   # escalate if ignored
+  # alert config — OpsGenie on, runs only when escalated (or via a Yes-style button)
+  /hutbot page-oncall set trigger manual
+  /hutbot page-oncall enable opsgenie
+  /hutbot page-oncall set opsgenie-schedule "Team Primary"
+  /hutbot page-oncall set opsgenie-message "Unanswered incident in {{channel}}: {{message}}"
+  ```
+  *I've got it* cancels the escalation (no page); otherwise after 5 minutes `page-oncall` runs and pages
+  on-call, referencing the original message. A `delay` button pushes the 5-minute timer out.
 
 Use `/hutbot [config] run` to fire a configuration's action immediately (handy for testing).
 

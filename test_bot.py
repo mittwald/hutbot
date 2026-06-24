@@ -1952,19 +1952,17 @@ async def test_add_button_typed_actions():
     with patch('bot.save_configuration'), patch('bot.send_message') as send:
         await process_command(app, 'add button "Ack" ack "Got it"', channel, user)
         await process_command(app, 'add button "FAQ" message "See the wiki"', channel, user)
-        await process_command(app, 'add button "Help" alert', channel, user)
         await process_command(app, 'add button "Wait" delay 3', channel, user)
         await process_command(app, 'add button "Run" config approve-flow', channel, user)
     assert channel.configs["default"]["buttons"] == [
         {"label": "Ack", "action": "ack", "value": "Got it"},
         {"label": "FAQ", "action": "message", "value": "See the wiki"},
-        {"label": "Help", "action": "alert", "value": ""},
         {"label": "Wait", "action": "delay", "value": "3"},
         {"label": "Run", "action": "config", "value": "approve-flow"},
     ]
     # invalid delay rejected
     await process_command(app, 'add button "Bad" delay nope', channel, user)
-    assert len(channel.configs["default"]["buttons"]) == 5
+    assert len(channel.configs["default"]["buttons"]) == 4
 
 
 @pytest.mark.asyncio
@@ -2160,24 +2158,28 @@ async def test_button_press_ack_cancels_without_running_config():
 
 
 @pytest.mark.asyncio
-async def test_button_press_alert_fires_opsgenie_with_orig_context():
+async def test_button_press_config_passes_orig_context():
+    # A `config` button runs its target with the *original* message context, so a
+    # target with OpsGenie on alerts about the original message.
     app = AsyncMock()
+    target_config = DEFAULT_CONFIG.copy()
+    target_config["trigger"] = "manual"
     src_config = DEFAULT_CONFIG.copy()
-    src_config["opsgenie"] = True
-    src_config["buttons"] = [{"label": "Help needed", "action": "alert", "value": ""}]
-    channel = _mk_channel({"src": src_config})
+    src_config["buttons"] = [{"label": "Help needed", "action": "config", "value": "oncall"}]
+    channel = _mk_channel({"src": src_config, "oncall": target_config})
     bot.pending_buttons.clear()
     bot.pending_buttons[("C12345", "10.1")] = {"task": None, "orig": {"user_id": "U5", "text": "help", "ts": "9.9", "permalink": "p"}}
     body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
     action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
     with patch('bot.cancel_pending_button', new=AsyncMock()), \
          patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
-         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
-         patch('bot.fire_opsgenie_from_orig', new=AsyncMock()) as fire:
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
+         patch('bot.run_action', new=AsyncMock()) as run:
         await bot.handle_button_press(app, "token", body, action)
-    fire.assert_awaited_once()
-    assert fire.await_args.args[3] is src_config
-    assert fire.await_args.args[4] == {"user_id": "U5", "text": "help", "ts": "9.9", "permalink": "p"}
+    run.assert_awaited_once()
+    assert run.await_args.args[4] == "oncall"
+    ctx = run.await_args.kwargs["context"]
+    assert ctx["text"] == "help" and ctx["ts"] == "9.9" and ctx["permalink"] == "p"
 
 
 @pytest.mark.asyncio
@@ -2237,24 +2239,31 @@ async def test_escalation_task_runs_config_target():
 
 
 @pytest.mark.asyncio
-async def test_escalation_task_alert_fires_opsgenie():
+async def test_escalation_task_config_passes_orig_context():
+    # Timeout → run the target config with the original message context (so an
+    # OpsGenie-enabled target alerts about the original message).
     app = AsyncMock()
-    src = DEFAULT_CONFIG.copy()
-    src["opsgenie"] = True
-    channel = _mk_channel({"src": src})
+    oncall = DEFAULT_CONFIG.copy()
+    oncall["trigger"] = "manual"
+    oncall["opsgenie"] = True
+    channel = _mk_channel({"oncall": oncall})
     key = ("C12345", "10.1")
     bot.pending_buttons.clear()
     bot.pending_buttons[key] = {
         "task": None, "posted_channel_id": "C12345", "message_ts": "10.1",
         "def_channel_id": "C12345", "config_name": "src",
-        "escalation_kind": "alert", "escalation_target": "", "orig": {"user_id": "U5", "text": "t", "ts": "9.9", "permalink": "p"},
+        "escalation_kind": "config", "escalation_target": "oncall",
+        "orig": {"user_id": "U5", "text": "DB down", "ts": "9.9", "permalink": "p"},
     }
     with patch('bot.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
          patch('bot.flush_button_cache', new=AsyncMock()), \
-         patch('bot.fire_opsgenie_from_orig', new=AsyncMock()) as fire:
+         patch('bot.run_action', new=AsyncMock()) as run:
         await bot._escalation_task(app, "token", key, 0)
-    fire.assert_awaited_once()
-    assert fire.await_args.args[3] is src
+    run.assert_awaited_once()
+    assert run.await_args.args[4] == "oncall"
+    ctx = run.await_args.kwargs["context"]
+    assert ctx["text"] == "DB down" and ctx["ts"] == "9.9" and ctx["permalink"] == "p"
 
 
 # ----- Scheduler -----
@@ -2378,71 +2387,69 @@ async def test_schedule_reply_fires_opsgenie_inline_without_buttons():
 
 
 @pytest.mark.asyncio
-async def test_schedule_reply_defers_opsgenie_when_buttons_present():
+async def test_run_action_fires_opsgenie_for_opsgenie_config():
+    # OpsGenie is now a property of any config that runs (no inline special-casing).
     app = AsyncMock()
-    app.client.chat_getPermalink.return_value = {"permalink": "p"}
     app.client.chat_postMessage.return_value = {"ts": "1"}
     cfg = DEFAULT_CONFIG.copy()
     cfg["opsgenie"] = True
-    cfg["button_timeout"] = 600
-    cfg["buttons"] = [{"label": "Ack", "action": "ack", "value": ""}]
+    cfg["reply_message"] = "ping"
     channel = _mk_channel({"src": cfg})
-    user = User("U2", "x", "X", "T")
+    ctx = {"channel_id": "C12345", "user": User("U5", "carol", "Carol", "T"), "text": "DB down", "ts": "9.9", "permalink": "link"}
     with patch('bot.opsgenie_configured', True), \
-         patch('bot.flush_replies_cache', new=AsyncMock()), \
-         patch('bot.flush_button_cache', new=AsyncMock()), \
          patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert:
-        bot.pending_buttons.clear()
-        await bot.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
-        # Alert is owned by the escalation, not fired inline. The escalation is
-        # keyed by the *posted reply* ts ("1" from the mock), not the original.
-        alert.assert_not_awaited()
-        entry = bot.pending_buttons.get(("C12345", "1"))
-        assert entry is not None and entry["escalation_kind"] == "alert"
-        # original message context captured for the deferred alert
-        assert entry["orig"]["text"] == "orig" and entry["orig"]["ts"] == "1.1"
-        await bot.cancel_pending_button("C12345", "1")
-    await asyncio.sleep(0)
-
-
-@pytest.mark.asyncio
-async def test_fire_opsgenie_from_orig():
-    app = AsyncMock()
-    channel = _mk_channel()
-    cfg = DEFAULT_CONFIG.copy()
-    cfg["opsgenie"] = True
-    orig = {"user_id": "U5", "text": "help", "ts": "9.9", "permalink": "link"}
-    with patch('bot.opsgenie_configured', True), \
-         patch('bot.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
-         patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert:
-        await bot.fire_opsgenie_from_orig(app, "tok", channel, cfg, orig)
+        await bot.run_action(app, "tok", channel, cfg, "src", context=ctx)
     alert.assert_awaited_once()
     args = alert.await_args.args
-    assert args[5] == "help" and args[6] == "9.9" and args[7] == "link"
-
-    # Disabled OpsGenie ⇒ no alert.
-    with patch('bot.opsgenie_configured', True), \
-         patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert2:
-        await bot.fire_opsgenie_from_orig(app, "tok", channel, DEFAULT_CONFIG.copy(), orig)
-    alert2.assert_not_awaited()
+    # default alert text = original message; ts/permalink from context
+    assert args[5] == "DB down" and args[6] == "9.9" and args[7] == "link"
 
 
 @pytest.mark.asyncio
-async def test_register_escalation_alert_without_timeout_keeps_record():
-    # An `alert` button with no timeout still needs a record (carries orig context).
+async def test_run_action_opsgenie_message_template_overrides():
     app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "1"}
     cfg = DEFAULT_CONFIG.copy()
     cfg["opsgenie"] = True
+    cfg["reply_message"] = "ping"
+    cfg["opsgenie_message"] = "Unanswered in {{channel}}: {{message}}"
+    channel = _mk_channel({"src": cfg})
+    ctx = {"channel_id": "C12345", "user": User("U5", "carol", "Carol", "T"), "text": "DB down", "ts": "9.9", "permalink": "link"}
+    with patch('bot.opsgenie_configured', True), \
+         patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert:
+        await bot.run_action(app, "tok", channel, cfg, "src", context=ctx)
+    alert.assert_awaited_once()
+    assert alert.await_args.args[5] == "Unanswered in #general: DB down"
+
+
+@pytest.mark.asyncio
+async def test_run_action_no_opsgenie_when_disabled():
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "1"}
+    cfg = DEFAULT_CONFIG.copy()  # opsgenie off
+    channel = _mk_channel({"src": cfg})
+    with patch('bot.opsgenie_configured', True), \
+         patch('bot.post_opsgenie_alert', new=AsyncMock()) as alert:
+        await bot.run_action(app, "tok", channel, cfg, "src", context={"channel_id": "C12345"})
+    alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_register_escalation_keeps_record_with_orig():
+    # No default-button / timeout-target ⇒ nothing to escalate to (kind none), but a
+    # record is still kept so button presses get the original message context.
+    app = AsyncMock()
+    cfg = DEFAULT_CONFIG.copy()
     cfg["button_timeout"] = 0
-    cfg["buttons"] = [{"label": "Help", "action": "alert", "value": ""}]
+    cfg["buttons"] = [{"label": "Yes", "action": "config", "value": "flow"}]
     bot.pending_buttons.clear()
-    with patch('bot.opsgenie_configured', True), patch('bot.flush_button_cache', new=AsyncMock()):
-        await bot.register_escalation(app, "tok", "C12345", "1.1", "C12345", "src", cfg, {"text": "t", "ts": "1.1"})
+    with patch('bot.flush_button_cache', new=AsyncMock()):
+        await bot.register_escalation(app, "tok", "C12345", "1.1", "C12345", "src", cfg, {"text": "t", "ts": "1.1", "permalink": "p"})
     entry = bot.pending_buttons.get(("C12345", "1.1"))
     assert entry is not None
-    assert entry["escalation_kind"] == "alert"
-    assert entry["task"] is None  # no timer, but record kept
-    assert entry["run_at"] == ""
+    assert entry["escalation_kind"] == "none"
+    assert entry["task"] is None and entry["run_at"] == ""
+    assert entry["orig"]["text"] == "t" and entry["orig"]["ts"] == "1.1"
 
 
 # ----- Default button: auto-press on timeout -----
@@ -2522,6 +2529,7 @@ async def test_need_help_yes_no_workflow_end_to_end():
 
         # No press within timeout ⇒ escalation auto-presses Yes ⇒ posts the help message.
         with patch('bot.get_channel_by_id', new=AsyncMock(return_value=Channel("C1", "support", ch.configs))), \
+             patch('bot.get_user_by_id', new=AsyncMock(return_value=u)), \
              patch('bot._post_message', new=AsyncMock()) as post:
             await bot._escalation_task(app, "tok", ("C1", "R1"), 0)
         post.assert_awaited_once_with(app, "C1", "Here is the help doc", None, "R1")
