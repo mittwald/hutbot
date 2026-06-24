@@ -1894,6 +1894,8 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
 async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     update_text = (
         "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what's :new::\n\n"
+        "> :robot_face: *Triggers, actions & buttons*\n>\n"
+        "> Rules can now run on a `schedule` (cron), DM a user or group, post to a channel, and carry interactive buttons (with an auto-press default + timeout escalation). See `/hutbot help`.\n>\n"
         "> :calendar: *OpsGenie date/time template variables and defaults*\n>\n"
         "> OpsGenie templates can now include current and next on-call start/end dates, times, and datetimes. Use `/hutbot [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]` to set the defaults.\n>\n"
         "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
