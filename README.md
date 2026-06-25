@@ -126,7 +126,7 @@ export HUTBOT_UI_ENABLED=1
 export HUTBOT_UI_PORT=8080            # default 8080
 export HUTBOT_UI_HOST=0.0.0.0         # default 0.0.0.0
 export HUTBOT_UI_USER_HEADER=X-Forwarded-Email   # default
-python bot.py
+python -m hutbot
 ```
 
 Then test with a manual header:
@@ -258,7 +258,7 @@ is the operator's responsibility — Hutbot only consumes the resulting header.
 export SLACK_BOT_TOKEN='xoxb-your-bot-token'
 export SLACK_APP_TOKEN='xapp-your-app-level-token'
 pip install -r requirements.txt
-python bot.py
+python -m hutbot
 ```
 
    - See [Hutbot Slack App](https://api.slack.com/apps/A07RQ54Q5H9)
@@ -355,3 +355,32 @@ export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
 helmfile sync
 ```
+
+## Development
+
+Hutbot is a Python package (`hutbot/`). The former monolithic `bot.py` has been
+split into cohesive modules:
+
+- `hutbot/state.py` — shared in-memory caches and runtime flags
+- `hutbot/models.py`, `hutbot/constants.py` — data types and configuration defaults
+- `hutbot/textutil.py`, `hutbot/datetimefmt.py` — logging/text helpers and date/time formatting
+- `hutbot/persistence.py` — config and cache load/save
+- `hutbot/slackcache.py` — Slack user/channel/usergroup lookups
+- `hutbot/templating.py`, `hutbot/opsgenie.py` — reply templates and OpsGenie integration
+- `hutbot/messaging.py`, `hutbot/actions.py`, `hutbot/buttons.py` — sending, the action engine, and interactive buttons/escalation
+- `hutbot/scheduling.py`, `hutbot/routing.py` — scheduled replies / cron triggers and Slack event routing
+- `hutbot/commands/` — slash-command parsing and handlers
+- `hutbot/webui_backend.py` — the web-UI bridge (the HTTP server lives in `webui.py`)
+- `hutbot/__main__.py` — the entry point
+
+Run it locally with `python -m hutbot`.
+
+### Running tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests live in `tests/` (one file per module) and run automatically in CI before
+the Docker image is built.

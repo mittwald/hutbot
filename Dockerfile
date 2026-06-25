@@ -10,4 +10,4 @@ COPY . .
 
 EXPOSE 8080
 
-ENTRYPOINT ["python", "bot.py"]
+ENTRYPOINT ["python", "-m", "hutbot"]

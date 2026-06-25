@@ -6,13 +6,37 @@ on:
       - main
     tags:
       - 'v*.*.*'
+  pull_request:
 
 permissions:
   contents: read
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements-dev.txt
+
+      - name: Import smoke test (catch circular imports)
+        run: python -c "import hutbot, hutbot.state, hutbot.actions, hutbot.buttons, hutbot.scheduling, hutbot.routing, hutbot.commands.dispatch, hutbot.webui_backend"
+
+      - name: Run tests
+        run: python -m pytest
+
   build-and-push:
+    needs: test
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
