@@ -21,6 +21,10 @@ spec:
   - ports:
     - port: {{ .Values.ui.port }}
       protocol: TCP
+    {{- with .Values.ui.allowedIngress }}
+    from:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
   {{- end }}
   egress:
 {{- if $rules }}

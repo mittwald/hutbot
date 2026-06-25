@@ -334,3 +334,85 @@ async def test_escalation_task_auto_presses_default_button():
         await hutbot.buttons._escalation_task(app, "token", key, 0)
     # auto-pressed "Yes" (message) ⇒ posts the help text in the thread
     post.assert_awaited_once_with(app, "C12345", "Here is the help", None, "10.1")
+
+
+@pytest.mark.asyncio
+async def test_delay_press_does_not_clobber_rescheduled_escalation():
+    # Regression (F2): a `delay` press cancels the active timer and stores a fresh
+    # one under the same key. The cancelled task's cleanup must not remove the new
+    # entry, or the delayed escalation would never fire.
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    config["buttons"] = [{"label": "Wait", "action": "delay", "value": "3"}]
+    config["button_timeout"] = 3600
+    config["button_timeout_target"] = "escalate"
+    key = ("C12345", "10.1")
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
+        await hutbot.buttons.register_escalation(
+            app, "token", "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
+        first = hutbot.state.pending_buttons[key]["task"]
+        assert await hutbot.buttons.reschedule_escalation(app, "token", "C12345", "10.1", 5)
+        try:
+            await first  # wait for the cancelled timer to run its finally
+        except asyncio.CancelledError:
+            pass
+        assert key in hutbot.state.pending_buttons        # not clobbered by cancelled task
+        entry = hutbot.state.pending_buttons[key]
+        assert entry["task"] is not first
+        assert entry["timeout"] == 300                    # the rescheduled 5-minute timer
+        await hutbot.buttons.cancel_pending_button("C12345", "10.1")
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_config_button_attributes_to_original_author_not_presser():
+    # F3: a config-running button pressed by someone else runs with the ORIGINAL
+    # author as {{user}}/{{team}}, not the clicker.
+    app = AsyncMock()
+    target = DEFAULT_CONFIG.copy(); target["trigger"] = "manual"
+    src = DEFAULT_CONFIG.copy(); src["buttons"] = [{"label": "Go", "action": "config", "value": "tgt"}]
+    channel = _mk_channel({"src": src, "tgt": target})
+    users = {"U9": User("U9", "bob", "Bob", "Ops"), "U5": User("U5", "carol", "Carol", "Platform")}
+    hutbot.state.pending_buttons[("C12345", "10.1")] = {
+        "task": None, "orig": {"user_id": "U5", "text": "help", "ts": "9.9", "permalink": "p"},
+        "buttons": src["buttons"], "posted_text": "Need help?",
+    }
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
+    action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=lambda app, uid, *a, **k: users[uid])), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+        await hutbot.buttons.handle_button_press(app, "token", body, action)
+    ctx = run.await_args.kwargs["context"]
+    assert ctx["user"].id == "U5"   # original author, not presser U9
+    assert ctx["text"] == "help"
+
+
+@pytest.mark.asyncio
+async def test_button_resolves_from_snapshot_and_strips_after_press():
+    # F6: a press resolves against the buttons snapshotted at post time (not a
+    # since-edited config), and the message is de-buttoned once handled.
+    app = AsyncMock()
+    src = DEFAULT_CONFIG.copy(); src["buttons"] = [{"label": "Ack", "action": "ack", "value": "ok"}]
+    channel = _mk_channel({"src": src})
+    key = ("C12345", "10.1")
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "orig": {}, "posted_text": "Approve?",
+        "buttons": [{"label": "Ack", "action": "ack", "value": "ok"}],
+    }
+    # config edited AFTER posting: index 0 now maps to a dangerous config action
+    channel.configs["src"]["buttons"] = [{"label": "Run", "action": "config", "value": "danger"}]
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
+    action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.messaging._post_message', new=AsyncMock()) as post, \
+         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+        await hutbot.buttons.handle_button_press(app, "token", body, action)
+    run.assert_not_awaited()                                   # snapshot ack, not the edited config action
+    post.assert_awaited_once_with(app, "C12345", "ok", None, "10.1")
+    app.client.chat_update.assert_awaited_once()               # buttons stripped
+    kw = app.client.chat_update.await_args.kwargs
+    assert kw["ts"] == "10.1" and kw["text"] == "Approve?"

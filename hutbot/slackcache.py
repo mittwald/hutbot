@@ -206,6 +206,22 @@ async def get_user_by_email(app: AsyncApp, email: str) -> User:
     return await get_user_by_name(app, user_alias)
 
 
+async def get_user_by_email_strict(app: AsyncApp, email: str) -> User:
+    """Exact-email lookup only — no username fallback.
+
+    Used for web-UI authentication: the lenient ``get_user_by_email`` falls back
+    to matching a Slack *username* from the email local-part, which would let a
+    proxy-authenticated address like ``alice@external.example`` be authorized as
+    Slack user ``alice``. This resolver returns an id-less User on no exact match
+    so the UI gate rejects it.
+    """
+    await update_user_cache(app)
+    user = state.user_email_cache.get(normalize_id(email), None)
+    if user:
+        return user
+    return User(id=None, name=email, team=TEAM_UNKNOWN, real_name='')
+
+
 async def get_usergroup_by_id(app: AsyncApp, id: str) -> Usergroup:
     await update_usergroup_cache(app)
     usergroup = state.id_usergroup_cache.get(id, None)

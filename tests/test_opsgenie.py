@@ -788,3 +788,21 @@ async def test_run_action_no_opsgenie_when_disabled():
          patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert:
         await hutbot.actions.run_action(app, "tok", channel, cfg, "src", context={"channel_id": "C12345"})
     alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_opsgenie_alert_uses_posted_ts_for_unique_alias():
+    # F5: a scheduled run has no original ts; the alert must use the posted message
+    # ts so recurrences don't collapse via OpsGenie alias de-duplication.
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "111.222"}
+    cfg = DEFAULT_CONFIG.copy()
+    cfg["opsgenie"] = True
+    cfg["reply_message"] = "scheduled ping"
+    channel = _mk_channel({"sched": cfg})
+    ctx = {"channel_id": "C12345"}  # scheduled trigger: no original message ts
+    with patch('hutbot.state.opsgenie_configured', True), \
+         patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert:
+        await hutbot.actions.run_action(app, "tok", channel, cfg, "sched", context=ctx)
+    alert.assert_awaited_once()
+    assert alert.await_args.args[6] == "111.222"  # ts arg for the alias = posted ts, not empty

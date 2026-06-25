@@ -178,6 +178,18 @@ readiness/liveness probes, and opens the NetworkPolicy ingress for that port; th
 when `ui.ingress.enabled` is also `true`. The Keycloak integration itself (oauth2-proxy / annotations)
 is the operator's responsibility — Hutbot only consumes the resulting header.
 
+> **Security:** the UI trusts the proxy-set email header, so any pod able to reach the UI port can
+> spoof it and edit configs. Restrict the NetworkPolicy ingress to your auth proxy / ingress
+> controller with `ui.allowedIngress` (a list of NetworkPolicy peers rendered into the rule's `from:`).
+> Leaving it empty allows all sources (back-compat) and is not recommended:
+> ```yaml
+> ui:
+>   allowedIngress:
+>     - namespaceSelector:
+>         matchLabels:
+>           kubernetes.io/metadata.name: ingress-nginx
+> ```
+
 ## Step 1: Set Up the Slack App
 
 1. **Create a New Slack App**

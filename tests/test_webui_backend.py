@@ -174,3 +174,19 @@ async def test_ui_delete_config_refuses_default(monkeypatch):
     ok, msg = await hutbot.webui_backend.ui_delete_config(app, "C1", "my-rule")
     assert ok is True
     assert "my-rule" not in hutbot.state.channel_config["C1"]
+
+
+@pytest.mark.asyncio
+async def test_get_user_by_email_strict_rejects_username_fallback():
+    # Regression (F4): UI auth must match on exact email only; the lenient resolver
+    # (used for OpsGenie / rule targets) still falls back to the username local-part.
+    app = AsyncMock()
+    alice = User("U1", "alice", "Alice", "Team")
+    hutbot.state.user_email_cache["alice@corp.example"] = alice
+    hutbot.state.user_id_cache["alice"] = alice
+    with patch('hutbot.slackcache.update_user_cache', new=AsyncMock()):
+        assert (await hutbot.slackcache.get_user_by_email_strict(app, "alice@corp.example")).id == "U1"
+        # external address whose local-part matches a Slack username is NOT authorized
+        assert (await hutbot.slackcache.get_user_by_email_strict(app, "alice@external.example")).id is None
+        # contrast: the lenient resolver still falls back to the username (the flagged behavior)
+        assert (await hutbot.slackcache.get_user_by_email(app, "alice@external.example")).id == "U1"

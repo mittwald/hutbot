@@ -54,7 +54,7 @@ async def render_action_text(app: AsyncApp, opsgenie_token: str, channel: Channe
     return await _render_template(app, opsgenie_token, channel, config, config_name, context, config.get('reply_message') or '')
 
 
-async def maybe_post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None) -> None:
+async def maybe_post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, posted_ts: str = '') -> None:
     """Fire an OpsGenie alert when a config that just ran has OpsGenie enabled.
 
     The alert text defaults to the (original) message in context; a non-empty
@@ -69,7 +69,12 @@ async def maybe_post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel:
     template = config.get('opsgenie_message') or ''
     alert_text = await _render_template(app, opsgenie_token, channel, config, config_name, context, template) if template else context.get('text', '')
     log(f"Sending OpsGenie alert for config '{config_name}' in #{channel.name}.")
-    await opsgenie.post_opsgenie_alert(app, opsgenie_token, channel, config, user, alert_text, context.get('ts', ''), context.get('permalink', ''))
+    # Scheduled/manual runs have no original-message ts, which would give every
+    # recurrence the same OpsGenie alias and collapse them via dedup. Fall back to
+    # the just-posted message ts so each run is a distinct alert. Used for the alias
+    # only — not threaded into context/template variables.
+    alert_ts = context.get('ts', '') or posted_ts
+    await opsgenie.post_opsgenie_alert(app, opsgenie_token, channel, config, user, alert_text, alert_ts, context.get('permalink', ''))
 
 
 async def action_reply(app: AsyncApp, channel: Channel, config: dict, context: dict | None, text: str, blocks: list | None) -> dict | None:
@@ -152,9 +157,9 @@ async def run_action(app: AsyncApp, opsgenie_token: str, channel: Channel, confi
     if not posted:
         return None
     if posted.get('ts') and config.get('buttons'):
-        await buttons.register_escalation(app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config, context)
+        await buttons.register_escalation(app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config, context, posted_text=text)
     # OpsGenie is just a config property: any config that runs and has it enabled alerts.
-    await maybe_post_opsgenie_alert(app, opsgenie_token, channel, config, config_name, context)
+    await maybe_post_opsgenie_alert(app, opsgenie_token, channel, config, config_name, context, posted.get('ts', ''))
     return {**posted, 'text': text}
 
 

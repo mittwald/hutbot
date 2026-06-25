@@ -404,7 +404,7 @@ async def maybe_start_web_ui(app: AsyncApp):
         port = 8080
     ctx = WebUIContext(
         user_header=os.environ.get('HUTBOT_UI_USER_HEADER', 'X-Forwarded-Email'),
-        resolve_user=lambda email: slackcache.get_user_by_email(app, email),
+        resolve_user=lambda email: slackcache.get_user_by_email_strict(app, email),
         list_channels=lambda user: list_user_config_channels(app, user),
         is_member=lambda channel_id, user_id: slackcache.is_user_in_channel(app, channel_id, user_id),
         get_configs=ui_snapshot_configs,

@@ -29,6 +29,15 @@ ui:
   host: "0.0.0.0"
   # Trusted reverse-proxy header carrying the authenticated user's email.
   userHeader: "X-Forwarded-Email"
+  # NetworkPolicy ingress sources allowed to reach the UI port. Each entry is a
+  # NetworkPolicy peer (e.g. namespaceSelector / podSelector / ipBlock) and is
+  # rendered verbatim into the ingress rule's `from:`. STRONGLY recommended: the UI
+  # trusts a proxy-set email header, so any pod that can reach the port can spoof it.
+  # Empty list = allow all sources (back-compat, insecure). Example:
+  #   allowedIngress:
+  #     - namespaceSelector:
+  #         matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+  allowedIngress: []
   service:
     type: ClusterIP
   ingress:
