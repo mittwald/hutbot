@@ -1,13 +1,25 @@
+environments:
+  default:
+    values:
+      - releaseName: hutbot
+        namespace: mw-internal
+        imageTag: latest
+  dev:
+    values:
+      - releaseName: hutbot-dev
+        namespace: mw-internal
+        imageTag: latest
+---
 repositories: []
 
 releases:
-  - name: hutbot
-    namespace: mw-internal
+  - name: {{ .Values.releaseName }}
+    namespace: {{ env "NAMESPACE" | default .Values.namespace }}
     chart: ./charts/hutbot
     values:
       - image:
-          repository: ghcr.io/mittwald/hutbot
-          tag: "latest"
+          repository: {{ env "IMAGE_REPOSITORY" | default "ghcr.io/mittwald/hutbot" | quote }}
+          tag: {{ env "IMAGE_TAG" | default .Values.imageTag | quote }}
         replicaCount: 1
       - slack:
           appToken: {{ requiredEnv "SLACK_APP_TOKEN" | quote }}

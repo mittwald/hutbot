@@ -335,6 +335,54 @@ helmfile sync
 > **Note:** Helmfile uses Go templating to inject these variables and will error if any required environment variables are missing.
 > Ensure you run `source .env` in the same shell as you execute `helmfile sync`.
 
+### Deploying a Dev Instance
+
+The Helmfile defines two environments so a second, independent instance can run alongside production
+in the same namespace:
+
+| Environment | Release name  | Purpose                                          |
+| ----------- | ------------- | ------------------------------------------------ |
+| `default`   | `hutbot`      | Production instance                              |
+| `dev`       | `hutbot-dev`  | Dev instance (separate Slack app, own PVC/Secret) |
+
+All chart resources are named after the Helm release, so the dev release gets its own Deployment,
+Secret (`hutbot-dev-secret`), PersistentVolumeClaim (`hutbot-dev-pvc`) and NetworkPolicy. The two
+instances share nothing.
+
+Register a second Slack app for the dev bot and put its credentials in a `.env-dev` file (also ignored
+by git). It uses the exact same variable names as `.env`:
+
+```bash
+export SLACK_BOT_TOKEN='<dev bot token>'
+export SLACK_APP_TOKEN='<dev app-level token>'
+# ... same variables as .env
+```
+
+Then deploy with the `dev` environment selected:
+
+```bash
+source .env-dev
+helmfile -e dev sync
+```
+
+Production is unaffected and keeps deploying as before (`source .env && helmfile sync`), which is
+equivalent to `helmfile -e default sync`.
+
+> **Note:** Point the dev instance at its own Opsgenie heartbeat (or leave `OPSGENIE_HEARTBEAT_NAME`
+> empty in `.env-dev`), otherwise the dev pod will ping the production heartbeat.
+
+Both environments default to the `ghcr.io/mittwald/hutbot:latest` image. To run the dev instance on a
+different build, override the image via environment variables:
+
+```bash
+export IMAGE_TAG=my-feature-branch
+export IMAGE_REPOSITORY=ghcr.io/mittwald/hutbot   # optional
+helmfile -e dev sync
+```
+
+The target namespace defaults to `mw-internal` for both environments and can be overridden with
+`NAMESPACE`.
+
 ### Persisting the Configuration File
 
 Hutbot stores its channel configuration in a JSON file (`bot.json`) on a mounted volume. You can configure the persistence options in the Helm chart like this:
