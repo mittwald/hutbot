@@ -1,14 +1,16 @@
+# Image tags are pinned to specific releases on purpose: no floating `latest`.
+# Bump `imageTag` here (or override with IMAGE_TAG) to roll out a new version.
 environments:
   default:
     values:
       - releaseName: hutbot
         namespace: mw-internal
-        imageTag: latest
+        imageTag: v1.0.9
   dev:
     values:
       - releaseName: hutbot-dev
         namespace: mw-internal
-        imageTag: latest
+        imageTag: v1.0.9
 ---
 repositories: []
 

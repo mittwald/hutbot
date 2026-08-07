@@ -4,8 +4,10 @@ replicaCount: 1
 
 image:
   repository: hutbot
-  tag: "latest"
-  pullPolicy: Always
+  # Must be set to a specific, immutable tag (e.g. v1.0.9). Rendering fails if empty.
+  # Floating tags (latest, main) are intentionally not used for deployments.
+  tag: ""
+  pullPolicy: IfNotPresent
 
 slack:
   appToken: ""

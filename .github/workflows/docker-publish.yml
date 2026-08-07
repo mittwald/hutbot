@@ -53,11 +53,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Tag pushes (v*.*.*) publish immutable release tags only, so deployments can
+      # pin an exact version. Pushes to main additionally move the `main`/`latest`
+      # floating tags, which are for convenience only and must not be deployed.
+      - name: Compute image tags
+        id: tags
+        run: |
+          image=ghcr.io/mittwald/hutbot
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tags="$image:$GITHUB_REF_NAME,$image:${GITHUB_REF_NAME#v}"
+          else
+            tags="$image:$GITHUB_REF_NAME,$image:latest"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/mittwald/hutbot:latest
-            ghcr.io/mittwald/hutbot:${{ github.ref_name }}
+          tags: ${{ steps.tags.outputs.tags }}

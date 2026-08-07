@@ -284,12 +284,28 @@ python -m hutbot
 
 ## Docker and Kubernetes Deployment
 
-A GitHub Actions workflow automatically builds and publishes the Docker image to GitHub Container Registry on pushes to `main` and tags `v*.*.*`. You can pull the image with:
+A GitHub Actions workflow automatically builds and publishes the Docker image to GitHub Container
+Registry on pushes to `main` and on tags matching `v*.*.*`. Cutting a release is just pushing a tag:
 
 ```bash
-docker pull ghcr.io/mittwald/hutbot:latest
-docker pull ghcr.io/mittwald/hutbot:<version>
+git tag v1.1.0
+git push origin v1.1.0
 ```
+
+The published tags are:
+
+| Trigger              | Image tags                     | Deployable |
+| -------------------- | ------------------------------ | ---------- |
+| Tag push `v1.1.0`    | `v1.1.0`, `1.1.0`              | yes        |
+| Push to `main`       | `main`, `latest`               | no         |
+
+```bash
+docker pull ghcr.io/mittwald/hutbot:v1.1.0
+```
+
+> **Note:** `latest` and `main` are floating convenience tags. Deployments must pin an exact release
+> tag — the Helm chart refuses to render if `image.tag` is empty, so a version has to be chosen
+> explicitly.
 
 This repository includes a Helm chart under `charts/hutbot` and a Helmfile configuration at `helmfile.yaml.gotmpl`.
 
@@ -371,11 +387,12 @@ equivalent to `helmfile -e default sync`.
 > **Note:** Point the dev instance at its own Opsgenie heartbeat (or leave `OPSGENIE_HEARTBEAT_NAME`
 > empty in `.env-dev`), otherwise the dev pod will ping the production heartbeat.
 
-Both environments default to the `ghcr.io/mittwald/hutbot:latest` image. To run the dev instance on a
-different build, override the image via environment variables:
+Each environment pins a specific image tag in the `environments` block of `helmfile.yaml.gotmpl`
+(`imageTag`) — no floating `latest`. Bump that value to roll out a new release, or override it per
+invocation to test a build in dev before promoting it to production:
 
 ```bash
-export IMAGE_TAG=my-feature-branch
+export IMAGE_TAG=v1.1.0
 export IMAGE_REPOSITORY=ghcr.io/mittwald/hutbot   # optional
 helmfile -e dev sync
 ```

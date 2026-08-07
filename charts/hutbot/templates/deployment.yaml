@@ -20,7 +20,7 @@ spec:
       {{- end }}
       containers:
         - name: {{ .Release.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ required "image.tag must be set to a specific image tag (e.g. v1.0.9); floating tags like 'latest' are not allowed" .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           envFrom:
             - secretRef:
