@@ -8,7 +8,7 @@ from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from employee_list import get_env_var, load_env_file, log_error
 
 from . import state
-from .constants import normalize_slash_command
+from .constants import DEFAULT_BOT_NAME, normalize_slash_command
 from . import persistence
 from . import slackcache
 from . import scheduling
@@ -25,6 +25,7 @@ async def main() -> None:
     opsgenie_token = get_env_var("OPSGENIE_TOKEN")
     opsgenie_heartbeat_name = get_env_var("OPSGENIE_HEARTBEAT_NAME")
     state.slash_command = normalize_slash_command(get_env_var("HUTBOT_SLASH_COMMAND"))
+    state.bot_name = get_env_var("HUTBOT_BOT_NAME").strip() or DEFAULT_BOT_NAME
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)
@@ -36,7 +37,11 @@ async def main() -> None:
     try:
         app = AsyncApp(token=slack_bot_token)
         await persistence.load_configuration(app)
-        state.bot_user_id = (await app.client.auth_test())["user_id"]
+        auth = await app.client.auth_test()
+        state.bot_user_id = auth["user_id"]
+        # The Slack handle differs per app (hutbot vs. hutbot_dev), so the help
+        # text's `@mention` examples have to come from the workspace, not a constant.
+        state.bot_user_name = auth.get("user") or DEFAULT_BOT_NAME
         await slackcache.update_user_cache(app)
         await persistence.load_replies_cache()
         await scheduling.restore_scheduled_replies(app, opsgenie_token)

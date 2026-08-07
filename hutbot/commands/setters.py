@@ -108,7 +108,7 @@ async def set_forward_channel(app: AsyncApp, channel, config_name: str, channel_
     try:
         confirmation = (
             f"Reply messages from #{channel.name} (config `{config_name}`) "
-            f"will now be forwarded here by Hutbot :palm_up_hand::tophat:"
+            f"will now be forwarded here by {state.bot_name} :palm_up_hand::tophat:"
         )
         await app.client.chat_postMessage(channel=channel_id, text=confirmation, mrkdwn=True)
     except SlackApiError as e:

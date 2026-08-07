@@ -13,6 +13,10 @@ DEFAULT_CONFIG_NAME = 'default'
 # this is configurable via HUTBOT_SLASH_COMMAND. The live value is kept in
 # ``state.slash_command`` because the environment is only loaded at startup.
 DEFAULT_SLASH_COMMAND = '/hutbot'
+# Name the bot calls itself in user-facing text. A second instance (e.g. the dev
+# deployment) sets HUTBOT_BOT_NAME to something like "Hutbot (DEV)" so users can
+# tell the two apart. The live value is in ``state.bot_name``.
+DEFAULT_BOT_NAME = 'Hutbot'
 DEFAULT_DATE_FORMAT = "%a, %d %b %Y"
 DEFAULT_TIME_FORMAT = "%H:%M"
 DEFAULT_OPSGENIE_PRIORITY = "P4"
@@ -103,6 +107,17 @@ IGNORED_MESSAGE_SUBTYPES = set(['channel_join',
                                 'channel_posting_permissions',
                                 'channel_purpose',
                                 'channel_topic'])
+
+
+def bot_slug(name: str) -> str:
+    """Machine-safe form of the bot name, e.g. "Hutbot (DEV)" -> "hutbot-dev".
+
+    Used where a stable identifier is needed instead of a display name (the
+    OpsGenie alert alias, which is the dedup key). "Hutbot" maps to "hutbot",
+    so the production alias is unchanged.
+    """
+    slug = re.sub(r'[^a-z0-9]+', '-', (name or "").lower()).strip('-')
+    return slug or DEFAULT_BOT_NAME.lower()
 
 
 def normalize_slash_command(value: str) -> str:

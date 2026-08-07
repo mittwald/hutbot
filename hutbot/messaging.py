@@ -150,25 +150,27 @@ async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]
 
 async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     command = state.slash_command
+    name = state.bot_name
+    mention = f"@{state.bot_user_name}"
     update_text = (
-        "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what's :new::\n\n"
+        f"Hi! :wave: I am *{name}* :palm_up_hand::tophat: Here's what's :new::\n\n"
         "> :robot_face: *Triggers, actions & buttons*\n>\n"
         f"> Rules can now run on a `schedule` (cron), DM a user or group, post to a channel, and carry interactive buttons (with an auto-press default + timeout escalation). See `{command} help`.\n>\n"
         "> :calendar: *OpsGenie date/time template variables and defaults*\n>\n"
         f"> OpsGenie templates can now include current and next on-call start/end dates, times, and datetimes. Use `{command} [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]` to set the defaults.\n>\n"
         "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
-        "> That means Hutbot can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
+        "> That means " + name + " can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
         "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
         "> :list-item: *List available Opsgenie schedules*\n>\n"
         "> :telephone_receiver: *Print the current on-call user*\n"
         f"> Use `{command} [config] on-call [schedule name]` to get the current OpsGenie on-call user as a Slack mention.\n>\n"
         "> :test_tube: *Preview your configured reply*\n"
-        f"> Use `{command} [config] test` or mention me with `@Hutbot [config] test <message>` to test reply templates and variables.\n>\n"
-        "> :bug: *Hutbot now ONLY cancels replying, when the _expected_ team(s) have already replied* :lightbulb:\n>\n"
+        f"> Use `{command} [config] test` or mention me with `{mention} [config] test <message>` to test reply templates and variables.\n>\n"
+        f"> :bug: *{name} now ONLY cancels replying, when the _expected_ team(s) have already replied* :lightbulb:\n>\n"
         "> Issue was:\n>\n"
         "> 1. Team *A* sends a message intended for Team *B*\n"
         "> 2. Someone else from Team *A* adds additional information\n"
-        "> 3. Hutbot cancels the reply and does NOT remind Team *B* anymore :fail:\n"
+        f"> 3. {name} cancels the reply and does NOT remind Team *B* anymore :fail:\n"
     )
     await send_message(app, channel, user, update_text, thread_ts)
 
@@ -176,6 +178,8 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
 async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     supported_template_variables = ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
     command = state.slash_command
+    name = state.bot_name
+    mention = f"@{state.bot_user_name}"
     command_rows = [
         (f"{command} show config", "Show all configurations."),
         (f"{command} [config] enable opsgenie", "Enable OpsGenie alerts."),
@@ -224,7 +228,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         (f"{command} [config] set default-button \"<label>\"", "Auto-press this button on timeout."),
         (f"{command} [config] run", "Run this configuration's action now."),
         (f"{command} [config] test", "Preview configured reply."),
-        ("@Hutbot [config] test <message>", "Preview reply with <message> as {{message}}."),
+        (f"{mention} [config] test <message>", "Preview reply with <message> as {{message}}."),
         (f"{command} delete config <name>", "Delete a configuration."),
         (f"{command} news", "Show what's new."),
         (f"{command} help", "Show this help."),
@@ -232,11 +236,11 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     command_width = max(len(command) for command, _ in command_rows)
     command_usage = "\n".join(f"{command:<{command_width}}  {description}" for command, description in command_rows)
     help_text = (
-        "Hi! :wave: I am *Hutbot* :palm_up_hand::tophat: Here's what I can do:\n\n"
+        f"Hi! :wave: I am *{name}* :palm_up_hand::tophat: Here's what I can do:\n\n"
         "*Show All Configurations:*\n"
-        f"> Either use the command `{command}` or just `@Hutbot` me.\n"
+        f"> Either use the command `{command}` or just `{mention}` me.\n"
         f"```{command} show config\n"
-        "@Hutbot show config```\n"
+        f"{mention} show config```\n"
         f"Displays all configurations for `#{channel.name}`.\n\n"
         "*Commands:*\n"
         f"```\n{command_usage}\n```\n\n"

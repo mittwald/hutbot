@@ -25,6 +25,18 @@ function h(tag, attrs, ...kids) {
 }
 const $ = (sel, root = document) => root.querySelector(sel);
 
+// ---------- branding ----------
+// Instances (prod / dev) run under different names; /api/meta carries the live one.
+let botName = "Hutbot";
+
+function applyBranding(name) {
+  if (!name) return;
+  botName = name;
+  document.title = `${name} · Watch Desk`;
+  const brand = $(".brand-name");
+  if (brand) brand.textContent = name.toLowerCase();
+}
+
 // ---------- state ----------
 const state = {
   meta: null,
@@ -66,12 +78,13 @@ function toast(message, isError = false) {
 async function boot() {
   const me = await api("GET", "/api/me");
   if (me.status === 403) return fatal("You're signed in, but we couldn't match you to a Slack account. Ask an admin to check your Slack ↔ directory mapping.");
-  if (!me.ok) return fatal("Couldn't reach Hutbot. Try reloading in a moment.");
+  if (!me.ok) return fatal(`Couldn't reach ${botName}. Try reloading in a moment.`);
 
   const [meta, channels] = await Promise.all([api("GET", "/api/meta"), api("GET", "/api/channels")]);
   if (!meta.ok || !channels.ok) return fatal("Couldn't load your configuration. Try reloading in a moment.");
 
   state.meta = meta.data;
+  applyBranding(state.meta.bot_name);
   state.channels = channels.data.channels || [];
   document.getElementById("app").setAttribute("aria-busy", "false");
   renderIdentity(me.data);
@@ -119,7 +132,7 @@ function renderChannels() {
 function renderEmptyStage() {
   $("#stage").replaceChildren(h("div", { class: "stage-empty" },
     h("strong", { text: "Nothing to watch yet" }),
-    "You can manage a channel here once Hutbot has a configuration in it and you're a member."));
+    `You can manage a channel here once ${botName} has a configuration in it and you're a member.`));
 }
 
 async function selectChannel(channelId) {

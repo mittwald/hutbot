@@ -190,3 +190,13 @@ async def test_get_user_by_email_strict_rejects_username_fallback():
         assert (await hutbot.slackcache.get_user_by_email_strict(app, "alice@external.example")).id is None
         # contrast: the lenient resolver still falls back to the username (the flagged behavior)
         assert (await hutbot.slackcache.get_user_by_email(app, "alice@external.example")).id == "U1"
+
+
+# ----- Per-instance naming -----
+
+def test_ui_meta_exposes_bot_name_and_slash_command():
+    with patch('hutbot.state.bot_name', 'Hutbot (DEV)'), \
+         patch('hutbot.state.slash_command', '/hutbot_dev'):
+        meta = ui_meta()
+    assert meta['bot_name'] == 'Hutbot (DEV)'
+    assert meta['slash_command'] == '/hutbot_dev'

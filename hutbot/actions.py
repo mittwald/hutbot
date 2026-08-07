@@ -36,7 +36,7 @@ async def _render_template(app: AsyncApp, opsgenie_token: str, channel: Channel,
     context = context or {}
     user = context.get('user')
     if user is None:
-        user = User(id=state.bot_user_id or '', name='hutbot', real_name='Hutbot', team=TEAM_UNKNOWN)
+        user = User(id=state.bot_user_id or '', name=state.bot_user_name, real_name=state.bot_name, team=TEAM_UNKNOWN)
     text = context.get('text', '')
     ts = context.get('ts', '')
     permalink = context.get('permalink')
@@ -65,7 +65,7 @@ async def maybe_post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel:
     if not (state.opsgenie_configured and config.get('opsgenie')):
         return
     context = context or {}
-    user = context.get('user') or User(id='', name='hutbot', real_name='Hutbot', team=TEAM_UNKNOWN)
+    user = context.get('user') or User(id='', name=state.bot_user_name, real_name=state.bot_name, team=TEAM_UNKNOWN)
     template = config.get('opsgenie_message') or ''
     alert_text = await _render_template(app, opsgenie_token, channel, config, config_name, context, template) if template else context.get('text', '')
     log(f"Sending OpsGenie alert for config '{config_name}' in #{channel.name}.")

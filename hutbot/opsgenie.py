@@ -17,6 +17,7 @@ from . import state
 from .constants import (
     DEFAULT_CONFIG,
     DEFAULT_OPSGENIE_PRIORITY,
+    bot_slug,
     OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
     OPSGENIE_PRIORITIES,
     UNKNOWN_EMAIL_ONCALL_PLACEHOLDER,
@@ -384,17 +385,20 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel, confi
         'Content-Type': 'application/json',
         'Authorization': f'GenieKey {opsgenie_token}'
     }
+    # The alias is OpsGenie's dedup key, so it uses the slug rather than the
+    # display name — that also keeps a dev instance from deduping against prod.
+    slug = bot_slug(state.bot_name)
     async with aiohttp.ClientSession() as session:
         try:
             data = {
                 "message": f"#{channel.name}: {text}",
-                "alias": f"hutbot: {user_name} in #{channel.name} {ts}",
+                "alias": f"{slug}: {user_name} in #{channel.name} {ts}",
                 "description": f"{user_name} in #{channel.name}: {text}",
-                "tags": ["Hutbot"],
+                "tags": [state.bot_name],
                 "details": {
                     "channel": f"#{channel.name}",
                     "sender": user_name,
-                    "bot": "hutbot",
+                    "bot": slug,
                     "permalink": permalink,
                 },
                 "priority": priority,

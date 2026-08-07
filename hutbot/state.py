@@ -12,10 +12,13 @@ never ``from .state import channel_config`` — several of these names are *rebo
 import asyncio
 import datetime
 
-from .constants import DEFAULT_SLASH_COMMAND
+from .constants import DEFAULT_BOT_NAME, DEFAULT_SLASH_COMMAND
 
 # Slash command this instance listens on; set from HUTBOT_SLASH_COMMAND at startup.
 slash_command = DEFAULT_SLASH_COMMAND
+
+# Name the bot uses for itself in user-facing text; set from HUTBOT_BOT_NAME at startup.
+bot_name = DEFAULT_BOT_NAME
 
 # Live configuration: {channel_id: {config_name: config_dict}}.
 channel_config: dict = {}
@@ -42,6 +45,8 @@ team_cache: set = set()
 
 # Resolved on startup from auth.test.
 bot_user_id = None
+# The bot's Slack handle from auth.test; used for the `@mention` examples in the help text.
+bot_user_name = DEFAULT_BOT_NAME
 
 # True once an OpsGenie token + heartbeat name are configured.
 opsgenie_configured = False
@@ -55,7 +60,7 @@ _config_write_lock = asyncio.Lock()
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, bot_user_id, opsgenie_configured, slash_command
+    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, slash_command, bot_name
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -70,5 +75,7 @@ def reset() -> None:
     _channel_members_cache.clear()
     _scheduler_last_check = None
     bot_user_id = None
+    bot_user_name = DEFAULT_BOT_NAME
     opsgenie_configured = False
     slash_command = DEFAULT_SLASH_COMMAND
+    bot_name = DEFAULT_BOT_NAME

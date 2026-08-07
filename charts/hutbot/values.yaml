@@ -15,6 +15,9 @@ slack:
   # Slash command this instance listens on. Must match the command configured in
   # the Slack app backing these tokens. Empty = the bot's default (/hutbot).
   slashCommand: ""
+  # Name the bot calls itself in user-facing text, e.g. "Hutbot (DEV)".
+  # Empty = the bot's default ("Hutbot").
+  botName: ""
 
 opsgenie:
   token: ""

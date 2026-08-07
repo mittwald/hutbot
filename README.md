@@ -321,6 +321,8 @@ export EMPLOYEE_LIST_PASSWORD='<your employee list password>'
 export EMPLOYEE_LIST_MAPPINGS='<optional comma-separated mappings, e.g.: user1=alias1,user2=alias2>'
 # Slash command this instance listens on; must match the Slack app. Default: /hutbot
 export HUTBOT_SLASH_COMMAND='/hutbot'
+# Name the bot uses for itself in help/news messages. Default: Hutbot
+export HUTBOT_BOT_NAME='Hutbot'
 # To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
@@ -388,6 +390,29 @@ equivalent to `helmfile -e default sync`.
 
 > **Note:** Point the dev instance at its own Opsgenie heartbeat (or leave `OPSGENIE_HEARTBEAT_NAME`
 > empty in `.env-dev`), otherwise the dev pod will ping the production heartbeat.
+
+#### Telling the instances apart
+
+`HUTBOT_BOT_NAME` (default `Hutbot`) is the name the bot uses for itself in user-facing text, so the
+dev instance introduces itself as *Hutbot (DEV)* in its help and news messages. The Helmfile sets it
+per environment (`botName`), and it can be overridden with the environment variable.
+
+The `@mention` examples in the help text are not affected by this: they have to be a working Slack
+handle, so they are taken from the bot's own `auth.test` response at startup (`@hutbot` vs.
+`@hutbot_dev`) rather than from `HUTBOT_BOT_NAME`.
+
+The name is used everywhere the instance identifies itself:
+
+| Surface           | With `HUTBOT_BOT_NAME='Hutbot (DEV)'`                       |
+| ----------------- | ----------------------------------------------------------- |
+| Help / news       | *Hi! I am **Hutbot (DEV)*** …                                 |
+| Forwarding notice | "… will now be forwarded here by Hutbot (DEV)"               |
+| Web UI            | Page title, wordmark and messages (served via `/api/meta`)   |
+| OpsGenie alert    | Tag `Hutbot (DEV)`, detail `bot: hutbot-dev`                  |
+
+The OpsGenie **alias** — the field OpsGenie deduplicates on — uses a slug of the name
+(`Hutbot` → `hutbot`, `Hutbot (DEV)` → `hutbot-dev`) instead of the display name. The production
+alias is therefore unchanged, and dev alerts can no longer deduplicate against production ones.
 
 #### Slash command per instance
 

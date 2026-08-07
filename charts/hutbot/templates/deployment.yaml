@@ -30,11 +30,15 @@ spec:
             - name: http
               containerPort: {{ .Values.ui.port }}
           {{- end }}
-          {{- if or .Values.persistence.enabled .Values.ui.enabled .Values.slack.slashCommand }}
+          {{- if or .Values.persistence.enabled .Values.ui.enabled .Values.slack.slashCommand .Values.slack.botName }}
           env:
             {{- if .Values.slack.slashCommand }}
             - name: HUTBOT_SLASH_COMMAND
               value: {{ .Values.slack.slashCommand | quote }}
+            {{- end }}
+            {{- if .Values.slack.botName }}
+            - name: HUTBOT_BOT_NAME
+              value: {{ .Values.slack.botName | quote }}
             {{- end }}
             {{- if .Values.persistence.enabled }}
             - name: HUTBOT_CONFIG_FILE

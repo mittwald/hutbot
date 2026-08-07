@@ -55,6 +55,8 @@ class WebUIContext:
     create_config: Callable[[str, str], Awaitable[tuple]]
     delete_config: Callable[[str, str], Awaitable[tuple]]
     meta: Callable[[], dict]
+    # Name of the instance behind this UI, for user-facing text (e.g. "Hutbot (DEV)").
+    bot_name: str = "Hutbot"
 
 
 def _ctx(request) -> WebUIContext:
@@ -83,7 +85,7 @@ async def _require_member(request):
     """Authorize a channel route. Returns (user, channel_id) or (None, error_response)."""
     user, _ = await _current_user(request)
     if not user:
-        return None, _forbidden("Sign in with your Slack-linked account to manage Hutbot.")
+        return None, _forbidden(f"Sign in with your Slack-linked account to manage {_ctx(request).bot_name}.")
     channel_id = request.match_info["cid"]
     if not await _ctx(request).is_member(channel_id, user.id):
         return None, _forbidden("You're not a member of that channel.")
@@ -104,7 +106,7 @@ async def handle_index(request):
 async def handle_me(request):
     user, email = await _current_user(request)
     if not user:
-        return _forbidden("Sign in with your Slack-linked account to manage Hutbot.")
+        return _forbidden(f"Sign in with your Slack-linked account to manage {_ctx(request).bot_name}.")
     return web.json_response({
         "email": email,
         "slack_user_id": user.id,

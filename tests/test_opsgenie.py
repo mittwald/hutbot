@@ -806,3 +806,42 @@ async def test_scheduled_opsgenie_alert_uses_posted_ts_for_unique_alias():
         await hutbot.actions.run_action(app, "tok", channel, cfg, "sched", context=ctx)
     alert.assert_awaited_once()
     assert alert.await_args.args[6] == "111.222"  # ts arg for the alias = posted ts, not empty
+
+
+# ----- Per-instance naming -----
+
+def test_bot_slug():
+    assert bot_slug("Hutbot") == "hutbot"
+    assert bot_slug("Hutbot (DEV)") == "hutbot-dev"
+    assert bot_slug("") == "hutbot"
+    assert bot_slug(None) == "hutbot"
+
+
+@pytest.mark.asyncio
+async def test_post_opsgenie_alert_uses_bot_name_for_tag_and_alias():
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={})
+    user = User("U1", "test", "Test User", "Testers")
+
+    class _Response:
+        status = 202
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+
+    posted = {}
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        def post(self, url, headers=None, data=None):
+            posted['data'] = json.loads(data)
+            return _Response()
+
+    with patch('hutbot.state.bot_name', 'Hutbot (DEV)'), \
+         patch('hutbot.opsgenie.aiohttp.ClientSession', return_value=_Session()), \
+         patch('hutbot.messaging.clean_slack_text', new=AsyncMock(return_value="hello")):
+        await hutbot.opsgenie.post_opsgenie_alert(app, "token", channel, None, user, "hello", "1.1", "https://slack.test/m")
+
+    assert posted['data']["tags"] == ["Hutbot (DEV)"]
+    assert posted['data']["alias"] == "hutbot-dev: Test User in #general 1.1"
+    assert posted['data']["details"]["bot"] == "hutbot-dev"

@@ -130,6 +130,26 @@ async def test_process_command_help_uses_configured_slash_command():
 
 
 @pytest.mark.asyncio
+async def test_process_command_help_uses_configured_bot_name():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="team-asylum", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.state.bot_name', 'Hutbot (DEV)'), \
+         patch('hutbot.state.bot_user_name', 'hutbot_dev'), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "help", channel, user)
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "I am *Hutbot (DEV)*" in sent_message
+    assert "or just `@hutbot_dev` me." in sent_message
+    assert "@hutbot_dev show config```" in sent_message
+    assert "@hutbot_dev [config] test <message>" in sent_message
+    assert "@Hutbot" not in sent_message
+
+
+
+@pytest.mark.asyncio
 async def test_set_forward_channel_with_mention():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})

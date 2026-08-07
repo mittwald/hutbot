@@ -385,6 +385,9 @@ def ui_meta() -> dict:
         'opsgenie_configured': state.opsgenie_configured,
         'default_config': copy.deepcopy(DEFAULT_CONFIG),
         'default_config_name': DEFAULT_CONFIG_NAME,
+        # Lets the UI brand itself per instance (e.g. "Hutbot (DEV)").
+        'bot_name': state.bot_name,
+        'slash_command': state.slash_command,
     }
 
 
@@ -412,5 +415,6 @@ async def maybe_start_web_ui(app: AsyncApp):
         create_config=lambda channel_id, name: ui_create_config(app, channel_id, name),
         delete_config=lambda channel_id, name: ui_delete_config(app, channel_id, name),
         meta=ui_meta,
+        bot_name=state.bot_name,
     )
     return await start_web_ui(ctx, host, port)
