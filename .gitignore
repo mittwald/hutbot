@@ -8,3 +8,4 @@ employees.json
 .codex
 scheduled_replies.json
 button_states.json
+.env-dev
