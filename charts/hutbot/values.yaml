@@ -12,6 +12,9 @@ image:
 slack:
   appToken: ""
   botToken: ""
+  # Slash command this instance listens on. Must match the command configured in
+  # the Slack app backing these tokens. Empty = the bot's default (/hutbot).
+  slashCommand: ""
 
 opsgenie:
   token: ""

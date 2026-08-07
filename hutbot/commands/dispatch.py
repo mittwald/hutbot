@@ -155,4 +155,4 @@ async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: st
         if await parse_and_execute_command(app, command_text, channel, config_name, user, thread_ts, opsgenie_token, allow_test_message, command_ts):
             return
 
-    await messaging.send_message(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", thread_ts)
+    await messaging.send_message(app, channel, user, f"Huh? :thinking_face: Maybe type `{state.slash_command} help` for a list of commands.", thread_ts)

@@ -6,11 +6,15 @@ environments:
       - releaseName: hutbot
         namespace: mw-internal
         imageTag: v1.0.9
+        slashCommand: /hutbot
   dev:
     values:
       - releaseName: hutbot-dev
         namespace: mw-internal
         imageTag: v1.0.9
+        # The dev instance runs behind its own Slack app, which registers its own
+        # slash command. Must match the command configured there.
+        slashCommand: /hutbot_dev
 ---
 repositories: []
 
@@ -26,6 +30,7 @@ releases:
       - slack:
           appToken: {{ requiredEnv "SLACK_APP_TOKEN" | quote }}
           botToken: {{ requiredEnv "SLACK_BOT_TOKEN" | quote }}
+          slashCommand: {{ env "HUTBOT_SLASH_COMMAND" | default .Values.slashCommand | quote }}
       - opsgenie:
           token: {{ env "OPSGENIE_TOKEN" | quote }}
           heartbeatName: {{ env "OPSGENIE_HEARTBEAT_NAME" | quote }}

@@ -319,6 +319,8 @@ export OPSGENIE_HEARTBEAT_NAME='<your Opsgenie heartbeat name>'
 export EMPLOYEE_LIST_USERNAME='<your employee list username>'
 export EMPLOYEE_LIST_PASSWORD='<your employee list password>'
 export EMPLOYEE_LIST_MAPPINGS='<optional comma-separated mappings, e.g.: user1=alias1,user2=alias2>'
+# Slash command this instance listens on; must match the Slack app. Default: /hutbot
+export HUTBOT_SLASH_COMMAND='/hutbot'
 # To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
@@ -386,6 +388,28 @@ equivalent to `helmfile -e default sync`.
 
 > **Note:** Point the dev instance at its own Opsgenie heartbeat (or leave `OPSGENIE_HEARTBEAT_NAME`
 > empty in `.env-dev`), otherwise the dev pod will ping the production heartbeat.
+
+#### Slash command per instance
+
+A Slack app cannot register a slash command that another app already owns, so the dev Slack app has
+to use its own — e.g. `/hutbot_dev`. The bot listens on the command in `HUTBOT_SLASH_COMMAND`
+(default `/hutbot`) and uses it in all help and error texts, so `/hutbot_dev help` prints
+`/hutbot_dev …` examples. If the running instance does not know about the command, Slack Bolt logs:
+
+```
+Unhandled request ({'type': None, 'command': '/hutbot_dev'})
+```
+
+The Helmfile sets this per environment (`slashCommand` in the `environments` block: `/hutbot` for
+`default`, `/hutbot_dev` for `dev`), and it can be overridden per invocation:
+
+```bash
+export HUTBOT_SLASH_COMMAND=/hutbot_test
+helmfile -e dev sync
+```
+
+The command name must match exactly what is configured in the Slack app (the leading `/` is added
+automatically if omitted).
 
 Each environment pins a specific image tag in the `environments` block of `helmfile.yaml.gotmpl`
 (`imageTag`) — no floating `latest`. Bump that value to roll out a new release, or override it per

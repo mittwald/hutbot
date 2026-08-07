@@ -15,7 +15,7 @@ from slack_sdk.errors import SlackApiError
 from employee_list import get_env_var
 
 from hutbot.models import Channel, User, Usergroup, ScheduledReply
-from hutbot.constants import DEFAULT_CONFIG
+from hutbot.constants import DEFAULT_CONFIG, normalize_slash_command
 from hutbot.textutil import extract_message_text
 from hutbot.datetimefmt import parse_time, is_work_day, is_work_time
 from hutbot.persistence import migrate_and_apply_defaults, load_replies_cache, flush_replies_cache
@@ -24,7 +24,7 @@ from hutbot.messaging import replace_ids, clean_slack_text, send_message
 from hutbot.scheduling import schedule_reply, restore_scheduled_replies
 from hutbot.routing import (
     route_message, handle_channel_message, handle_thread_response,
-    handle_reaction_added, handle_message_deletion,
+    handle_reaction_added, handle_message_deletion, register_app_handlers,
 )
 from hutbot.webui_backend import (
     validate_config_payload, list_user_config_channels, ui_create_config, ui_delete_config,

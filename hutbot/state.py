@@ -12,6 +12,11 @@ never ``from .state import channel_config`` — several of these names are *rebo
 import asyncio
 import datetime
 
+from .constants import DEFAULT_SLASH_COMMAND
+
+# Slash command this instance listens on; set from HUTBOT_SLASH_COMMAND at startup.
+slash_command = DEFAULT_SLASH_COMMAND
+
 # Live configuration: {channel_id: {config_name: config_dict}}.
 channel_config: dict = {}
 
@@ -50,7 +55,7 @@ _config_write_lock = asyncio.Lock()
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, bot_user_id, opsgenie_configured
+    global _scheduler_last_check, bot_user_id, opsgenie_configured, slash_command
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -66,3 +71,4 @@ def reset() -> None:
     _scheduler_last_check = None
     bot_user_id = None
     opsgenie_configured = False
+    slash_command = DEFAULT_SLASH_COMMAND

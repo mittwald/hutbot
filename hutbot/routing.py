@@ -244,7 +244,7 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
     async def handle_reaction_added_events(body, logger):
         await handle_reaction_added(app, body.get('event', {}) if body else {})
 
-    @app.command("/hutbot")
+    @app.command(state.slash_command)
     async def handle_command(ack, body, logger):
         await ack()
         await handle_command_event(app, body, opsgenie_token)

@@ -347,3 +347,22 @@ async def test_handle_channel_message_skips_non_message_trigger():
         hutbot.state.scheduled_messages.clear()
         await handle_channel_message(app, "token", channel, user, "hello", "1.1")
         assert mock_schedule.call_count == 1  # only the message-trigger config
+
+
+
+# ----- Slash command registration -----
+
+def test_normalize_slash_command():
+    assert normalize_slash_command("") == "/hutbot"
+    assert normalize_slash_command("   ") == "/hutbot"
+    assert normalize_slash_command(None) == "/hutbot"
+    assert normalize_slash_command("/hutbot_dev") == "/hutbot_dev"
+    assert normalize_slash_command("hutbot_dev") == "/hutbot_dev"
+    assert normalize_slash_command(" hutbot_dev ") == "/hutbot_dev"
+
+
+def test_register_app_handlers_uses_configured_slash_command():
+    app = MagicMock()
+    with patch('hutbot.state.slash_command', '/hutbot_dev'):
+        register_app_handlers(app)
+    assert app.command.call_args.args[0] == "/hutbot_dev"

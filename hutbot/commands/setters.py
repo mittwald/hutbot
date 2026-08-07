@@ -191,7 +191,7 @@ async def set_datetime_format(app: AsyncApp, channel, config_name: str, values: 
         await messaging.send_message(app, channel, user, f"Invalid *date/time format*: {error}.", thread_ts)
         return
     if len(tokens) < 2 or len(tokens) > 4:
-        await messaging.send_message(app, channel, user, "Invalid *date/time format*. Use `/hutbot [config] set datetime-format <date> <time> [<timezone> <locale>]`.", thread_ts)
+        await messaging.send_message(app, channel, user, f"Invalid *date/time format*. Use `{state.slash_command} [config] set datetime-format <date> <time> [<timezone> <locale>]`.", thread_ts)
         return
 
     date_format = tokens[0]

@@ -13,6 +13,7 @@ from employee_list import log, log_error, log_warning
 from . import datetimefmt
 from . import slackcache
 from . import messaging
+from . import state
 from .constants import (
     DEFAULT_CONFIG,
     DEFAULT_OPSGENIE_PRIORITY,
@@ -344,7 +345,7 @@ async def send_current_on_call(app: AsyncApp, opsgenie_token: str, channel, conf
     config = channel.configs.get(config_name, DEFAULT_CONFIG.copy())
     schedule_name = schedule_name.strip() or config.get("opsgenie_schedule_name", "").strip()
     if not schedule_name:
-        await messaging.send_message(app, channel, user, "No OpsGenie schedule configured. Use `/hutbot [config] set opsgenie-schedule <name>` or `/hutbot [config] on-call <schedule name>`.", thread_ts)
+        await messaging.send_message(app, channel, user, f"No OpsGenie schedule configured. Use `{state.slash_command} [config] set opsgenie-schedule <name>` or `{state.slash_command} [config] on-call <schedule name>`.", thread_ts)
         return
     if not opsgenie_token:
         await messaging.send_message(app, channel, user, "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.", thread_ts)

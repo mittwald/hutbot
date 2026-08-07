@@ -8,6 +8,7 @@ from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from employee_list import get_env_var, load_env_file, log_error
 
 from . import state
+from .constants import normalize_slash_command
 from . import persistence
 from . import slackcache
 from . import scheduling
@@ -23,6 +24,7 @@ async def main() -> None:
     slack_bot_token = get_env_var("SLACK_BOT_TOKEN")
     opsgenie_token = get_env_var("OPSGENIE_TOKEN")
     opsgenie_heartbeat_name = get_env_var("OPSGENIE_HEARTBEAT_NAME")
+    state.slash_command = normalize_slash_command(get_env_var("HUTBOT_SLASH_COMMAND"))
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)

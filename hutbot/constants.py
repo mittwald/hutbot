@@ -8,6 +8,11 @@ import os
 import re
 
 DEFAULT_CONFIG_NAME = 'default'
+# Slash command the bot registers with Slack. A second instance (e.g. the dev
+# deployment) runs behind its own Slack app and therefore its own command, so
+# this is configurable via HUTBOT_SLASH_COMMAND. The live value is kept in
+# ``state.slash_command`` because the environment is only loaded at startup.
+DEFAULT_SLASH_COMMAND = '/hutbot'
 DEFAULT_DATE_FORMAT = "%a, %d %b %Y"
 DEFAULT_TIME_FORMAT = "%H:%M"
 DEFAULT_OPSGENIE_PRIORITY = "P4"
@@ -98,6 +103,15 @@ IGNORED_MESSAGE_SUBTYPES = set(['channel_join',
                                 'channel_posting_permissions',
                                 'channel_purpose',
                                 'channel_topic'])
+
+
+def normalize_slash_command(value: str) -> str:
+    """Return a usable Slack slash command, defaulting when unset."""
+    value = (value or "").strip()
+    if not value:
+        return DEFAULT_SLASH_COMMAND
+    return value if value.startswith("/") else f"/{value}"
+
 
 MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
 ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
