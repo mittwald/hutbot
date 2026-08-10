@@ -274,6 +274,7 @@ python -m hutbot
 ```
 
    - See [Hutbot Slack App](https://api.slack.com/apps/A07RQ54Q5H9)
+   - See [Hutbot_DEV Slack App](https://api.slack.com/apps/A0BN19HUTAP)
    - Hosted at `nexus-cli get projects p-knksv4 -olink`
 
 9. **Invite Bot**
@@ -369,8 +370,9 @@ All chart resources are named after the Helm release, so the dev release gets it
 Secret (`hutbot-dev-secret`), PersistentVolumeClaim (`hutbot-dev-pvc`) and NetworkPolicy. The two
 instances share nothing.
 
-Register a second Slack app for the dev bot and put its credentials in a `.env-dev` file (also ignored
-by git). It uses the exact same variable names as `.env`:
+Register a second Slack app for the dev bot — [Hutbot_DEV Slack App](https://api.slack.com/apps/A0BN19HUTAP) —
+and put its credentials in a `.env-dev` file (also ignored by git). It uses the exact same variable
+names as `.env`:
 
 ```bash
 export SLACK_BOT_TOKEN='<dev bot token>'
