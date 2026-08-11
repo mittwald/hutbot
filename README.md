@@ -23,8 +23,27 @@ Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`
 ```
 
 The `<timezone>` is also the timezone the config's work days and work hours are
-counted in. Without one, both fall back to the server's local time (UTC in the
-container unless `TZ` is set).
+counted in. Without one, both fall back to the server's local time.
+
+Instance-wide defaults for configs that set neither come from the deployment
+(`time.timezone` / `time.locale` in the Helm chart, `HUTBOT_TIMEZONE` /
+`HUTBOT_DEFAULT_DATETIME_LOCALE` for `helmfile`):
+
+- `time.timezone` is the container's `TZ`, i.e. the server local timezone. The
+  image itself is UTC, so without it every config that sets no timezone formats
+  and counts work hours in UTC.
+- `time.locale` is the fallback date/time locale. Only `de` has translations;
+  every other locale renders English day/month names. The server's own `LANG` is
+  never used for this.
+
+Neither has a default: without them the instance runs UTC with English names.
+The `.env` / `.env-dev` files the deploy scripts source are the place to set
+them, e.g. `HUTBOT_TIMEZONE='Europe/Berlin'` and
+`HUTBOT_DEFAULT_DATETIME_LOCALE='de_DE'`.
+
+`show config` prints what a config actually ends up with, e.g.
+`Date/time timezone  Europe/Berlin (CEST, UTC+02:00, server local time)` and
+`Date/time locale    de_DE (instance default)`.
 
 Opsgenie alert priority defaults to `P4` and can be configured per channel config with:
 

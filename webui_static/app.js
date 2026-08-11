@@ -573,8 +573,8 @@ function formattingSection() {
   const body = h("div", { class: "pt-sm" }, grid(
     field("Date format", textInput("date_format", { mono: true, placeholder: "%a, %d %b %Y" })),
     field("Time format", textInput("time_format", { mono: true, placeholder: "%H:%M" })),
-    field("Timezone", textInput("datetime_timezone", { mono: true, placeholder: "Europe/Berlin" }), { error: fieldErr("datetime_timezone") }),
-    field("Locale", textInput("datetime_locale", { mono: true, placeholder: "de_DE" }), { error: fieldErr("datetime_locale") }),
+    field("Timezone", textInput("datetime_timezone", { mono: true, placeholder: "Europe/Berlin" }), { hint: "IANA name; also counts work days/hours. Blank = server local time.", error: fieldErr("datetime_timezone") }),
+    field("Locale", textInput("datetime_locale", { mono: true, placeholder: "de_DE" }), { hint: "Blank = the instance default. Only de has translations.", error: fieldErr("datetime_locale") }),
   ), h("div", { class: "toggles-row mt-md" }, toggleInput("debug", "Verbose debug logging")));
   const details = h("details", { class: "section formatting" }, h("summary", { class: "section-title summary-toggle", text: "Date & time formatting" }), body);
   return details;

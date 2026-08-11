@@ -339,3 +339,16 @@ async def test_show_config_explains_an_automatic_disable():
     sent_message = mock_send_message.call_args.args[3]
     assert "*Configuration*: `removed` (disabled, because Hutbot was removed from this channel)" in sent_message
     assert "*Configuration*: `by-hand` (disabled)" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_show_config_marks_the_instance_default_locale():
+    app = AsyncMock()
+    channel = Channel(id="C123", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.state.default_datetime_locale', "de_DE"), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    assert "Date/time locale    de_DE (instance default)" in mock_send_message.call_args.args[3].splitlines()

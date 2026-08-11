@@ -57,3 +57,34 @@ def test_chart_accepts_pinned_tag():
 
     assert result.returncode == 0, result.stderr
     assert "image: \"hutbot:v1.2.3\"" in result.stdout
+
+
+def test_chart_forces_timezone_and_default_locale_when_set():
+    result = subprocess.run(
+        _helm_template_command("v1.2.3") + [
+            "--set", "time.timezone=Europe/Berlin",
+            "--set", "time.locale=de_DE",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "- name: TZ\n              value: \"Europe/Berlin\"" in result.stdout
+    assert "- name: HUTBOT_DEFAULT_DATETIME_LOCALE\n              value: \"de_DE\"" in result.stdout
+
+
+def test_chart_omits_timezone_and_locale_by_default():
+    result = subprocess.run(
+        _helm_template_command("v1.2.3"),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "name: TZ" not in result.stdout
+    assert "HUTBOT_DEFAULT_DATETIME_LOCALE" not in result.stdout

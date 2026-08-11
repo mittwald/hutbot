@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from employee_list import log_error, log_warning
 
+from . import state
 from .constants import (
     DEFAULT_DATE_FORMAT,
     DEFAULT_TIME_FORMAT,
@@ -176,11 +177,24 @@ def get_config_timezone(config: dict | None, timezone_name: str = "", local_tz: 
 def get_config_locale(config: dict | None, locale_name: str = "") -> str:
     configured_locale = locale_name or (config or {}).get("datetime_locale", "")
     if not configured_locale:
-        return ""
+        # Instance-wide fallback (HUTBOT_DEFAULT_DATETIME_LOCALE), empty unless set.
+        return state.default_datetime_locale
     try:
         return normalize_locale_name(configured_locale)
     except ValueError as e:
         log_warning("Ignoring invalid datetime locale in configuration:", e)
+        return state.default_datetime_locale
+
+
+def resolve_default_locale(value: str) -> str:
+    """Normalize the instance-wide default locale, warning about a bad value."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    try:
+        return normalize_locale_name(value)
+    except ValueError as e:
+        log_error("Ignoring invalid HUTBOT_DEFAULT_DATETIME_LOCALE:", e)
         return ""
 
 
@@ -282,19 +296,29 @@ def localize_formatted_datetime(value: str, locale_name: str) -> str:
 def describe_locale(locale_name: str = "") -> str:
     """What day/month names a config actually gets, and why.
 
-    Unset means English names — the server's own locale is never applied, so it
-    is only mentioned for orientation. A configured locale without a translation
-    table (only `de` has one) also ends up English.
+    Takes the config's own locale; empty falls back to the instance default
+    (HUTBOT_DEFAULT_DATETIME_LOCALE) and, failing that, to English. The server's
+    own locale is never applied and is only named for orientation. A locale
+    without a translation table (only `de` has one) also ends up English.
     """
+    notes = []
     if locale_name:
-        language = locale_name.split("_", 1)[0].lower()
-        if language in LOCALIZED_DATE_NAMES:
-            return locale_name
-        return f"{locale_name} (no translations, English names)"
-    server_locale = get_server_locale_name()
-    if server_locale:
-        return f"English names (server locale {server_locale} not applied)"
-    return "English names (no server locale set)"
+        try:
+            effective = normalize_locale_name(locale_name)
+        except ValueError:
+            return f"{locale_name} (invalid locale, English names)"
+    elif state.default_datetime_locale:
+        effective = state.default_datetime_locale
+        notes.append("instance default")
+    else:
+        server_locale = get_server_locale_name()
+        if server_locale:
+            return f"English names (server locale {server_locale} not applied)"
+        return "English names (no server locale set)"
+
+    if effective.split("_", 1)[0].lower() not in LOCALIZED_DATE_NAMES:
+        notes.append("no translations, English names")
+    return f"{effective} ({', '.join(notes)})" if notes else effective
 
 
 def parse_opsgenie_datetime(value: str) -> datetime.datetime | None:

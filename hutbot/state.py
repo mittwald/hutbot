@@ -20,6 +20,12 @@ slash_command = DEFAULT_SLASH_COMMAND
 # Name the bot uses for itself in user-facing text; set from HUTBOT_BOT_NAME at startup.
 bot_name = DEFAULT_BOT_NAME
 
+# Date/time locale used by configs that set none; set from
+# HUTBOT_DEFAULT_DATETIME_LOCALE at startup and already normalized ("de_DE").
+# There is no timezone counterpart: the container's TZ is the server local
+# timezone, which is what a config without its own timezone already uses.
+default_datetime_locale = ""
+
 # Live configuration: {channel_id: {config_name: config_dict}}.
 channel_config: dict = {}
 
@@ -60,7 +66,7 @@ _config_write_lock = asyncio.Lock()
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, slash_command, bot_name
+    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, slash_command, bot_name, default_datetime_locale
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -79,3 +85,4 @@ def reset() -> None:
     opsgenie_configured = False
     slash_command = DEFAULT_SLASH_COMMAND
     bot_name = DEFAULT_BOT_NAME
+    default_datetime_locale = ""

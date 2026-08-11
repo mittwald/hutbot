@@ -8,6 +8,7 @@ from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from employee_list import get_env_var, load_env_file, log_error
 
 from . import state
+from . import datetimefmt
 from .constants import DEFAULT_BOT_NAME, normalize_slash_command
 from . import persistence
 from . import slackcache
@@ -26,6 +27,9 @@ async def main() -> None:
     opsgenie_heartbeat_name = get_env_var("OPSGENIE_HEARTBEAT_NAME")
     state.slash_command = normalize_slash_command(get_env_var("HUTBOT_SLASH_COMMAND"))
     state.bot_name = get_env_var("HUTBOT_BOT_NAME").strip() or DEFAULT_BOT_NAME
+    # Locale for configs that set none. The timezone counterpart is the container's
+    # TZ: a config without its own timezone uses server local time anyway.
+    state.default_datetime_locale = datetimefmt.resolve_default_locale(get_env_var("HUTBOT_DEFAULT_DATETIME_LOCALE"))
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)

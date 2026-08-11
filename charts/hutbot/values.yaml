@@ -19,6 +19,17 @@ slack:
   # Empty = the bot's default ("Hutbot").
   botName: ""
 
+# Timezone and date/time locale the whole instance runs in.
+time:
+  # IANA zone name forced into the container as TZ, e.g. "Europe/Berlin". This is
+  # the server local timezone: configs that set no timezone of their own format
+  # date/times in it and have their work days/work hours counted in it. Empty =
+  # the image default, UTC.
+  timezone: ""
+  # Fallback date/time locale for configs that set none, e.g. "de_DE". Only `de`
+  # has translations; every other locale renders English day/month names.
+  locale: ""
+
 opsgenie:
   token: ""
   heartbeatName: ""

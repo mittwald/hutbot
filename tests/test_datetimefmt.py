@@ -137,3 +137,40 @@ def test_work_days_are_counted_in_the_configured_timezone():
     with patch.object(hutbot.datetimefmt, 'datetime', frozen_datetime_module(berlin_friday_night)):
         assert hutbot.datetimefmt.is_work_day({"datetime_timezone": "Europe/Berlin"}) is True
         assert hutbot.datetimefmt.is_work_day({"datetime_timezone": "Asia/Tokyo"}) is False
+
+
+
+def test_instance_default_locale_applies_to_configs_without_one():
+    import hutbot
+    with patch('hutbot.state.default_datetime_locale', "de_DE"):
+        assert hutbot.datetimefmt.get_config_locale({}) == "de_DE"
+        assert hutbot.datetimefmt.get_config_locale({"datetime_locale": "en-US"}) == "en_US"
+        # An unusable config locale falls back to the default, not to English.
+        assert hutbot.datetimefmt.get_config_locale({"datetime_locale": "nonsense!"}) == "de_DE"
+        assert hutbot.datetimefmt.describe_locale("") == "de_DE (instance default)"
+        assert hutbot.datetimefmt.describe_locale("en_US") == "en_US (no translations, English names)"
+
+    rendered = hutbot.datetimefmt.format_datetime_value(
+        "2026-04-26T08:00:00Z", "date", {"date_format": "%A, %d %B %Y", "datetime_timezone": "Europe/Berlin"},
+    )
+    assert rendered == "Sunday, 26 April 2026"
+    with patch('hutbot.state.default_datetime_locale', "de_DE"):
+        rendered = hutbot.datetimefmt.format_datetime_value(
+            "2026-04-26T08:00:00Z", "date", {"date_format": "%A, %d %B %Y", "datetime_timezone": "Europe/Berlin"},
+        )
+    assert rendered == "Sonntag, 26 April 2026"
+
+
+
+def test_resolve_default_locale_rejects_garbage():
+    import hutbot
+    assert hutbot.datetimefmt.resolve_default_locale(" de-de ") == "de_DE"
+    assert hutbot.datetimefmt.resolve_default_locale("") == ""
+    assert hutbot.datetimefmt.resolve_default_locale("Deutsch (Deutschland)") == ""
+
+
+
+def test_describe_locale_flags_an_invalid_config_locale():
+    import hutbot
+    with patch('hutbot.state.default_datetime_locale', ""):
+        assert hutbot.datetimefmt.describe_locale("nonsense!") == "nonsense! (invalid locale, English names)"

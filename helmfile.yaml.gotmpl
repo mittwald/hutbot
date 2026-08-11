@@ -8,6 +8,11 @@ environments:
         imageTag: v1.0.9
         slashCommand: /hutbot
         botName: Hutbot
+        # Timezone and date/time locale of the instance; set them in the env file
+        # (HUTBOT_TIMEZONE / HUTBOT_DEFAULT_DATETIME_LOCALE). Empty means the
+        # image default: UTC and English day/month names.
+        timezone: ""
+        datetimeLocale: ""
   dev:
     values:
       - releaseName: hutbot-dev
@@ -17,6 +22,8 @@ environments:
         # slash command. Must match the command configured there.
         slashCommand: /hutbot_dev
         botName: Hutbot (DEV)
+        timezone: ""
+        datetimeLocale: ""
 ---
 repositories: []
 
@@ -34,6 +41,9 @@ releases:
           botToken: {{ requiredEnv "SLACK_BOT_TOKEN" | quote }}
           slashCommand: {{ env "HUTBOT_SLASH_COMMAND" | default .Values.slashCommand | quote }}
           botName: {{ env "HUTBOT_BOT_NAME" | default .Values.botName | quote }}
+      - time:
+          timezone: {{ env "HUTBOT_TIMEZONE" | default .Values.timezone | quote }}
+          locale: {{ env "HUTBOT_DEFAULT_DATETIME_LOCALE" | default .Values.datetimeLocale | quote }}
       - opsgenie:
           token: {{ env "OPSGENIE_TOKEN" | quote }}
           heartbeatName: {{ env "OPSGENIE_HEARTBEAT_NAME" | quote }}
