@@ -324,3 +324,32 @@ async def test_set_replies_enabled_clears_the_automatic_disable_reason():
 
     assert channel.configs["default"]["enabled"] is True
     assert channel.configs["default"]["disabled_reason"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["set work-hours all day", "set work hours all-day", "hours allday"])
+async def test_set_work_hours_accepts_all_day(command):
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": {**DEFAULT_CONFIG.copy(), "hours": ["8:00", "16:00"]}})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, command, channel, user)
+
+    assert channel.configs["default"]["hours"] == []
+    assert mock_send_message.call_args.args[3] == "*Work hours* set to all day in configuration `default`"
+
+
+@pytest.mark.asyncio
+async def test_set_work_hours_still_takes_two_times():
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "set work-hours 9 17", channel, user)
+
+    assert channel.configs["default"]["hours"] == ["09:00", "17:00"]
+    assert mock_send_message.call_args.args[3] == "*Work hours* set to `09:00` - `17:00` in configuration `default`"

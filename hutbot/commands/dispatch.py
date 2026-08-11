@@ -56,8 +56,11 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     elif (match := patterns.DISABLE_ONLY_WORK_DAYS_PATTERN.match(command_text)):
         await setters.set_only_work_days(app, channel, config_name, False, user, thread_ts)
     elif (match := patterns.SET_WORK_HOURS_PATTERN.match(command_text)):
-        start = strip_quotes(match.group("start"))
-        end = strip_quotes(match.group("end"))
+        if match.group("all_day"):
+            start = end = "0:00"
+        else:
+            start = strip_quotes(match.group("start"))
+            end = strip_quotes(match.group("end"))
         await setters.set_work_hours(app, channel, config_name, start, end, user, thread_ts)
     elif patterns.LIST_TEAMS_PATTERN.match(command_text):
         await info.list_teams(app, channel, user, thread_ts)

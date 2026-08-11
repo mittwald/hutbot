@@ -180,61 +180,90 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     command = state.slash_command
     name = state.bot_name
     mention = f"@{state.bot_user_name}"
-    command_rows = [
-        (f"{command} show config", "Show all configurations."),
-        (f"{command} [config] enable opsgenie", "Enable OpsGenie alerts."),
-        (f"{command} [config] disable opsgenie", "Disable OpsGenie alerts."),
-        (f"{command} [config] set opsgenie-schedule <name>", "Set the OpsGenie schedule name."),
-        (f"{command} [config] set opsgenie-priority <P1-P5>", "Set the OpsGenie alert priority."),
-        (f"{command} [config] set opsgenie-message <text>", "Template for the alert text (default: the message)."),
-        (f"{command} [config] set datetime-format \"<date>\" \"<time>\" [<tz> <locale>]", "Set date/time formats."),
-        (f"{command} [config] set wait-time <minutes>", "Set reminder delay."),
-        (f"{command} list teams", "List available teams."),
-        (f"{command} list opsgenie-schedules", "List OpsGenie schedules."),
-        (f"{command} [config] on-call [schedule]", "Show current on-call user."),
-        (f"{command} team of <@user>", "Show a user's team."),
-        (f"{command} [config] add excluded-team <team>", "Add an ignored team."),
-        (f"{command} [config] clear excluded-teams", "Clear ignored teams."),
-        (f"{command} [config] add included-team <team>", "Add an allowed team."),
-        (f"{command} [config] clear included-teams", "Clear allowed teams."),
-        (f"{command} [config] enable bots", "Respond to bot messages."),
-        (f"{command} [config] disable bots", "Ignore bot messages."),
-        (f"{command} [config] enable only-work-days", "Respond only on work days."),
-        (f"{command} [config] disable only-work-days", "Respond on all days."),
-        (f"{command} [config] enable", "Enable sending replies for this config."),
-        (f"{command} [config] disable", "Disable sending replies for this config."),
-        (f"{command} [config] set work-hours <start> <end>", "Set active hours; 0:00 0:00 means all day."),
-        (f"{command} [config] set pattern \"<regex>\" [0|1]", "Set message pattern; 1 means case sensitive."),
-        (f"{command} [config] set message \"<reply message>\"", "Set reminder message."),
-        (f"{command} [config] set forward-channel <#channel>", "Forward replies to another channel."),
-        (f"{command} [config] clear forward-channel", "Remove the forward channel."),
-        (f"{command} [config] set trigger <message|schedule|manual>", "Set how the rule starts."),
-        (f"{command} [config] set cron <expr>", "Set the cron schedule, e.g. 0 9 * * 1-5."),
-        (f"{command} [config] set schedule-timezone <tz>", "Set the cron timezone (IANA name)."),
-        (f"{command} [config] set condition <none|outlook>", "Gate a schedule on a condition."),
-        (f"{command} [config] set outlook-subject <regex>", "Match Outlook event subject (stub)."),
-        (f"{command} [config] set outlook-body <regex>", "Match Outlook event body (stub)."),
-        (f"{command} [config] enable negate", "Invert the condition (e.g. no matching event)."),
-        (f"{command} [config] disable negate", "Stop inverting the condition."),
-        (f"{command} [config] set action <reply|dm-user|group-dm|post-channel>", "Set what the rule does."),
-        (f"{command} [config] set target <@user|@group|#channel>", "Set the action recipient."),
-        (f"{command} [config] add button \"<label>\" config <config>", "Button runs another config (e.g. an alert config)."),
-        (f"{command} [config] add button \"<label>\" ack [text]", "Button acknowledges/dismisses (stops escalation)."),
-        (f"{command} [config] add button \"<label>\" message <text>", "Button posts a fixed message."),
-        (f"{command} [config] add button \"<label>\" delay <minutes>", "Button delays the escalation."),
-        (f"{command} [config] clear buttons", "Remove all buttons."),
-        (f"{command} [config] set button-timeout <minutes>", "Escalate if no button is pressed in time."),
-        (f"{command} [config] set button-timeout-target <config>", "Config to run on button timeout."),
-        (f"{command} [config] set default-button \"<label>\"", "Auto-press this button on timeout."),
-        (f"{command} [config] run", "Run this configuration's action now."),
-        (f"{command} [config] test", "Preview configured reply."),
-        (f"{mention} [config] test <message>", "Preview reply with <message> as {{message}}."),
-        (f"{command} delete config <name>", "Delete a configuration."),
-        (f"{command} news", "Show what's new."),
-        (f"{command} help", "Show this help."),
+    # Grouped in the order a rule runs — configs, then trigger, condition, what it
+    # matches, timing, the message it sends, buttons, alerting, formatting — with
+    # lookups and meta commands last. Same grouping as `show config` prints.
+    command_groups = [
+        ("Configurations", [
+            (f"{command} show config", "Show all configurations."),
+            (f"{command} [config] enable", "Enable this config."),
+            (f"{command} [config] disable", "Disable this config."),
+            (f"{command} delete config <name>", "Delete a configuration."),
+        ]),
+        ("Trigger", [
+            (f"{command} [config] set trigger <message|schedule|manual>", "Set how the rule starts."),
+            (f"{command} [config] set cron <expr>", "Set the cron schedule, e.g. 0 9 * * 1-5."),
+            (f"{command} [config] set schedule-timezone <tz>", "Set the cron timezone (IANA name)."),
+        ]),
+        ("Condition", [
+            (f"{command} [config] set condition <none|outlook>", "Gate a schedule on a condition."),
+            (f"{command} [config] set outlook-subject <regex>", "Match Outlook event subject (stub)."),
+            (f"{command} [config] set outlook-body <regex>", "Match Outlook event body (stub)."),
+            (f"{command} [config] enable negate", "Invert the condition (e.g. no matching event)."),
+            (f"{command} [config] disable negate", "Stop inverting the condition."),
+        ]),
+        ("What to react to", [
+            (f"{command} [config] set pattern \"<regex>\" [0|1]", "Set message pattern; 1 means case sensitive."),
+            (f"{command} [config] add included-team <team>", "Add an allowed team."),
+            (f"{command} [config] clear included-teams", "Clear allowed teams."),
+            (f"{command} [config] add excluded-team <team>", "Add an ignored team."),
+            (f"{command} [config] clear excluded-teams", "Clear ignored teams."),
+            (f"{command} [config] enable bots", "Respond to bot messages."),
+            (f"{command} [config] disable bots", "Ignore bot messages."),
+        ]),
+        ("When to react", [
+            (f"{command} [config] set wait-time <minutes>", "Set reminder delay."),
+            (f"{command} [config] enable only-work-days", "Respond only on work days."),
+            (f"{command} [config] disable only-work-days", "Respond on all days."),
+            (f"{command} [config] set work-hours <start> <end>", "Set active hours, e.g. 9:00 17:00."),
+            (f"{command} [config] set work-hours all day", "React at any hour (same as 0:00 0:00)."),
+        ]),
+        ("Message and action", [
+            (f"{command} [config] set message \"<reply message>\"", "Set reminder message."),
+            (f"{command} [config] set action <reply|dm-user|group-dm|post-channel>", "Set what the rule does."),
+            (f"{command} [config] set target <@user|@group|#channel>", "Set the action recipient."),
+            (f"{command} [config] set forward-channel <#channel>", "Forward replies to another channel."),
+            (f"{command} [config] clear forward-channel", "Remove the forward channel."),
+        ]),
+        ("Buttons", [
+            (f"{command} [config] add button \"<label>\" config <config>", "Button runs another config (e.g. an alert config)."),
+            (f"{command} [config] add button \"<label>\" ack [text]", "Button acknowledges/dismisses (stops escalation)."),
+            (f"{command} [config] add button \"<label>\" message <text>", "Button posts a fixed message."),
+            (f"{command} [config] add button \"<label>\" delay <minutes>", "Button delays the escalation."),
+            (f"{command} [config] clear buttons", "Remove all buttons."),
+            (f"{command} [config] set button-timeout <minutes>", "Escalate if no button is pressed in time."),
+            (f"{command} [config] set button-timeout-target <config>", "Config to run on button timeout."),
+            (f"{command} [config] set default-button \"<label>\"", "Auto-press this button on timeout."),
+        ]),
+        ("OpsGenie", [
+            (f"{command} [config] enable opsgenie", "Enable OpsGenie alerts."),
+            (f"{command} [config] disable opsgenie", "Disable OpsGenie alerts."),
+            (f"{command} [config] set opsgenie-schedule <name>", "Set the OpsGenie schedule name."),
+            (f"{command} [config] set opsgenie-priority <P1-P5>", "Set the OpsGenie alert priority."),
+            (f"{command} [config] set opsgenie-message <text>", "Template for the alert text (default: the message)."),
+        ]),
+        ("Date and time", [
+            (f"{command} [config] set datetime-format \"<date>\" \"<time>\" [<tz> <locale>]", "Set date/time formats."),
+        ]),
+        ("Try it out and look things up", [
+            (f"{command} [config] run", "Run this configuration's action now."),
+            (f"{command} [config] test", "Preview configured reply."),
+            (f"{mention} [config] test <message>", "Preview reply with <message> as {{message}}."),
+            (f"{command} [config] on-call [schedule]", "Show current on-call user."),
+            (f"{command} list teams", "List available teams."),
+            (f"{command} list opsgenie-schedules", "List OpsGenie schedules."),
+            (f"{command} team of <@user>", "Show a user's team."),
+        ]),
+        ("Help", [
+            (f"{command} news", "Show what's new."),
+            (f"{command} help", "Show this help."),
+        ]),
     ]
-    command_width = max(len(command) for command, _ in command_rows)
-    command_usage = "\n".join(f"{command:<{command_width}}  {description}" for command, description in command_rows)
+    command_width = max(len(command) for _, rows in command_groups for command, _ in rows)
+    command_usage = "\n\n".join(
+        f"# {title}\n" + "\n".join(f"{command:<{command_width}}  {description}" for command, description in rows)
+        for title, rows in command_groups
+    )
     help_text = (
         f"Hi! :wave: I am *{name}* :palm_up_hand::tophat: Here's what I can do:\n\n"
         "*Show All Configurations:*\n"

@@ -137,6 +137,13 @@ async def test_process_command_help_uses_compact_command_reference():
     assert "*Commands:*\n```" in sent_message
     assert "/hutbot [config] set wait-time <minutes>" in sent_message
     assert "Set reminder delay." in sent_message
+    # Commands are grouped, each group headed and separated by a blank line.
+    assert "# Configurations\n/hutbot show config" in sent_message
+    assert "\n\n# Trigger\n" in sent_message
+    assert "\n\n# OpsGenie\n" in sent_message
+    assert "\n\n# Help\n/hutbot news" in sent_message
+    assert sent_message.index("# Trigger") < sent_message.index("# When to react") < sent_message.index("# Buttons")
+    assert "/hutbot [config] set work-hours all day" in sent_message
     assert "@Hutbot [config] test <message>" in sent_message
     assert "Preview reply with <message> as {{message}}." in sent_message
     assert "*Enable OpsGenie Integration:*" not in sent_message
