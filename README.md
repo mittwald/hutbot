@@ -487,7 +487,7 @@ helmfile sync
 ## Development
 
 Hutbot is a Python package (`hutbot/`). The former monolithic `bot.py` has been
-split into cohesive modules:
+split into cohesive modules; `bot.py` remains as a backward-compatible launcher:
 
 - `hutbot/state.py` — shared in-memory caches and runtime flags
 - `hutbot/models.py`, `hutbot/constants.py` — data types and configuration defaults
@@ -501,7 +501,7 @@ split into cohesive modules:
 - `hutbot/webui_backend.py` — the web-UI bridge (the HTTP server lives in `webui.py`)
 - `hutbot/__main__.py` — the entry point
 
-Run it locally with `python -m hutbot`.
+Run it locally with `python -m hutbot`. Existing `python bot.py` invocations remain supported.
 
 ### Running tests
 

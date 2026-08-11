@@ -25,6 +25,26 @@ async def test_migrate_and_apply_defaults():
     assert migrated_config["C123"]["default"]["pattern"] is None
 
 
+@pytest.mark.asyncio
+async def test_migrate_preserves_configs_named_after_new_default_fields():
+    app = AsyncMock()
+    config = {
+        "C123": {
+            "trigger": {"wait_time": 60},
+            "action": {"reply_message": "Action config"},
+            "buttons": {"enabled": False},
+        }
+    }
+
+    migrated_config = await migrate_and_apply_defaults(app, config)
+
+    assert set(migrated_config["C123"]) == {"trigger", "action", "buttons"}
+    assert migrated_config["C123"]["trigger"]["wait_time"] == 60
+    assert migrated_config["C123"]["action"]["reply_message"] == "Action config"
+    assert migrated_config["C123"]["buttons"]["enabled"] is False
+    assert all("trigger" in value for value in migrated_config["C123"].values())
+
+
 
 @pytest.mark.asyncio
 async def test_load_and_flush_replies_cache_roundtrip():

@@ -20,7 +20,15 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
         # Migration for old format
         # old format: "C1234": { "wait_time": 60, ... }
         # new format: "C1234": { "default": { "wait_time": 60, ... } }
-        is_flat_config = any(k in constants.DEFAULT_CONFIG for k in channel_data.keys())
+        # A nested configuration may legitimately use a field name as its
+        # configuration name (for example, ``trigger`` or ``action``). New
+        # fields added to DEFAULT_CONFIG must not make those existing configs
+        # look like the legacy flat format. Flat fields hold scalar/list
+        # values; nested configuration names hold dictionaries.
+        is_flat_config = any(
+            key in constants.DEFAULT_CONFIG and not isinstance(value, dict)
+            for key, value in channel_data.items()
+        )
         if is_flat_config:
             # This looks like an old, flat config. Let's wrap it.
             log(f"Migrating old configuration for channel {channel_id}")
