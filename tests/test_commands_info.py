@@ -21,7 +21,7 @@ async def test_show_config():
 
         sent_message = mock_send_message.call_args.args[3]
         assert "\n\n*Configuration*: `default` (enabled)" in sent_message
-        assert "> *Trigger*: `message`\n>\n> *Reply message*:\n> Default message\n>\n> *Replied to*: <#C123> (in thread)\n>\n> *Settings*:\n```" in sent_message
+        assert "> *Trigger*: `message`\n>\n> *Reply message*:\n> Default message\n>\n> *Replied in* <#C123> (in thread)\n>\n> *Settings*:\n```" in sent_message
         assert "\nTrigger" not in sent_message
         assert "OpsGenie schedule" in sent_message
         assert "OpsGenie priority   P4" in sent_message
@@ -211,7 +211,7 @@ async def test_show_config_displays_forward_channel():
         await show_config(app, channel, user, "")
 
     sent_message = mock_send_message.call_args.args[3]
-    assert "*Replied to*: <#C123> (in thread)\n> *Forwarded to*: <#CFWDCHAN>" in sent_message
+    assert "*Replied in* <#C123> (in thread)\n> *Forwarded to* <#CFWDCHAN>" in sent_message
 
 
 
@@ -225,7 +225,7 @@ async def test_show_config_omits_forward_line_without_forward_channel():
         await show_config(app, channel, user, "")
 
     sent_message = mock_send_message.call_args.args[3]
-    assert "*Replied to*: <#C123> (in thread)" in sent_message
+    assert "*Replied in* <#C123> (in thread)" in sent_message
     assert "Forwarded to" not in sent_message
 
 
@@ -246,11 +246,11 @@ async def test_show_config_names_the_destination_per_action():
         await show_config(app, channel, user, "")
 
     sent_message = mock_send_message.call_args.args[3]
-    assert "*Posted to*: <#CTARGET>" in sent_message
-    assert "*Sent to*: `d.grieser@mittwald.de` (direct message)" in sent_message
-    assert "*Sent to*: <!subteam^SGROUP> (group message)" in sent_message
+    assert "*Posted in* <#CTARGET>" in sent_message
+    assert "*Sent to* `d.grieser@mittwald.de` (direct message)" in sent_message
+    assert "*Sent to* <!subteam^SGROUP> (group message)" in sent_message
     # No message to thread on for a schedule trigger.
-    assert "*Replied to*: <#C123>\n" in sent_message
+    assert "*Replied in* <#C123>\n" in sent_message
     assert "Cron                0 9 * * 1-5" in sent_message
     assert any(line.startswith("Schedule timezone   ") and "server local" in line for line in sent_message.splitlines())
     # Non-reply actions title their template "Message", not "Reply message".

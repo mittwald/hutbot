@@ -116,7 +116,7 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
     def format_table_value(value, key_width: int) -> str:
         if isinstance(value, list):
             if not value:
-                return '<None>'
+                return '<none>'
             return f"\n{' ' * (key_width + 2)}".join(value)
         return value
 
@@ -124,7 +124,7 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         """Render an action target as a Slack mention when it looks like an id."""
         target = (target or '').strip()
         if not target:
-            return '<None>'
+            return '<none>'
         channel_id = targets.parse_channel_ref(target)
         if channel_id:
             return f"<#{channel_id}>"
@@ -143,17 +143,17 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             # A reply threads on the triggering message; schedule/manual runs have
             # no message to thread on and land in the channel itself.
             thread = ' (in thread)' if trigger == TRIGGER_MESSAGE else ''
-            lines = [f"*Replied to*: <#{channel.id}>{thread}"]
+            lines = [f"*Replied in* <#{channel.id}>{thread}"]
             if forward_channel_id:
-                lines.append(f"*Forwarded to*: <#{forward_channel_id}>")
+                lines.append(f"*Forwarded to* <#{forward_channel_id}>")
             return lines
         if action == ACTION_POST_CHANNEL:
-            return [f"*Posted to*: {format_target(action_target or forward_channel_id)}"]
+            return [f"*Posted in* {format_target(action_target or forward_channel_id)}"]
         if action == ACTION_DM_USER:
-            return [f"*Sent to*: {format_target(action_target)} (direct message)"]
+            return [f"*Sent to* {format_target(action_target)} (direct message)"]
         if action == ACTION_GROUP_DM:
-            return [f"*Sent to*: {format_target(action_target)} (group message)"]
-        return [f"*Action*: `{action}`, target {format_target(action_target)}"]
+            return [f"*Sent to* {format_target(action_target)} (group message)"]
+        return [f"*Action* `{action}`, target {format_target(action_target)}"]
 
     message = f"This is the configuration for #{channel.name}:"
     for config_name, config in sorted(channel.configs.items()):
@@ -188,7 +188,7 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             # date/time one, then the server's.
             schedule_timezone = config.get('schedule_timezone') or config.get('datetime_timezone') or ''
             groups.append([
-                ("Cron",              config.get('schedule_cron') or '<None>'),
+                ("Cron",              config.get('schedule_cron') or '<none>'),
                 ("Schedule timezone", datetimefmt.describe_timezone(schedule_timezone)),
             ])
 
@@ -203,7 +203,7 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             groups.append(condition_rows)
 
         groups.append([
-            ("Pattern",        f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<None>'),
+            ("Pattern",        f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<none>'),
             ("Included teams", included_teams),
             ("Excluded teams", excluded_teams),
             ("Include bots",   'enabled' if include_bots else 'disabled'),
@@ -237,7 +237,7 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
 
         groups.append([
             ("OpsGenie",          ('enabled' if opsgenie_enabled else 'disabled') + ('' if state.opsgenie_configured else ' (not configured)')),
-            ("OpsGenie schedule", opsgenie_schedule_name or '<None>'),
+            ("OpsGenie schedule", opsgenie_schedule_name or '<none>'),
             ("OpsGenie priority", opsgenie_priority),
             ("OpsGenie message",  config.get('opsgenie_message') or '<original message>'),
         ])
@@ -255,7 +255,7 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             for group in groups
         )
         message_label = 'Reply message' if action == ACTION_REPLY else 'Message'
-        reply_line = f"*{message_label}*:\n{reply_message}" if reply_message else f"*{message_label}*: <None>"
+        reply_line = f"*{message_label}*:\n{reply_message}" if reply_message else f"*{message_label}*: <none>"
         destinations = "\n".join(destination_lines(config, action, trigger, forward_channel_id))
         if replies_enabled:
             enabled_label = 'enabled'
