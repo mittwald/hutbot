@@ -177,6 +177,9 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel, us
             'user_id': user.id,
             'text': text,
             'send_at': send_at.isoformat(),
+            # The wait this reply was scheduled with; the config may change before
+            # it fires, and a restore logs both.
+            'wait_time': config['wait_time'],
         }
         await persistence.flush_replies_cache()
 

@@ -324,3 +324,82 @@ async def test_schedule_reply_always_routes_through_run_action():
         await hutbot.scheduling.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
     assert run.await_count == 1
     assert send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_restore_logs_the_original_wait_time_not_the_current_one():
+    import hutbot
+    app = AsyncMock()
+    channel = Channel(id="C1", name="davetest", configs={"default": {**DEFAULT_CONFIG.copy(), "wait_time": 60}})
+    user = User("U1", "d.grieser", "Dave", "T")
+    hutbot.state.channel_config[channel.id] = channel.configs
+    future = datetime.datetime.now() + datetime.timedelta(seconds=223)
+    hutbot.state._scheduled_replies_cache[(channel.id, "M1", "default")] = {
+        'channel_id': channel.id, 'ts': "M1", 'config_name': "default",
+        'user_id': user.id, 'text': "x", 'send_at': future.isoformat(), 'wait_time': 1800,
+    }
+
+    logged = []
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=user)), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.scheduling.log', side_effect=lambda *a: logged.append(" ".join(str(x) for x in a))):
+        await hutbot.scheduling.restore_scheduled_replies(app, "tok")
+        await asyncio.sleep(0)
+        for entry in list(hutbot.state.scheduled_messages.values()):
+            entry.task.cancel()
+
+    rescheduled = next(line for line in logged if line.startswith("Rescheduling"))
+    assert "223s remaining of the original 30 mins" in rescheduled
+    assert "config now 1 min" in rescheduled
+    assert not any("wait time 1 min," in line for line in logged)
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_restore_omits_the_original_wait_time_for_legacy_cache_entries():
+    import hutbot
+    app = AsyncMock()
+    channel = Channel(id="C1", name="davetest", configs={"default": {**DEFAULT_CONFIG.copy(), "wait_time": 60}})
+    user = User("U1", "d.grieser", "Dave", "T")
+    hutbot.state.channel_config[channel.id] = channel.configs
+    future = datetime.datetime.now() + datetime.timedelta(seconds=90)
+    hutbot.state._scheduled_replies_cache[(channel.id, "M2", "default")] = {
+        'channel_id': channel.id, 'ts': "M2", 'config_name': "default",
+        'user_id': user.id, 'text': "x", 'send_at': future.isoformat(),
+    }
+
+    logged = []
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=user)), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.scheduling.log', side_effect=lambda *a: logged.append(" ".join(str(x) for x in a))):
+        await hutbot.scheduling.restore_scheduled_replies(app, "tok")
+        await asyncio.sleep(0)
+        for entry in list(hutbot.state.scheduled_messages.values()):
+            entry.task.cancel()
+
+    rescheduled = next(line for line in logged if line.startswith("Rescheduling"))
+    assert "90s remaining," in rescheduled
+    assert "original" not in rescheduled
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_handle_channel_message_caches_the_wait_time_it_scheduled_with():
+    import hutbot
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "wait_time": 1800}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "d.grieser", "Dave", "T")
+
+    with patch('hutbot.datetimefmt.is_work_day', return_value=True), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.scheduling.schedule_reply', new=AsyncMock()):
+        await hutbot.routing.handle_channel_message(app, "tok", channel, user, "hello", "M3")
+
+    entry = hutbot.state._scheduled_replies_cache[(channel.id, "M3", "default")]
+    assert entry['wait_time'] == 1800
+    for scheduled in list(hutbot.state.scheduled_messages.values()):
+        scheduled.task.cancel()
+    await asyncio.sleep(0)

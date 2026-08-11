@@ -22,12 +22,30 @@ except ImportError:  # pragma: no cover - dependency optional at runtime
     croniter = None
 
 
-async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None) -> None:
+def format_minutes(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    return f"{minutes} min" if minutes == 1 else f"{minutes} mins"
+
+
+async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None, original_wait_time: float | None = None) -> None:
     opsgenie_enabled = config.get('opsgenie')
     wait_time = config.get('wait_time')
     scheduled_message_key = (channel.id, ts, config_name)
     actual_wait = wait_time_override if wait_time_override is not None else wait_time
-    log(f"Scheduling reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, wait time {wait_time // 60} mins, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not state.opsgenie_configured else ''}")
+    if wait_time_override is None:
+        verb = "Scheduling"
+        timing = f"wait time {format_minutes(wait_time)}"
+    else:
+        # A restored reply keeps the deadline it was scheduled with, so log what it
+        # is actually waiting for — and name the wait time it started with, which
+        # the config may since have changed.
+        verb = "Rescheduling"
+        timing = f"{actual_wait:.0f}s remaining"
+        if original_wait_time is not None:
+            timing += f" of the original {format_minutes(original_wait_time)}"
+            if int(original_wait_time) != int(wait_time):
+                timing += f", config now {format_minutes(wait_time)}"
+    log(f"{verb} reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, {timing}, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not state.opsgenie_configured else ''}")
     try:
         await asyncio.sleep(actual_wait)
         permalink = await slackcache.get_message_permalink(app, channel, ts)
@@ -146,8 +164,10 @@ async def restore_scheduled_replies(app: AsyncApp, opsgenie_token: str) -> None:
         user = await slackcache.get_user_by_id(app, entry['user_id'])
         send_at = datetime.datetime.fromisoformat(entry['send_at'])
         remaining = max(0.0, (send_at - datetime.datetime.now()).total_seconds())
-        log(f"Restoring reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, remaining {remaining:.0f}s.")
-        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining))
+        # Written since the cache gained the field; older entries have no original.
+        original_wait_time = entry.get('wait_time')
+        log(f"Restoring reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, due {send_at.isoformat(timespec='seconds')}.")
+        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining, original_wait_time=original_wait_time))
         state.scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
         restored += 1
     for key in invalid_keys:
