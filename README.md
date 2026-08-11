@@ -102,6 +102,23 @@ existing configs keep working unchanged.
 
 Use `/hutbot [config] run` to fire a configuration's action immediately (handy for testing).
 
+## Leaving and rejoining a channel
+
+Configurations outlive channel membership, so removing the bot from a channel would otherwise leave
+`schedule` rules firing (and pending reminders/escalations coming due) for a channel it can no longer
+post in. When Hutbot is removed from a channel (kicked, or `/remove`d):
+
+- every enabled configuration of that channel is disabled and marked as *disabled because Hutbot was
+  removed* (`disabled_reason`), which `/hutbot show config` and the web UI show;
+- all pending reminders scheduled for that channel are cancelled;
+- all pending button escalations are dropped — both those posted in that channel and those posted
+  elsewhere by one of its rules (so nothing escalates into a now-disabled configuration).
+
+Configurations are **not** re-enabled automatically. When Hutbot is added back it posts a message
+listing the configurations it disabled, which can then be re-enabled with `/hutbot [config] enable`
+(or the web UI). Configurations that a user had disabled by hand are left alone and are not part of
+that message.
+
 ## Web configuration UI
 
 Hutbot can serve a small web UI from the **same bot process** (no separate service) that lets a
@@ -242,6 +259,8 @@ is the operator's responsibility — Hutbot only consumes the resulting header.
      - `message.groups`
      - `message.im`
      - `message.mpim`
+     - `member_joined_channel`
+     - `member_left_channel`
 
 6. **Enable Interactivity** (required for buttons)
 

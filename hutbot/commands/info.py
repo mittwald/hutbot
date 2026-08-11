@@ -15,6 +15,7 @@ from ..constants import (
     ACTION_REPLY,
     DEFAULT_DATE_FORMAT,
     DEFAULT_TIME_FORMAT,
+    DISABLED_REASON_REMOVED,
     ESCALATION_BUTTON,
     ESCALATION_CONFIG,
     ID_PATTERN,
@@ -190,7 +191,12 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         config_block = "\n".join(f"{label:<{key_width}}  {format_table_value(value, key_width)}" for label, value in rows)
         forward_channel_line = f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}"
         reply_line = f"*Reply message*:\n{reply_message}" if reply_message else "*Reply message*: <None>"
-        enabled_label = 'enabled' if replies_enabled else 'disabled'
+        if replies_enabled:
+            enabled_label = 'enabled'
+        elif config.get('disabled_reason') == DISABLED_REASON_REMOVED:
+            enabled_label = f'disabled, because {state.bot_name} was removed from this channel'
+        else:
+            enabled_label = 'disabled'
         quoted_block = (
             f"> {reply_line.replace('\n', '\n> ')}\n"
             f">\n"

@@ -39,6 +39,12 @@ ACTIONS = {ACTION_REPLY, ACTION_DM_USER, ACTION_GROUP_DM, ACTION_POST_CHANNEL}
 
 BUTTON_ACTION_PREFIX = "hutbot_btn"
 
+# Marker written to a config's ``disabled_reason`` when the bot disabled it by
+# itself (instead of a user running `disable`). Removing the bot from a channel
+# disables that channel's configs; the marker lets the bot point them out when
+# it is added back.
+DISABLED_REASON_REMOVED = "removed_from_channel"
+
 # What a button does when pressed.
 BUTTON_ACTION_CONFIG = "config"    # run another named config (an OpsGenie alert is just such a config)
 BUTTON_ACTION_ACK = "ack"          # acknowledge/dismiss (cancel escalation), optional ack text
@@ -72,6 +78,8 @@ DEFAULT_CONFIG = {
     "pattern_case_sensitive": False,
     "forward_channel": "",
     "enabled": True,
+    # Why the bot disabled this config on its own; empty for a user-made change.
+    "disabled_reason": "",
     # Trigger: how the rule starts. "message" keeps the classic behavior.
     "trigger": TRIGGER_MESSAGE,
     "schedule_cron": "",

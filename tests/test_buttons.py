@@ -494,3 +494,46 @@ async def test_button_resolves_from_snapshot_and_strips_after_press():
     app.client.chat_update.assert_awaited_once()               # buttons stripped
     kw = app.client.chat_update.await_args.kwargs
     assert kw["ts"] == "10.1" and kw["text"] == "Approve?"
+
+
+@pytest.mark.asyncio
+async def test_cancel_channel_pending_buttons():
+    task = MagicMock()
+    task.done.return_value = False
+    posted_here = ("C12345", "1.1")
+    defined_here = ("C99999", "2.2")
+    unrelated = ("C99999", "3.3")
+
+    hutbot.state.pending_buttons.clear()
+    hutbot.state.pending_buttons[posted_here] = {
+        "task": task, "posted_channel_id": "C12345", "def_channel_id": "C12345", "orig": {}}
+    hutbot.state.pending_buttons[defined_here] = {
+        # posted elsewhere by a rule that lives in the removed channel
+        "task": None, "posted_channel_id": "C99999", "def_channel_id": "C12345", "orig": {}}
+    hutbot.state.pending_buttons[unrelated] = {
+        "task": None, "posted_channel_id": "C99999", "def_channel_id": "C99999", "orig": {}}
+    hutbot.state._button_states_cache.clear()
+    for key, entry in hutbot.state.pending_buttons.items():
+        hutbot.state._button_states_cache[key] = {k: v for k, v in entry.items() if k != "task"}
+    # A cached record with no live counterpart (never restored) goes too.
+    hutbot.state._button_states_cache[("C12345", "4.4")] = {
+        "posted_channel_id": "C12345", "def_channel_id": "C12345"}
+
+    with patch('hutbot.persistence.flush_button_cache') as mock_flush:
+        cancelled = await hutbot.buttons.cancel_channel_pending_buttons("C12345")
+
+    assert cancelled == 3
+    assert list(hutbot.state.pending_buttons.keys()) == [unrelated]
+    assert list(hutbot.state._button_states_cache.keys()) == [unrelated]
+    task.cancel.assert_called_once()
+    mock_flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancel_channel_pending_buttons_without_matches_does_not_flush():
+    hutbot.state.pending_buttons[("C99999", "1.1")] = {
+        "task": None, "posted_channel_id": "C99999", "def_channel_id": "C99999", "orig": {}}
+    with patch('hutbot.persistence.flush_button_cache') as mock_flush:
+        assert await hutbot.buttons.cancel_channel_pending_buttons("C12345") == 0
+        assert await hutbot.buttons.cancel_channel_pending_buttons("") == 0
+    mock_flush.assert_not_awaited()

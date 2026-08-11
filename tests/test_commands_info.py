@@ -259,3 +259,22 @@ async def test_need_help_yes_no_workflow_end_to_end():
             await hutbot.buttons._escalation_task(app, "tok", ("C1", "R1"), 0)
         post.assert_awaited_once_with(app, "C1", "Here is the help doc", None, "R1")
     await asyncio.sleep(0)  # let the cancelled timer settle
+
+
+@pytest.mark.asyncio
+async def test_show_config_explains_an_automatic_disable():
+    app = AsyncMock()
+    configs = {
+        "removed": {**DEFAULT_CONFIG.copy(), "enabled": False, "disabled_reason": DISABLED_REASON_REMOVED},
+        "by-hand": {**DEFAULT_CONFIG.copy(), "enabled": False},
+    }
+    channel = Channel(id="C123", name="general", configs=configs)
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+    hutbot.state.bot_name = "Hutbot"
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Configuration*: `removed` (disabled, because Hutbot was removed from this channel)" in sent_message
+    assert "*Configuration*: `by-hand` (disabled)" in sent_message

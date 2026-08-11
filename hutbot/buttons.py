@@ -234,6 +234,32 @@ async def cancel_pending_button(posted_channel_id: str, message_ts: str) -> None
         await persistence.flush_button_cache()
 
 
+async def cancel_channel_pending_buttons(channel_id: str) -> int:
+    """Drop every pending button record tied to a channel; returns how many were dropped.
+
+    Used when the bot is removed from a channel: a message posted there can no
+    longer be updated or replied to, and a record defined by one of that
+    channel's (now disabled) configs would escalate into a config the bot is no
+    longer running.
+    """
+    if not channel_id:
+        return 0
+
+    def belongs(entry: dict) -> bool:
+        return entry.get('posted_channel_id') == channel_id or entry.get('def_channel_id') == channel_id
+
+    keys = {key for key, entry in state.pending_buttons.items() if belongs(entry)}
+    keys |= {key for key, entry in state._button_states_cache.items() if belongs(entry)}
+    for key in keys:
+        # Cancels the escalation timer and drops the live record; the pop also
+        # covers a cached record that has no live counterpart.
+        _claim_pending_button(key)
+        state._button_states_cache.pop(key, None)
+    if keys:
+        await persistence.flush_button_cache()
+    return len(keys)
+
+
 async def reschedule_escalation(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, minutes: int, *, _entry: dict | None = None) -> bool:
     key = (posted_channel_id, message_ts)
     entry = _entry if _entry is not None else _claim_pending_button(key)

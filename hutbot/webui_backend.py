@@ -36,6 +36,7 @@ from .constants import (
     DEFAULT_CONFIG,
     DEFAULT_CONFIG_NAME,
     DEFAULT_OPSGENIE_PRIORITY,
+    DISABLED_REASON_REMOVED,
     OPSGENIE_PRIORITIES,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
@@ -340,6 +341,20 @@ async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payl
         configs = state.channel_config.get(channel_id, {})
         if config_name not in configs:
             return False, {'name': "That rule no longer exists."}
+        previous = configs[config_name]
+        if (not previous.get('enabled', True)
+                and previous.get('disabled_reason') == DISABLED_REASON_REMOVED):
+            # A draft loaded before the bot left still says enabled and has no
+            # marker. Do not let an unrelated stale edit undo the automatic
+            # disable. A draft loaded after removal carries the marker, which
+            # distinguishes its explicit enable toggle from that stale save.
+            explicit_reenable = (
+                clean['enabled']
+                and payload.get('disabled_reason') == DISABLED_REASON_REMOVED
+            )
+            if not explicit_reenable:
+                clean['enabled'] = False
+                clean['disabled_reason'] = DISABLED_REASON_REMOVED
         configs[config_name] = clean
         await persistence.save_configuration()
     log(f"Config UI: applied rule `{config_name}` in channel {channel_id}.")

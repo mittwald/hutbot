@@ -56,6 +56,8 @@ const ACTION_SHORT = { reply: "reply", dm_user: "dm", group_dm: "group dm", post
 const CONDITION_LABEL = { "": "None (always)", outlook_calendar: "Outlook calendar" };
 const BTN_ACTION_LABEL = { config: "Run rule", ack: "Acknowledge", message: "Post message", delay: "Delay timer" };
 const TARGET_HINT = { dm_user: "A @user (id, name, or email)", group_dm: "A @usergroup handle", post_channel: "A channel ID like C0123ABCD" };
+// Set by the bot itself when it is removed from a channel (see DISABLED_REASON_REMOVED).
+const DISABLED_REASON_LABEL = { removed_from_channel: "Disabled — the bot was removed from this channel" };
 
 // ---------- api ----------
 async function api(method, path, body) {
@@ -221,7 +223,9 @@ function lampFor(cfg) {
   let cls = "lamp";
   if (!cfg.enabled) cls += " off";
   else if (cfg.opsgenie || cfg.button_timeout > 0) cls += " escalating";
-  const title = !cfg.enabled ? "Disabled" : (cfg.opsgenie || cfg.button_timeout > 0) ? "Active · can escalate" : "Active";
+  const title = !cfg.enabled
+    ? (DISABLED_REASON_LABEL[cfg.disabled_reason] || "Disabled")
+    : (cfg.opsgenie || cfg.button_timeout > 0) ? "Active · can escalate" : "Active";
   return h("span", { class: cls, title, role: "img", "aria-label": title });
 }
 
@@ -336,7 +340,8 @@ function renderEditor(name) {
 
   // — Status & trigger —
   const triggerRows = [grid(
-    field("This rule is", h("div", {}, toggleInput("enabled", cfg.enabled ? "Active" : "Disabled", { onAfter: () => { liveRefresh(); structuralRefreshLabelOnly(); } }))),
+    field("This rule is", h("div", {}, toggleInput("enabled", cfg.enabled ? "Active" : "Disabled", { onAfter: () => { liveRefresh(); structuralRefreshLabelOnly(); } })),
+      { hint: !cfg.enabled && DISABLED_REASON_LABEL[cfg.disabled_reason] ? "The bot disabled this rule when it was removed from this channel." : "" }),
     field("Trigger", selectInput("trigger", state.meta.triggers, TRIGGER_LABEL, structuralRefresh), { hint: triggerHint(cfg.trigger) }),
   )];
   if (cfg.trigger === "message") {

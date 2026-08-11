@@ -217,3 +217,45 @@ def test_ui_meta_exposes_bot_name_and_slash_command():
         meta = ui_meta()
     assert meta['bot_name'] == 'Hutbot (DEV)'
     assert meta['slash_command'] == '/hutbot_dev'
+
+
+@pytest.mark.asyncio
+async def test_ui_apply_config_keeps_the_automatic_disable_reason(monkeypatch):
+    _seed_user_caches()
+    hutbot.state.channel_config = {"C1": {"rule": {**DEFAULT_CONFIG.copy(), "enabled": False,
+                                                   "disabled_reason": DISABLED_REASON_REMOVED}}}
+    monkeypatch.setattr(hutbot.persistence, "save_configuration", AsyncMock())
+    app = _ui_app()
+
+    # Editing a rule that stays disabled keeps the marker...
+    ok, errors = await hutbot.webui_backend.ui_apply_config(app, "C1", "rule", {"reply_message": "Updated", "enabled": False})
+    assert ok is True and errors == {}
+    assert hutbot.state.channel_config["C1"]["rule"]["disabled_reason"] == DISABLED_REASON_REMOVED
+
+    # ...explicitly enabling a draft loaded after removal clears the marker.
+    ok, errors = await hutbot.webui_backend.ui_apply_config(
+        app, "C1", "rule",
+        {"reply_message": "Updated", "enabled": True, "disabled_reason": DISABLED_REASON_REMOVED},
+    )
+    assert ok is True and errors == {}
+    assert hutbot.state.channel_config["C1"]["rule"]["disabled_reason"] == ""
+
+
+@pytest.mark.asyncio
+async def test_ui_apply_config_stale_save_cannot_undo_removal_disable(monkeypatch):
+    _seed_user_caches()
+    stale_payload = {**DEFAULT_CONFIG.copy(), "reply_message": "Updated in stale editor"}
+    hutbot.state.channel_config = {"C1": {"rule": {
+        **DEFAULT_CONFIG.copy(),
+        "enabled": False,
+        "disabled_reason": DISABLED_REASON_REMOVED,
+    }}}
+    monkeypatch.setattr(hutbot.persistence, "save_configuration", AsyncMock())
+
+    ok, errors = await hutbot.webui_backend.ui_apply_config(_ui_app(), "C1", "rule", stale_payload)
+
+    assert ok is True and errors == {}
+    config = hutbot.state.channel_config["C1"]["rule"]
+    assert config["reply_message"] == "Updated in stale editor"
+    assert config["enabled"] is False
+    assert config["disabled_reason"] == DISABLED_REASON_REMOVED

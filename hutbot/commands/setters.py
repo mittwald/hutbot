@@ -66,6 +66,8 @@ async def set_replies_enabled(app: AsyncApp, channel, config_name: str, enabled:
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()
     channel.configs[config_name]['enabled'] = enabled
+    # An explicit enable/disable supersedes an automatic one (see DISABLED_REASON_REMOVED).
+    channel.configs[config_name]['disabled_reason'] = ""
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"Replies are now *{'enabled' if enabled else 'disabled'}* in configuration `{config_name}`.", thread_ts)
 

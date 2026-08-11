@@ -16,7 +16,13 @@ from . import scheduling
 from . import persistence
 from . import buttons
 from . import commands
-from .constants import BUTTON_ACTION_PREFIX, IGNORED_MESSAGE_SUBTYPES, TRIGGER_MESSAGE
+from . import messaging
+from .constants import (
+    BUTTON_ACTION_PREFIX,
+    DISABLED_REASON_REMOVED,
+    IGNORED_MESSAGE_SUBTYPES,
+    TRIGGER_MESSAGE,
+)
 from .models import ScheduledReply
 from .textutil import extract_message_text, log_debug
 
@@ -224,6 +230,76 @@ async def handle_message_deletion(app: AsyncApp, channel, previous_message_user,
         del state.scheduled_messages[key]
 
 
+def is_bot_membership_event(event: dict) -> bool:
+    """True if a member_joined/left_channel event is about the bot itself."""
+    return bool(state.bot_user_id) and event.get('user') == state.bot_user_id
+
+
+async def cancel_channel_scheduled_replies(channel_id: str) -> int:
+    """Cancel every pending scheduled reply of a channel; returns how many were cancelled."""
+    keys_to_cancel = [key for key in state.scheduled_messages if key[0] == channel_id]
+    for key in keys_to_cancel:
+        state.scheduled_messages[key].task.cancel()
+        del state.scheduled_messages[key]
+        state._scheduled_replies_cache.pop(key, None)
+    if keys_to_cancel:
+        await persistence.flush_replies_cache()
+    return len(keys_to_cancel)
+
+
+async def handle_bot_removed_from_channel(app: AsyncApp, channel_id: str) -> None:
+    """Disable a channel's configurations after the bot was removed from it.
+
+    The configuration outlives the membership, so schedule triggers would keep
+    firing (and pending reminders/escalations would keep coming due) for a
+    channel the bot can no longer post to. Configurations disabled here are
+    marked with ``disabled_reason`` so a later rejoin can point them out; they
+    are never re-enabled automatically.
+    """
+    if not channel_id:
+        return
+
+    cancelled = await cancel_channel_scheduled_replies(channel_id)
+    cancelled_buttons = await buttons.cancel_channel_pending_buttons(channel_id)
+
+    configs = state.channel_config.get(channel_id, {})
+    disabled_names = sorted(name for name, config in configs.items() if config.get('enabled', True))
+    for name in disabled_names:
+        configs[name]['enabled'] = False
+        configs[name]['disabled_reason'] = DISABLED_REASON_REMOVED
+    if disabled_names:
+        await persistence.save_configuration()
+
+    log(f"{state.bot_name} was removed from channel {channel_id}. "
+        f"Disabled configuration(s): {', '.join(disabled_names) if disabled_names else '<none>'}. "
+        f"Cancelled {cancelled} scheduled reply/replies and {cancelled_buttons} pending button escalation(s).")
+
+
+async def handle_bot_added_to_channel(app: AsyncApp, channel_id: str) -> None:
+    """Point out the configurations that an earlier removal disabled."""
+    if not channel_id:
+        return
+
+    configs = state.channel_config.get(channel_id, {})
+    names = sorted(
+        name for name, config in configs.items()
+        if not config.get('enabled', True) and config.get('disabled_reason') == DISABLED_REASON_REMOVED
+    )
+    if not names:
+        return
+
+    config_list = ", ".join(f"`{name}`" for name in names)
+    singular = len(names) == 1
+    text = (
+        f"Hi! :wave: I am *{state.bot_name}* :palm_up_hand::tophat: and I am back in this channel.\n\n"
+        f"I disabled {'this configuration' if singular else 'these configurations'} when I was removed: {config_list}. "
+        f"Re-enable {'it' if singular else 'them'} with `{state.slash_command} [config] enable`."
+    )
+    await messaging._post_message(app, channel_id, text, None)
+    log(f"{state.bot_name} was added to channel {channel_id}. "
+        f"Configuration(s) still disabled from an earlier removal: {', '.join(names)}.")
+
+
 async def handle_command_event(app: AsyncApp, command: dict, opsgenie_token: str = ""):
     text = command.get('text', '')
     channel_id = command.get('channel_id', '')
@@ -243,6 +319,18 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
     @app.event("reaction_added")
     async def handle_reaction_added_events(body, logger):
         await handle_reaction_added(app, body.get('event', {}) if body else {})
+
+    @app.event("member_left_channel")
+    async def handle_member_left_channel_events(body, logger):
+        event = body.get('event', {}) if body else {}
+        if is_bot_membership_event(event):
+            await handle_bot_removed_from_channel(app, event.get('channel', ''))
+
+    @app.event("member_joined_channel")
+    async def handle_member_joined_channel_events(body, logger):
+        event = body.get('event', {}) if body else {}
+        if is_bot_membership_event(event):
+            await handle_bot_added_to_channel(app, event.get('channel', ''))
 
     @app.command(state.slash_command)
     async def handle_command(ack, body, logger):

@@ -282,3 +282,17 @@ async def test_set_trigger_valid_and_invalid():
         await process_command(app, "set trigger bogus", channel, user)
         assert channel.configs["default"]["trigger"] == "schedule"  # unchanged
         assert "Invalid *trigger*" in send.call_args_list[-1].args[3]
+
+
+@pytest.mark.asyncio
+async def test_set_replies_enabled_clears_the_automatic_disable_reason():
+    app = AsyncMock()
+    configs = {"default": {**DEFAULT_CONFIG.copy(), "enabled": False, "disabled_reason": DISABLED_REASON_REMOVED}}
+    channel = Channel(id="C12345", name="general", configs=configs)
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
+        await set_replies_enabled(app, channel, "default", True, user)
+
+    assert channel.configs["default"]["enabled"] is True
+    assert channel.configs["default"]["disabled_reason"] == ""

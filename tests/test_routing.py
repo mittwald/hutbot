@@ -366,3 +366,133 @@ def test_register_app_handlers_uses_configured_slash_command():
     with patch('hutbot.state.slash_command', '/hutbot_dev'):
         register_app_handlers(app)
     assert app.command.call_args.args[0] == "/hutbot_dev"
+
+
+# ----- Channel membership (bot added / removed) -----
+
+def _membership_configs():
+    return {
+        "default": {**DEFAULT_CONFIG.copy(), "enabled": True},
+        "nightly": {**DEFAULT_CONFIG.copy(), "enabled": True, "trigger": "schedule"},
+        "off-by-hand": {**DEFAULT_CONFIG.copy(), "enabled": False},
+    }
+
+
+@pytest.mark.asyncio
+async def test_handle_bot_removed_disables_configs_and_cancels_replies():
+    app = AsyncMock()
+    channel_id = "C12345"
+    hutbot.state.channel_config[channel_id] = _membership_configs()
+    hutbot.state.channel_config["C99999"] = {"default": {**DEFAULT_CONFIG.copy(), "enabled": True}}
+
+    task = AsyncMock()
+    task.cancel = MagicMock()
+    other_task = AsyncMock()
+    other_task.cancel = MagicMock()
+    hutbot.state.scheduled_messages[(channel_id, "1.1", "default")] = ScheduledReply(task=task, user_id="U1")
+    hutbot.state.scheduled_messages[("C99999", "2.2", "default")] = ScheduledReply(task=other_task, user_id="U1")
+    hutbot.state._scheduled_replies_cache[(channel_id, "1.1", "default")] = {'channel_id': channel_id}
+
+    with patch('hutbot.persistence.save_configuration') as mock_save, \
+         patch('hutbot.persistence.flush_replies_cache') as mock_flush, \
+         patch('hutbot.buttons.cancel_channel_pending_buttons') as mock_cancel_buttons:
+        await handle_bot_removed_from_channel(app, channel_id)
+
+    mock_cancel_buttons.assert_awaited_once_with(channel_id)
+
+    configs = hutbot.state.channel_config[channel_id]
+    assert configs["default"]["enabled"] is False
+    assert configs["default"]["disabled_reason"] == DISABLED_REASON_REMOVED
+    assert configs["nightly"]["enabled"] is False
+    assert configs["nightly"]["disabled_reason"] == DISABLED_REASON_REMOVED
+    # A config a user had disabled keeps its (empty) reason.
+    assert configs["off-by-hand"]["disabled_reason"] == ""
+    # Other channels are untouched.
+    assert hutbot.state.channel_config["C99999"]["default"]["enabled"] is True
+
+    task.cancel.assert_called_once()
+    other_task.cancel.assert_not_called()
+    assert list(hutbot.state.scheduled_messages.keys()) == [("C99999", "2.2", "default")]
+    assert hutbot.state._scheduled_replies_cache == {}
+    mock_save.assert_called_once()
+    mock_flush.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_bot_removed_without_configs_saves_nothing():
+    app = AsyncMock()
+    with patch('hutbot.persistence.save_configuration') as mock_save, \
+         patch('hutbot.persistence.flush_replies_cache') as mock_flush:
+        await handle_bot_removed_from_channel(app, "C-unknown")
+    assert "C-unknown" not in hutbot.state.channel_config
+    mock_save.assert_not_called()
+    mock_flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_bot_added_reports_configs_disabled_by_removal():
+    app = AsyncMock()
+    channel_id = "C12345"
+    hutbot.state.channel_config[channel_id] = {
+        "default": {**DEFAULT_CONFIG.copy(), "enabled": False, "disabled_reason": DISABLED_REASON_REMOVED},
+        "nightly": {**DEFAULT_CONFIG.copy(), "enabled": False, "disabled_reason": DISABLED_REASON_REMOVED},
+        "off-by-hand": {**DEFAULT_CONFIG.copy(), "enabled": False},
+        "running": {**DEFAULT_CONFIG.copy(), "enabled": True},
+    }
+
+    with patch('hutbot.messaging._post_message') as mock_post:
+        await handle_bot_added_to_channel(app, channel_id)
+
+    mock_post.assert_called_once()
+    text = mock_post.call_args.args[2]
+    assert "`default`, `nightly`" in text
+    assert "off-by-hand" not in text
+    assert f"{hutbot.state.slash_command} [config] enable" in text
+    # Nothing is re-enabled automatically.
+    assert hutbot.state.channel_config[channel_id]["default"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_handle_bot_added_stays_silent_without_auto_disabled_configs():
+    app = AsyncMock()
+    hutbot.state.channel_config["C12345"] = {"off-by-hand": {**DEFAULT_CONFIG.copy(), "enabled": False}}
+    with patch('hutbot.messaging._post_message') as mock_post:
+        await handle_bot_added_to_channel(app, "C12345")
+    mock_post.assert_not_called()
+
+
+def test_is_bot_membership_event():
+    hutbot.state.bot_user_id = "UBOT"
+    assert is_bot_membership_event({"user": "UBOT", "channel": "C1"}) is True
+    assert is_bot_membership_event({"user": "U1", "channel": "C1"}) is False
+    hutbot.state.bot_user_id = None
+    assert is_bot_membership_event({"user": "UBOT"}) is False
+
+
+@pytest.mark.asyncio
+async def test_membership_handlers_only_react_to_the_bot():
+    app = MagicMock()
+    handlers = {}
+
+    def event_decorator(name):
+        def register(fn):
+            handlers[name] = fn
+            return fn
+        return register
+
+    app.event = MagicMock(side_effect=event_decorator)
+    register_app_handlers(app)
+    assert "member_left_channel" in handlers and "member_joined_channel" in handlers
+
+    hutbot.state.bot_user_id = "UBOT"
+    with patch('hutbot.routing.handle_bot_removed_from_channel') as mock_removed, \
+         patch('hutbot.routing.handle_bot_added_to_channel') as mock_added:
+        await handlers["member_left_channel"]({"event": {"user": "U1", "channel": "C1"}}, None)
+        await handlers["member_joined_channel"]({"event": {"user": "U1", "channel": "C1"}}, None)
+        mock_removed.assert_not_called()
+        mock_added.assert_not_called()
+
+        await handlers["member_left_channel"]({"event": {"user": "UBOT", "channel": "C1"}}, None)
+        await handlers["member_joined_channel"]({"event": {"user": "UBOT", "channel": "C2"}}, None)
+        mock_removed.assert_called_once_with(app, "C1")
+        mock_added.assert_called_once_with(app, "C2")
