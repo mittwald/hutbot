@@ -22,6 +22,10 @@ Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`
 /hutbot [config] set datefmt "<date>" "<time>" [<timezone> <locale>]
 ```
 
+The `<timezone>` is also the timezone the config's work days and work hours are
+counted in. Without one, both fall back to the server's local time (UTC in the
+container unless `TZ` is set).
+
 Opsgenie alert priority defaults to `P4` and can be configured per channel config with:
 
 ```bash

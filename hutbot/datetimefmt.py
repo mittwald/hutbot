@@ -1,5 +1,7 @@
 """Date/time parsing, formatting, locale handling, and work-hours helpers."""
 
+import locale as locale_module
+import os
 import re
 import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -27,21 +29,26 @@ def parse_time(time_str) -> datetime.time | None:
     return time
 
 
-def is_work_day() -> bool:
-    today = datetime.date.today()
+def is_work_day(config: dict | None = None) -> bool:
+    # Work days are counted in the config's timezone, so a rule set to
+    # Asia/Tokyo rolls over to the next day when Tokyo does, not when the
+    # server does.
+    today = datetime.datetime.now(get_config_timezone(config)).date()
     # TODO: add holidays
     return today.weekday() < 5
 
 
-def is_work_time(start_time_str: str, end_time_str: str) -> bool:
-    now = datetime.datetime.now()
+def is_work_time(start_time_str: str, end_time_str: str, config: dict | None = None) -> bool:
+    # Work hours are wall-clock times in the config's timezone; without one they
+    # fall back to the server's, which is what this did before timezones existed.
+    now = datetime.datetime.now(get_config_timezone(config))
     start = parse_time(start_time_str)
     end = parse_time(end_time_str)
     if not start or not end:
         log_error(f"Invalid time format {start_time_str} - {end_time_str}")
         return True
-    start_today = datetime.datetime.combine(now.date(), start)
-    end_today = datetime.datetime.combine(now.date(), end)
+    start_today = datetime.datetime.combine(now.date(), start, tzinfo=now.tzinfo)
+    end_today = datetime.datetime.combine(now.date(), end, tzinfo=now.tzinfo)
     return start_today < now < end_today
 
 
@@ -73,6 +80,83 @@ def validate_timezone_name(value: str) -> str:
 
 def get_local_timezone() -> datetime.tzinfo:
     return datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
+
+
+def get_local_timezone_name() -> str:
+    """Best-effort zone name of the server, e.g. ``Europe/Berlin`` or ``Etc/UTC``.
+
+    Python only exposes the current abbreviation ("CEST"), so the IANA name is
+    read from the places the host keeps it. Falls back to the abbreviation when
+    none of them is available.
+    """
+    tz_env = os.environ.get("TZ", "").strip()
+    if tz_env:
+        return tz_env
+    try:
+        with open("/etc/timezone", encoding="utf-8") as f:
+            name = f.read().strip()
+        if name:
+            return name
+    except OSError:
+        pass
+    try:
+        target = os.path.realpath("/etc/localtime")
+    except OSError:
+        target = ""
+    marker = "/zoneinfo/"
+    if marker in target:
+        return target.split(marker, 1)[1]
+    return datetime.datetime.now().astimezone().tzname() or "UTC"
+
+
+def describe_timezone(timezone_name: str = "") -> str:
+    """``Europe/Berlin (CEST, UTC+02:00)`` — the zone plus its offset right now.
+
+    An empty ``timezone_name`` describes the server's own timezone and says so.
+    """
+    if timezone_name:
+        try:
+            tz = ZoneInfo(validate_timezone_name(timezone_name))
+        except ValueError:
+            return f"{timezone_name} (unknown timezone)"
+        name = timezone_name
+    else:
+        tz = get_local_timezone()
+        name = get_local_timezone_name()
+
+    now = datetime.datetime.now(tz)
+    abbreviation = now.tzname() or ""
+    offset = now.strftime("%z")
+    details = []
+    # "Etc/UTC (UTC, UTC+00:00)" says the same thing three times; keep the
+    # abbreviation only when the zone name does not already carry it.
+    if abbreviation and not name.split("/")[-1].startswith(abbreviation):
+        details.append(abbreviation)
+    details.append(f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC+00:00")
+    if not timezone_name:
+        details.append("server local time")
+    return f"{name} ({', '.join(details)})"
+
+
+def get_server_locale_name() -> str:
+    """The server's own locale as ``de_DE``, or empty when it has none set.
+
+    Only informational: the bot never applies it — date/time names come from
+    :data:`LOCALIZED_DATE_NAMES` and only when a config sets a locale.
+    """
+    candidates = list(locale_module.getlocale(locale_module.LC_TIME) or ())
+    candidates.append(os.environ.get("LC_ALL", ""))
+    candidates.append(os.environ.get("LC_TIME", ""))
+    candidates.append(os.environ.get("LANG", ""))
+    for candidate in candidates:
+        candidate = (candidate or "").split(".", 1)[0].strip()
+        if not candidate or candidate in ("C", "POSIX"):
+            continue
+        try:
+            return normalize_locale_name(candidate)
+        except ValueError:
+            continue
+    return ""
 
 
 def get_config_timezone(config: dict | None, timezone_name: str = "", local_tz: datetime.tzinfo | None = None) -> datetime.tzinfo:
@@ -193,6 +277,24 @@ def localize_formatted_datetime(value: str, locale_name: str) -> str:
     for source in sorted(replacements, key=len, reverse=True):
         value = re.sub(rf"\b{re.escape(source)}\b", replacements[source], value)
     return value
+
+
+def describe_locale(locale_name: str = "") -> str:
+    """What day/month names a config actually gets, and why.
+
+    Unset means English names — the server's own locale is never applied, so it
+    is only mentioned for orientation. A configured locale without a translation
+    table (only `de` has one) also ends up English.
+    """
+    if locale_name:
+        language = locale_name.split("_", 1)[0].lower()
+        if language in LOCALIZED_DATE_NAMES:
+            return locale_name
+        return f"{locale_name} (no translations, English names)"
+    server_locale = get_server_locale_name()
+    if server_locale:
+        return f"English names (server locale {server_locale} not applied)"
+    return "English names (no server locale set)"
 
 
 def parse_opsgenie_datetime(value: str) -> datetime.datetime | None:

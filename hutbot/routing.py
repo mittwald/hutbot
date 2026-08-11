@@ -151,10 +151,10 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel, us
         pattern = config.get('pattern')
         pattern_case_sensitive = config.get('pattern_case_sensitive')
 
-        if only_work_days and not datetimefmt.is_work_day():
+        if only_work_days and not datetimefmt.is_work_day(config):
             log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because of a non work day.")
             continue
-        if len(hours) == 2 and not datetimefmt.is_work_time(hours[0], hours[1]):
+        if len(hours) == 2 and not datetimefmt.is_work_time(hours[0], hours[1], config):
             log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because it was sent outside work time.")
             continue
         if not user_matches_actor_criteria(config, user, actor_is_bot):

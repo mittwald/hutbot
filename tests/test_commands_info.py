@@ -21,19 +21,50 @@ async def test_show_config():
 
         sent_message = mock_send_message.call_args.args[3]
         assert "\n\n*Configuration*: `default` (enabled)" in sent_message
-        assert "> *Reply message*:\n> Default message\n>\n> *Forward channel*: <None>\n>\n> *Settings*:\n```" in sent_message
+        assert "> *Trigger*: `message`\n>\n> *Reply message*:\n> Default message\n>\n> *Replied to*: <#C123> (in thread)\n>\n> *Settings*:\n```" in sent_message
+        assert "\nTrigger" not in sent_message
         assert "OpsGenie schedule" in sent_message
         assert "OpsGenie priority   P4" in sent_message
+        # Settings are grouped, each group separated by a blank line.
+        assert (
+            "Wait time           10 minutes\n"
+            "Only work days      disabled\n"
+            "Work hours          all day\n"
+            "\n"
+            "OpsGenie            disabled"
+        ) in sent_message
         assert "Date format         %a, %d %b %Y" in sent_message
         assert "Time format         %H:%M" in sent_message
-        assert "Date/time timezone  <server local>" in sent_message
-        assert "Date/time locale    <default>" in sent_message
         assert "Wait time           10 minutes" in sent_message
         assert "Default message" in sent_message
         assert "\n\n*Configuration*: `alarms` (enabled)" in sent_message
         assert "Wait time           5 minutes" in sent_message
         assert "Pattern             .*alarm.* (case-insensitive)" in sent_message
         assert "Alarm message" in sent_message
+
+
+
+@pytest.mark.asyncio
+async def test_show_config_resolves_the_server_timezone_and_locale():
+    app = AsyncMock()
+    configs = {
+        "default": DEFAULT_CONFIG.copy(),
+        "tokyo": {**DEFAULT_CONFIG.copy(), "datetime_timezone": "Asia/Tokyo", "datetime_locale": "de-DE"},
+    }
+    channel = Channel(id="C123", name="general", configs=configs)
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch.dict(os.environ, {"TZ": "Europe/Berlin"}), \
+         patch('hutbot.datetimefmt.get_server_locale_name', return_value="de_DE"), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    lines = mock_send_message.call_args.args[3].splitlines()
+    assert any(line.startswith("Date/time timezone  Europe/Berlin (") and line.endswith(", server local time)") for line in lines)
+    assert "Date/time locale    English names (server locale de_DE not applied)" in lines
+    assert "Date/time timezone  Asia/Tokyo (JST, UTC+09:00)" in lines
+    assert "Date/time locale    de_DE" in lines
+    assert "<server local>" not in mock_send_message.call_args.args[3]
 
 
 
@@ -180,12 +211,12 @@ async def test_show_config_displays_forward_channel():
         await show_config(app, channel, user, "")
 
     sent_message = mock_send_message.call_args.args[3]
-    assert "*Forward channel*: <#CFWDCHAN>" in sent_message
+    assert "*Replied to*: <#C123> (in thread)\n> *Forwarded to*: <#CFWDCHAN>" in sent_message
 
 
 
 @pytest.mark.asyncio
-async def test_show_config_displays_none_for_missing_forward_channel():
+async def test_show_config_omits_forward_line_without_forward_channel():
     app = AsyncMock()
     channel = Channel(id="C123", name="general", configs={"default": DEFAULT_CONFIG.copy()})
     user = User(id="U123", name="test", real_name="Test User", team="A")
@@ -194,7 +225,37 @@ async def test_show_config_displays_none_for_missing_forward_channel():
         await show_config(app, channel, user, "")
 
     sent_message = mock_send_message.call_args.args[3]
-    assert "*Forward channel*: <None>" in sent_message
+    assert "*Replied to*: <#C123> (in thread)" in sent_message
+    assert "Forwarded to" not in sent_message
+
+
+
+@pytest.mark.asyncio
+async def test_show_config_names_the_destination_per_action():
+    app = AsyncMock()
+    configs = {
+        "post": {**DEFAULT_CONFIG.copy(), "action": ACTION_POST_CHANNEL, "action_target": "<#CTARGET|targets>"},
+        "dm": {**DEFAULT_CONFIG.copy(), "action": ACTION_DM_USER, "action_target": "d.grieser@mittwald.de"},
+        "group": {**DEFAULT_CONFIG.copy(), "action": ACTION_GROUP_DM, "action_target": "SGROUP"},
+        "scheduled": {**DEFAULT_CONFIG.copy(), "trigger": TRIGGER_SCHEDULE, "schedule_cron": "0 9 * * 1-5"},
+    }
+    channel = Channel(id="C123", name="general", configs=configs)
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sent_message = mock_send_message.call_args.args[3]
+    assert "*Posted to*: <#CTARGET>" in sent_message
+    assert "*Sent to*: `d.grieser@mittwald.de` (direct message)" in sent_message
+    assert "*Sent to*: <!subteam^SGROUP> (group message)" in sent_message
+    # No message to thread on for a schedule trigger.
+    assert "*Replied to*: <#C123>\n" in sent_message
+    assert "Cron                0 9 * * 1-5" in sent_message
+    assert any(line.startswith("Schedule timezone   ") and "server local" in line for line in sent_message.splitlines())
+    # Non-reply actions title their template "Message", not "Reply message".
+    assert "*Message*:" in sent_message
+    assert "Action target" not in sent_message
 
 
 

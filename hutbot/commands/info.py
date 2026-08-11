@@ -1,5 +1,7 @@
 """Read-only slash-command handlers: lists, team lookup, and config display."""
 
+import re
+
 import aiohttp
 from slack_bolt.async_app import AsyncApp
 
@@ -10,8 +12,13 @@ from .. import messaging
 from .. import slackcache
 from .. import opsgenie
 from .. import buttons
+from .. import datetimefmt
 from ..buttonutil import normalize_button
+from .. import targets
 from ..constants import (
+    ACTION_DM_USER,
+    ACTION_GROUP_DM,
+    ACTION_POST_CHANNEL,
     ACTION_REPLY,
     DEFAULT_DATE_FORMAT,
     DEFAULT_TIME_FORMAT,
@@ -113,6 +120,41 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             return f"\n{' ' * (key_width + 2)}".join(value)
         return value
 
+    def format_target(target: str) -> str:
+        """Render an action target as a Slack mention when it looks like an id."""
+        target = (target or '').strip()
+        if not target:
+            return '<None>'
+        channel_id = targets.parse_channel_ref(target)
+        if channel_id:
+            return f"<#{channel_id}>"
+        if ID_PATTERN.fullmatch(target) or re.fullmatch(r'<!subteam\^[A-Z0-9]+(\|[^>]*)?>', target):
+            return target
+        if re.fullmatch(r'[UW][A-Z0-9]+', target):
+            return f"<@{target}>"
+        if re.fullmatch(r'S[A-Z0-9]+', target):
+            return f"<!subteam^{target}>"
+        return f"`{target}`"
+
+    def destination_lines(config: dict, action: str, trigger: str, forward_channel_id: str) -> list[str]:
+        """Where the message ends up, phrased per action instead of as raw fields."""
+        action_target = config.get('action_target') or ''
+        if action == ACTION_REPLY:
+            # A reply threads on the triggering message; schedule/manual runs have
+            # no message to thread on and land in the channel itself.
+            thread = ' (in thread)' if trigger == TRIGGER_MESSAGE else ''
+            lines = [f"*Replied to*: <#{channel.id}>{thread}"]
+            if forward_channel_id:
+                lines.append(f"*Forwarded to*: <#{forward_channel_id}>")
+            return lines
+        if action == ACTION_POST_CHANNEL:
+            return [f"*Posted to*: {format_target(action_target or forward_channel_id)}"]
+        if action == ACTION_DM_USER:
+            return [f"*Sent to*: {format_target(action_target)} (direct message)"]
+        if action == ACTION_GROUP_DM:
+            return [f"*Sent to*: {format_target(action_target)} (group message)"]
+        return [f"*Action*: `{action}`, target {format_target(action_target)}"]
+
     message = f"This is the configuration for #{channel.name}:"
     for config_name, config in sorted(channel.configs.items()):
         opsgenie_enabled = config.get('opsgenie')
@@ -129,52 +171,56 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         opsgenie_schedule_name = config.get('opsgenie_schedule_name')
         date_format = config.get('date_format') or DEFAULT_DATE_FORMAT
         time_format = config.get('time_format') or DEFAULT_TIME_FORMAT
-        datetime_timezone = config.get('datetime_timezone') or '<server local>'
-        datetime_locale = config.get('datetime_locale') or '<default>'
+        datetime_timezone = datetimefmt.describe_timezone(config.get('datetime_timezone') or '')
+        datetime_locale = datetimefmt.describe_locale(datetimefmt.get_config_locale(config))
         opsgenie_priority = opsgenie.get_opsgenie_priority(config)
         replies_enabled = config.get('enabled', True)
         trigger = config.get('trigger', TRIGGER_MESSAGE)
         action = config.get('action', ACTION_REPLY)
 
-        rows = [
-            ("Trigger",            trigger),
-            ("OpsGenie",           ('enabled' if opsgenie_enabled else 'disabled') + ('' if state.opsgenie_configured else ' (not configured)')),
-            ("OpsGenie schedule",  opsgenie_schedule_name),
-            ("OpsGenie priority",  opsgenie_priority),
-            ("OpsGenie message",   config.get('opsgenie_message') or '<original message>'),
-            ("Date format",        date_format),
-            ("Time format",        time_format),
-            ("Date/time timezone", datetime_timezone),
-            ("Date/time locale",   datetime_locale),
-            ("Wait time",          f"{wait_time_minutes} minutes"),
-            ("Included teams",     included_teams),
-            ("Excluded teams",     excluded_teams),
-            ("Include bots",       'enabled' if include_bots else 'disabled'),
-            ("Only work days",     'enabled' if only_work_days else 'disabled'),
-            ("Work hours",         f"{hours[0]} - {hours[1]}" if len(hours) == 2 else 'all day'),
-            ("Pattern",            f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<None>'),
-        ]
+        # Settings are grouped by topic, in the order a rule runs: when it fires,
+        # what gates it, what it matches, timing, buttons, alerting, formatting.
+        # Each group becomes a blank-line-separated block in the code block.
+        groups: list[list[tuple]] = []
 
         if trigger == TRIGGER_SCHEDULE:
-            rows.append(("Cron", config.get('schedule_cron') or '<None>'))
-            rows.append(("Schedule timezone", config.get('schedule_timezone') or '<server local>'))
+            # Same fallback chain the scheduler uses: own timezone, then the
+            # date/time one, then the server's.
+            schedule_timezone = config.get('schedule_timezone') or config.get('datetime_timezone') or ''
+            groups.append([
+                ("Cron",              config.get('schedule_cron') or '<None>'),
+                ("Schedule timezone", datetimefmt.describe_timezone(schedule_timezone)),
+            ])
+
         condition = config.get('condition') or ''
         if condition:
             negate = ' (negated)' if config.get('condition_negate') else ''
-            rows.append(("Condition", f"{condition}{negate}"))
+            condition_rows = [("Condition", f"{condition}{negate}")]
             if config.get('outlook_subject_pattern'):
-                rows.append(("Outlook subject", config.get('outlook_subject_pattern')))
+                condition_rows.append(("Outlook subject", config.get('outlook_subject_pattern')))
             if config.get('outlook_body_pattern'):
-                rows.append(("Outlook body", config.get('outlook_body_pattern')))
-        if action != ACTION_REPLY:
-            rows.append(("Action", action))
-            rows.append(("Action target", config.get('action_target') or '<None>'))
+                condition_rows.append(("Outlook body", config.get('outlook_body_pattern')))
+            groups.append(condition_rows)
+
+        groups.append([
+            ("Pattern",        f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<None>'),
+            ("Included teams", included_teams),
+            ("Excluded teams", excluded_teams),
+            ("Include bots",   'enabled' if include_bots else 'disabled'),
+        ])
+
+        groups.append([
+            ("Wait time",      f"{wait_time_minutes} minutes"),
+            ("Only work days", 'enabled' if only_work_days else 'disabled'),
+            ("Work hours",     f"{hours[0]} - {hours[1]}" if len(hours) == 2 else 'all day'),
+        ])
+
         config_buttons = config.get('buttons') or []
         if config_buttons:
             def _button_label(b):
-                action, value = normalize_button(b)
-                return f"{b.get('label')} → {action}" + (f":{value}" if value else "")
-            rows.append(("Buttons", [_button_label(b) for b in config_buttons]))
+                button_action, value = normalize_button(b)
+                return f"{b.get('label')} → {button_action}" + (f":{value}" if value else "")
+            button_rows = [("Buttons", [_button_label(b) for b in config_buttons])]
             button_timeout_minutes = (config.get('button_timeout') or 0) // 60
             if button_timeout_minutes:
                 kind, target = buttons._escalation_kind(config)
@@ -184,13 +230,33 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
                     escalates_to = f"run `{target}`"
                 else:
                     escalates_to = "nothing"
-                rows.append(("Button timeout", f"{button_timeout_minutes} minutes → {escalates_to}"))
+                button_rows.append(("Button timeout", f"{button_timeout_minutes} minutes → {escalates_to}"))
             if config.get('default_button'):
-                rows.append(("Default button", config.get('default_button')))
-        key_width = max(len(label) for label, _ in rows)
-        config_block = "\n".join(f"{label:<{key_width}}  {format_table_value(value, key_width)}" for label, value in rows)
-        forward_channel_line = f"*Forward channel*: {f'<#{forward_channel_id}>' if forward_channel_id else '<None>'}"
-        reply_line = f"*Reply message*:\n{reply_message}" if reply_message else "*Reply message*: <None>"
+                button_rows.append(("Default button", config.get('default_button')))
+            groups.append(button_rows)
+
+        groups.append([
+            ("OpsGenie",          ('enabled' if opsgenie_enabled else 'disabled') + ('' if state.opsgenie_configured else ' (not configured)')),
+            ("OpsGenie schedule", opsgenie_schedule_name or '<None>'),
+            ("OpsGenie priority", opsgenie_priority),
+            ("OpsGenie message",  config.get('opsgenie_message') or '<original message>'),
+        ])
+
+        groups.append([
+            ("Date format",        date_format),
+            ("Time format",        time_format),
+            ("Date/time timezone", datetime_timezone),
+            ("Date/time locale",   datetime_locale),
+        ])
+
+        key_width = max(len(label) for group in groups for label, _ in group)
+        config_block = "\n\n".join(
+            "\n".join(f"{label:<{key_width}}  {format_table_value(value, key_width)}" for label, value in group)
+            for group in groups
+        )
+        message_label = 'Reply message' if action == ACTION_REPLY else 'Message'
+        reply_line = f"*{message_label}*:\n{reply_message}" if reply_message else f"*{message_label}*: <None>"
+        destinations = "\n".join(destination_lines(config, action, trigger, forward_channel_id))
         if replies_enabled:
             enabled_label = 'enabled'
         elif config.get('disabled_reason') == DISABLED_REASON_REMOVED:
@@ -198,9 +264,11 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         else:
             enabled_label = 'disabled'
         quoted_block = (
+            f"> *Trigger*: `{trigger}`\n"
+            f">\n"
             f"> {reply_line.replace('\n', '\n> ')}\n"
             f">\n"
-            f"> {forward_channel_line}\n"
+            f"> {destinations.replace('\n', '\n> ')}\n"
             f">\n"
             f"> *Settings*:\n"
         )

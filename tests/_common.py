@@ -6,16 +6,27 @@ import base64
 import tempfile
 import asyncio
 import datetime
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch, call
 
 import outlook
 from slack_sdk.errors import SlackApiError
 from employee_list import get_env_var
 
 from hutbot.models import Channel, User, Usergroup, ScheduledReply
-from hutbot.constants import DEFAULT_CONFIG, DISABLED_REASON_REMOVED, bot_slug, normalize_slash_command
+from hutbot.constants import (
+    ACTION_DM_USER,
+    ACTION_GROUP_DM,
+    ACTION_POST_CHANNEL,
+    DEFAULT_CONFIG,
+    DISABLED_REASON_REMOVED,
+    TRIGGER_SCHEDULE,
+    bot_slug,
+    normalize_slash_command,
+)
 from hutbot.textutil import extract_message_text
 from hutbot.datetimefmt import parse_time, is_work_day, is_work_time
 from hutbot.persistence import migrate_and_apply_defaults, load_replies_cache, flush_replies_cache
