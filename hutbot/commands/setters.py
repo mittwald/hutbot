@@ -235,13 +235,18 @@ async def set_datetime_format(app: AsyncApp, channel, config_name: str, values: 
     await messaging.send_message(app, channel, user, details, thread_ts)
 
 
-async def set_wait_time(app: AsyncApp, channel, config_name: str, wait_time_minutes: int, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+async def set_wait_time(app: AsyncApp, channel, config_name: str, wait_time_str: str, user, thread_ts: str = "") -> None:
     # check if number and in range 0-1440
+    try:
+        wait_time_minutes = int(strip_quotes(wait_time_str or "").strip())
+    except (TypeError, ValueError):
+        await messaging.send_message(app, channel, user, "Invalid wait time. Must be a number between 0 and 1440.", thread_ts)
+        return
     if not wait_time_minutes or wait_time_minutes < 0 or wait_time_minutes > 1440:
         await messaging.send_message(app, channel, user, "Invalid wait time. Must be a number between 0 and 1440.", thread_ts)
         return
+    if config_name not in channel.configs:
+        channel.configs[config_name] = DEFAULT_CONFIG.copy()
 
     channel.configs[config_name]['wait_time'] = wait_time_minutes * 60  # Convert to seconds
     log_debug(channel, f"Wait time for #{channel.name} set to {wait_time_minutes} minutes for configuration `{config_name}`")

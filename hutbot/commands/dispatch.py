@@ -1,6 +1,10 @@
 """Command dispatch: match a slash-command string and run the matching handler."""
 
+import traceback
+
 from slack_bolt.async_app import AsyncApp
+
+from employee_list import log_error
 
 from .. import state
 from .. import messaging
@@ -19,8 +23,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         test_message = match.group("message") if allow_test_message and match.groupdict().get("message") is not None else ""
         await setters.test_reply_message(app, opsgenie_token, channel, config_name, user, test_message, command_ts, thread_ts)
     elif (match := patterns.SET_WAIT_TIME_PATTERN.match(command_text)):
-        wait_time_minutes = int(strip_quotes(match.group("wait_time")))
-        await setters.set_wait_time(app, channel, config_name, wait_time_minutes, user, thread_ts)
+        await setters.set_wait_time(app, channel, config_name, match.group("wait_time"), user, thread_ts)
     elif (match := patterns.SET_REPLY_MESSAGE_PATTERN.match(command_text)):
         message = strip_quotes(match.group("message"))
         await setters.set_reply_message(app, channel, config_name, message, user, thread_ts)
@@ -134,6 +137,19 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
 
 
 async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> None:
+    try:
+        await _process_command(app, text, channel, user, thread_ts, opsgenie_token, allow_test_message, command_ts)
+    except Exception as e:
+        # Never let a bad command take down the listener: log it and tell the user.
+        log_error(f"Failed to process command in #{getattr(channel, 'name', '?')}: {text}", e)
+        log_error(traceback.format_exc())
+        try:
+            await messaging.send_message(app, channel, user, "Sorry, something went wrong while running that command. :confused: Please check the syntax with `" + state.slash_command + " help`.", thread_ts)
+        except Exception as send_error:
+            log_error("Failed to report command error to the user:", send_error)
+
+
+async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> None:
     text = text.replace(f"<@{state.bot_user_id}>", "").strip()
     log_debug(channel, f"Received command for channel #{channel.name}: {text}")
     command_ts = command_ts or thread_ts

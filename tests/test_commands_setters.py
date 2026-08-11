@@ -31,6 +31,34 @@ async def test_process_command_set_wait_time_custom_config():
 
 
 @pytest.mark.asyncio
+async def test_process_command_set_wait_time_invalid_value():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+    original_wait_time = channel.configs["default"]["wait_time"]
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "set wait-time 30s", channel, user, thread_ts)
+        assert channel.configs["default"]["wait_time"] == original_wait_time
+        mock_send_message.assert_called_with(app, channel, user, "Invalid wait time. Must be a number between 0 and 1440.", thread_ts)
+
+
+@pytest.mark.asyncio
+async def test_process_command_reports_unexpected_errors():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    thread_ts = "1234567890.123456"
+
+    with patch('hutbot.messaging.send_message') as mock_send_message, \
+            patch('hutbot.commands.dispatch.parse_and_execute_command', side_effect=RuntimeError("boom")):
+        await process_command(app, "set wait-time 10", channel, user, thread_ts)
+        assert mock_send_message.await_count == 1
+        assert "something went wrong" in mock_send_message.await_args.args[3]
+
+
+@pytest.mark.asyncio
 async def test_process_command_set_datetime_format_with_quotes_timezone_and_locale():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
