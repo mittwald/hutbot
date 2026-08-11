@@ -151,9 +151,10 @@ async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]
 async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     command = state.slash_command
     name = state.bot_name
+    version = state.version
     mention = f"@{state.bot_user_name}"
     update_text = (
-        f"Hi! :wave: I am *{name}* :palm_up_hand::tophat: Here's what's :new::\n\n"
+        f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what's :new::\n\n"
         "> :robot_face: *Triggers, actions & buttons*\n>\n"
         f"> Rules can now run on a `schedule` (cron), DM a user or group, post to a channel, and carry interactive buttons (with an auto-press default + timeout escalation). See `{command} help`.\n>\n"
         "> :calendar: *OpsGenie date/time template variables and defaults*\n>\n"
@@ -179,6 +180,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     supported_template_variables = ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
     command = state.slash_command
     name = state.bot_name
+    version = state.version
     mention = f"@{state.bot_user_name}"
     # Grouped in the order a rule runs — configs, then trigger, condition, what it
     # matches, timing, the message it sends, buttons, alerting, formatting — with
@@ -265,7 +267,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         for title, rows in command_groups
     )
     help_text = (
-        f"Hi! :wave: I am *{name}* :palm_up_hand::tophat: Here's what I can do:\n\n"
+        f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what I can do:\n\n"
         "*Show All Configurations:*\n"
         f"> Either use the command `{command}` or just `{mention}` me.\n"
         f"```{command} show config\n"

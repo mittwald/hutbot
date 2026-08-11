@@ -7,9 +7,10 @@ from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 
 from employee_list import get_env_var, load_env_file, log_error
 
+from . import __version__
 from . import state
 from . import datetimefmt
-from .constants import DEFAULT_BOT_NAME, normalize_slash_command
+from .constants import DEFAULT_BOT_NAME, normalize_slash_command, normalize_version
 from . import persistence
 from . import slackcache
 from . import scheduling
@@ -27,6 +28,8 @@ async def main() -> None:
     opsgenie_heartbeat_name = get_env_var("OPSGENIE_HEARTBEAT_NAME")
     state.slash_command = normalize_slash_command(get_env_var("HUTBOT_SLASH_COMMAND"))
     state.bot_name = get_env_var("HUTBOT_BOT_NAME").strip() or DEFAULT_BOT_NAME
+    # The deployed image tag, so `help` / `news` name the version actually running.
+    state.version = normalize_version(get_env_var("HUTBOT_VERSION")) or normalize_version(__version__)
     # Locale for configs that set none. The timezone counterpart is the container's
     # TZ: a config without its own timezone uses server local time anyway.
     state.default_datetime_locale = datetimefmt.resolve_default_locale(get_env_var("HUTBOT_DEFAULT_DATETIME_LOCALE"))

@@ -34,8 +34,10 @@ spec:
             - name: http
               containerPort: {{ .Values.ui.port }}
           {{- end }}
-          {{- if or .Values.persistence.enabled .Values.ui.enabled .Values.slack.slashCommand .Values.slack.botName .Values.time.timezone .Values.time.locale }}
           env:
+            # What `help` / `news` report as the running version.
+            - name: HUTBOT_VERSION
+              value: {{ $imageTag | quote }}
             {{- if .Values.time.timezone }}
             - name: TZ
               value: {{ .Values.time.timezone | quote }}
@@ -72,7 +74,6 @@ spec:
             - name: HUTBOT_UI_USER_HEADER
               value: {{ .Values.ui.userHeader | quote }}
             {{- end }}
-          {{- end }}
           {{- if .Values.persistence.enabled }}
           volumeMounts:
             - name: config

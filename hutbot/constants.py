@@ -128,6 +128,14 @@ def bot_slug(name: str) -> str:
     return slug or DEFAULT_BOT_NAME.lower()
 
 
+def normalize_version(value: str) -> str:
+    """Display form of a version, e.g. "1.0.9" or "v1.0.9" -> "v1.0.9"."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    return value if value.startswith("v") else f"v{value}"
+
+
 def normalize_slash_command(value: str) -> str:
     """Return a usable Slack slash command, defaulting when unset."""
     value = (value or "").strip()

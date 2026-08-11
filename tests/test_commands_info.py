@@ -359,3 +359,17 @@ async def test_show_config_marks_the_instance_default_locale():
         await show_config(app, channel, user, "")
 
     assert "Date/time locale    de_DE (instance default)" in mock_send_message.call_args.args[3].splitlines()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["help", "news"])
+async def test_help_and_news_name_the_running_version(command):
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.state.version', "v1.2.3"), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, command, channel, user)
+
+    assert "I am *Hutbot* `v1.2.3` :palm_up_hand::tophat:" in mock_send_message.call_args.args[3]

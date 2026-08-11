@@ -88,3 +88,16 @@ def test_chart_omits_timezone_and_locale_by_default():
     assert result.returncode == 0, result.stderr
     assert "name: TZ" not in result.stdout
     assert "HUTBOT_DEFAULT_DATETIME_LOCALE" not in result.stdout
+
+
+def test_chart_passes_the_image_tag_as_the_bot_version():
+    result = subprocess.run(
+        _helm_template_command("v1.2.3"),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "- name: HUTBOT_VERSION\n              value: \"v1.2.3\"" in result.stdout
