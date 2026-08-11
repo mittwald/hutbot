@@ -330,11 +330,17 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
 
 async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payload: dict) -> tuple[bool, dict]:
     """Validate and persist a single config (rule). Returns (ok, errors)."""
+    config_name = (config_name or "").strip()
+    if not CONFIG_NAME_PATTERN.fullmatch(config_name):
+        return False, {'name': "Names may use letters, numbers, and - _ . : / only."}
     clean, errors = await validate_config_payload(payload, app, channel_id)
     if errors:
         return False, errors
     async with state._config_write_lock:
-        state.channel_config.setdefault(channel_id, {})[config_name] = clean
+        configs = state.channel_config.get(channel_id, {})
+        if config_name not in configs:
+            return False, {'name': "That rule no longer exists."}
+        configs[config_name] = clean
         await persistence.save_configuration()
     log(f"Config UI: applied rule `{config_name}` in channel {channel_id}.")
     return True, {}
@@ -342,7 +348,7 @@ async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payl
 
 async def ui_create_config(app: AsyncApp, channel_id: str, config_name: str) -> tuple[bool, str]:
     config_name = (config_name or "").strip()
-    if not CONFIG_NAME_PATTERN.match(config_name):
+    if not CONFIG_NAME_PATTERN.fullmatch(config_name):
         return False, "Names may use letters, numbers, and - _ . : / only."
     async with state._config_write_lock:
         configs = state.channel_config.setdefault(channel_id, {})

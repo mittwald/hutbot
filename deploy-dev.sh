@@ -36,8 +36,8 @@ esac
 image_tag="$1"
 shift
 
-if [[ "$image_tag" == "latest" ]]; then
-  echo "error: image tags must be pinned to a release, 'latest' is not allowed" >&2
+if [[ "${image_tag,,}" == "latest" || "${image_tag,,}" == "main" ]]; then
+  echo "error: image tags must be pinned to a release, '${image_tag}' is not allowed" >&2
   exit 1
 fi
 

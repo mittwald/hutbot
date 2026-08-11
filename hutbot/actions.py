@@ -154,12 +154,12 @@ async def run_action(app: AsyncApp, opsgenie_token: str, channel: Channel, confi
     else:
         log_error(f"Unknown action '{action}' for config '{config_name}'.")
         return None
-    if not posted:
-        return None
-    if posted.get('ts') and config.get('buttons'):
+    if posted and posted.get('ts') and config.get('buttons'):
         await buttons.register_escalation(app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config, context, posted_text=text)
     # OpsGenie is just a config property: any config that runs and has it enabled alerts.
-    await maybe_post_opsgenie_alert(app, opsgenie_token, channel, config, config_name, context, posted.get('ts', ''))
+    await maybe_post_opsgenie_alert(app, opsgenie_token, channel, config, config_name, context, (posted or {}).get('ts', ''))
+    if not posted:
+        return None
     return {**posted, 'text': text}
 
 

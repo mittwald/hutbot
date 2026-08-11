@@ -160,6 +160,23 @@ async def test_ui_create_config_rejects_bad_name_and_duplicate(monkeypatch):
     assert ok is False and "already exists" in msg
 
 
+@pytest.mark.asyncio
+async def test_ui_apply_config_requires_valid_existing_target(monkeypatch):
+    _seed_user_caches()
+    hutbot.state.channel_config = {"C1": {"existing": DEFAULT_CONFIG.copy()}}
+    monkeypatch.setattr(hutbot.persistence, "save_configuration", AsyncMock())
+    app = _ui_app()
+    payload = {"reply_message": "Updated"}
+
+    ok, errors = await hutbot.webui_backend.ui_apply_config(app, "C1", "bad name", payload)
+    assert ok is False and "name" in errors
+
+    ok, errors = await hutbot.webui_backend.ui_apply_config(app, "C1", "deleted", payload)
+    assert ok is False and errors == {"name": "That rule no longer exists."}
+    assert "deleted" not in hutbot.state.channel_config["C1"]
+    hutbot.persistence.save_configuration.assert_not_awaited()
+
+
 
 @pytest.mark.asyncio
 async def test_ui_delete_config_refuses_default(monkeypatch):

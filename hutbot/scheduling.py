@@ -13,7 +13,7 @@ from . import state
 from . import slackcache
 from . import actions
 from . import persistence
-from .constants import SCHEDULER_INTERVAL, TRIGGER_SCHEDULE
+from .constants import ACTION_REPLY, SCHEDULER_INTERVAL, TRIGGER_SCHEDULE
 from .models import ScheduledReply
 
 try:
@@ -44,7 +44,7 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: di
         })
         reply_message = (posted or {}).get('text', '')
         forward_channel_id = config.get('forward_channel')
-        if forward_channel_id and reply_message:
+        if config.get('action', ACTION_REPLY) == ACTION_REPLY and forward_channel_id and reply_message:
             try:
                 forward_text = f"{reply_message}\n\n*Original message in #{channel.name}:* {permalink}"
                 await app.client.chat_postMessage(channel=forward_channel_id, text=forward_text, mrkdwn=True)

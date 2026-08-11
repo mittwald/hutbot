@@ -182,6 +182,28 @@ async def test_schedule_reply_forwards_to_configured_channel():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["dm_user", "group_dm", "post_channel"])
+async def test_schedule_reply_does_not_legacy_forward_non_reply_actions(action):
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p123"}
+    channel = Channel(id="C12345", name="general", configs={})
+    user = User("U12345", "test", "Test User", "Testers")
+    config = {
+        **DEFAULT_CONFIG.copy(),
+        "wait_time": 0,
+        "reply_message": "Private text",
+        "forward_channel": "CLEGACY",
+        "action": action,
+    }
+
+    with patch('hutbot.actions.run_action', new=AsyncMock(return_value={"text": "Private text"})), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
+        await schedule_reply(app, "token", channel, config, "default", user, "Help needed", "1234.1")
+
+    app.client.chat_postMessage.assert_not_awaited()
+
+
 
 @pytest.mark.asyncio
 async def test_schedule_reply_skips_forward_when_not_configured():

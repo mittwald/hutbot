@@ -144,6 +144,7 @@ async function selectChannel(channelId) {
   stage.replaceChildren(h("div", { class: "stage-loading", text: "Loading rules…" }));
 
   const res = await api("GET", `/api/channels/${encodeURIComponent(channelId)}/configs`);
+  if (state.channelId !== channelId) return;
   if (!res.ok) { stage.replaceChildren(h("div", { class: "stage-empty" }, h("strong", { text: "Couldn't load this channel" }), res.data?.error || "Try another channel.")); return; }
   state.configs = res.data.configs || {};
   state.drafts = {};

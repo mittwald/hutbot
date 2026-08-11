@@ -133,6 +133,20 @@ async def test_action_group_dm_resolves_members_and_opens_mpim():
     assert posted["channel"] == "G888"
 
 
+@pytest.mark.asyncio
+async def test_run_action_fires_opsgenie_when_slack_post_fails():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "opsgenie": True}
+    channel = _mk_channel({"src": config})
+
+    with patch('hutbot.actions.action_reply', new=AsyncMock(return_value=None)), \
+         patch('hutbot.actions.maybe_post_opsgenie_alert', new=AsyncMock()) as alert:
+        posted = await hutbot.actions.run_action(app, "token", channel, config, "src", {"text": "DB down"})
+
+    assert posted is None
+    alert.assert_awaited_once_with(app, "token", channel, config, "src", {"text": "DB down"}, "")
+
+
 
 # ----- action_reply threads only within the same channel -----
 

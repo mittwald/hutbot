@@ -28,6 +28,19 @@ from .constants import (
 from .models import User
 
 
+SLACK_SECTION_TEXT_LIMIT = 3000
+SLACK_ACTIONS_ELEMENT_LIMIT = 25
+
+
+def _section_blocks(text: str) -> list[dict]:
+    """Split message text into Slack-valid section blocks."""
+    text = text or ' '
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text[offset:offset + SLACK_SECTION_TEXT_LIMIT]}}
+        for offset in range(0, len(text), SLACK_SECTION_TEXT_LIMIT)
+    ]
+
+
 def build_button_blocks(config: dict, def_channel_id: str, config_name: str, text: str) -> list | None:
     buttons = config.get('buttons') or []
     if not buttons:
@@ -45,10 +58,17 @@ def build_button_blocks(config: dict, def_channel_id: str, config_name: str, tex
             "action_id": f"{BUTTON_ACTION_PREFIX}:{i}",
             "value": value[:2000],
         })
-    return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
-        {"type": "actions", "block_id": f"{BUTTON_ACTION_PREFIX}:{config_name}", "elements": elements},
-    ]
+    action_blocks = []
+    for offset in range(0, len(elements), SLACK_ACTIONS_ELEMENT_LIMIT):
+        chunk_number = offset // SLACK_ACTIONS_ELEMENT_LIMIT
+        suffix = f":{chunk_number}"
+        block_id = f"{BUTTON_ACTION_PREFIX}:{config_name}"[:255 - len(suffix)] + suffix
+        action_blocks.append({
+            "type": "actions",
+            "block_id": block_id,
+            "elements": elements[offset:offset + SLACK_ACTIONS_ELEMENT_LIMIT],
+        })
+    return _section_blocks(text) + action_blocks
 
 
 def _escalation_kind(config: dict) -> tuple[str, str]:
@@ -178,45 +198,48 @@ async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> No
 async def _escalation_task(app: AsyncApp, opsgenie_token: str, key: tuple, timeout: float) -> None:
     try:
         await asyncio.sleep(timeout)
-        entry = state.pending_buttons.get(key)
+        entry = _claim_pending_button(key, owner=asyncio.current_task())
         if entry:
+            await persistence.flush_button_cache()
             log(f"No button pressed on message {key[1]} within timeout; escalating.")
             await _run_escalation(app, opsgenie_token, entry)
     except asyncio.CancelledError:
+        # Cancellation alone means shutdown or timer replacement. The caller that
+        # explicitly consumed/replaced this record owns cache updates; shutdown must
+        # leave the persisted entry available for restoration in the next process.
         return
     except Exception as e:
         log_error(f"Escalation task failed for message {key[1]}:", e)
-    finally:
-        # Only the task that currently owns this key may clear it. A `delay` press
-        # cancels this task and stores a *fresh* timer under the same key; without
-        # this guard, our cancelled-task cleanup would run during the reschedule's
-        # flush await and clobber the rescheduled escalation so it never fires.
-        entry = state.pending_buttons.get(key)
-        owner = entry.get('task') if entry else None
-        if entry is None or owner is None or owner is asyncio.current_task():
-            state.pending_buttons.pop(key, None)
-            state._button_states_cache.pop(key, None)
-            await persistence.flush_button_cache()
+
+
+def _claim_pending_button(key: tuple, owner: asyncio.Task | None = None) -> dict | None:
+    """Synchronously claim a pending record so only one consumer can dispatch it."""
+    entry = state.pending_buttons.get(key)
+    if entry is None:
+        return None
+    task = entry.get('task')
+    if owner is not None and task is not None and task is not owner and not task.done():
+        return None
+    state.pending_buttons.pop(key, None)
+    state._button_states_cache.pop(key, None)
+    if task is not None and task is not asyncio.current_task():
+        task.cancel()
+    return entry
 
 
 async def cancel_pending_button(posted_channel_id: str, message_ts: str) -> None:
     key = (posted_channel_id, message_ts)
-    entry = state.pending_buttons.pop(key, None)
-    state._button_states_cache.pop(key, None)
+    entry = _claim_pending_button(key)
     if entry:
-        if entry.get('task'):
-            entry['task'].cancel()
         await persistence.flush_button_cache()
 
 
-async def reschedule_escalation(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, minutes: int) -> bool:
+async def reschedule_escalation(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, minutes: int, *, _entry: dict | None = None) -> bool:
     key = (posted_channel_id, message_ts)
-    entry = state.pending_buttons.get(key)
+    entry = _entry if _entry is not None else _claim_pending_button(key)
     if not entry:
         log_warning(f"No pending escalation to delay for message {message_ts}.")
         return False
-    if entry.get('task'):
-        entry['task'].cancel()
     extra = minutes * 60
     record = {k: v for k, v in entry.items() if k != 'task'}
     record['timeout'] = extra
@@ -265,7 +288,7 @@ async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str,
             channel=posted_channel_id,
             ts=message_ts,
             text=posted_text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": posted_text}}],
+            blocks=_section_blocks(posted_text),
         )
     except SlackApiError as e:
         log_warning(f"Failed to remove buttons from message {message_ts} in {posted_channel_id}:", e)
@@ -288,12 +311,20 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
     src_config_name = payload.get('config') or ''
     index = payload.get('index')
 
+    key = (posted_channel_id, message_ts)
+    entry = _claim_pending_button(key)
+    if entry is None:
+        log_warning(f"Ignoring button press for message {message_ts}: no pending button record.")
+        return
+    # Persist the claim before any dispatch-related await. A concurrent handler now
+    # sees no entry, and a restart cannot resurrect an already-consumed button.
+    await persistence.flush_button_cache()
+
     presser_id = (body.get('user', {}) or {}).get('id', '')
     presser = await slackcache.get_user_by_id(app, presser_id) if presser_id else None
     presser_name = presser.name if presser else '?'
 
     channel = await slackcache.get_channel_by_id(app, def_channel_id)
-    entry = state.pending_buttons.get((posted_channel_id, message_ts))
     src_config = channel.configs.get(src_config_name)
     # Resolve the pressed button from the snapshot taken when the message was posted
     # (falling back to the live config for messages predating the snapshot), so an
@@ -312,13 +343,12 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
         except ValueError:
             minutes = 0
         if minutes > 0:
-            await reschedule_escalation(app, opsgenie_token, posted_channel_id, message_ts, minutes)
+            await reschedule_escalation(app, opsgenie_token, posted_channel_id, message_ts, minutes, _entry=entry)
         return
 
-    # Every other button stops the pending escalation, then runs its action. A config
+    # Every other button has already claimed the pending record, then runs its action. A config
     # run is attributed to the *original* author (presser=None ⇒ orig.user_id), matching
     # the timeout-escalation path; the presser is only used for the log line above.
     run_context = await _escalation_context(app, entry, posted_channel_id, message_ts)
-    await cancel_pending_button(posted_channel_id, message_ts)
     await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context)
     await _strip_buttons(app, posted_channel_id, message_ts, entry)

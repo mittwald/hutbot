@@ -81,6 +81,24 @@ def test_build_button_blocks_structure():
     assert payload == {"channel": "C12345", "config": "src", "index": 0}
 
 
+def test_build_button_blocks_respects_slack_block_limits():
+    config = DEFAULT_CONFIG.copy()
+    config["buttons"] = [
+        {"label": f"Button {i}", "action": "ack", "value": ""}
+        for i in range(26)
+    ]
+    text = "x" * 6001
+
+    blocks = hutbot.buttons.build_button_blocks(config, "C12345", "src", text)
+
+    sections = [block for block in blocks if block["type"] == "section"]
+    actions_blocks = [block for block in blocks if block["type"] == "actions"]
+    assert "".join(block["text"]["text"] for block in sections) == text
+    assert all(len(block["text"]["text"]) <= 3000 for block in sections)
+    assert [len(block["elements"]) for block in actions_blocks] == [25, 1]
+    assert actions_blocks[1]["elements"][0]["action_id"] == "hutbot_btn:25"
+
+
 
 @pytest.mark.asyncio
 async def test_run_action_reply_posts_with_buttons():
@@ -120,12 +138,14 @@ async def test_handle_button_press_routes_to_target_and_cancels_timeout():
         "message": {"ts": "10.1"},
     }
     action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
-    with patch('hutbot.buttons.cancel_pending_button', new=AsyncMock()) as cancel, \
+    key = ("C12345", "10.1")
+    hutbot.state.pending_buttons[key] = {"task": None, "buttons": src_config["buttons"], "orig": {}}
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
         await hutbot.buttons.handle_button_press(app, "token", body, action)
-    cancel.assert_awaited_once_with("C12345", "10.1")
+    assert key not in hutbot.state.pending_buttons
     assert run.await_count == 1
     assert run.await_args.args[3] is target_config
     assert run.await_args.args[4] == "tgt"
@@ -140,13 +160,15 @@ async def test_button_press_ack_cancels_without_running_config():
     channel = _mk_channel({"src": src_config})
     body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
     action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
-    with patch('hutbot.buttons.cancel_pending_button', new=AsyncMock()) as cancel, \
+    key = ("C12345", "10.1")
+    hutbot.state.pending_buttons[key] = {"task": None, "buttons": src_config["buttons"], "orig": {}}
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post, \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
         await hutbot.buttons.handle_button_press(app, "token", body, action)
-    cancel.assert_awaited_once_with("C12345", "10.1")
+    assert key not in hutbot.state.pending_buttons
     run.assert_not_awaited()
     post.assert_awaited_once_with(app, "C12345", "Thanks!", None, "10.1")
 
@@ -166,7 +188,7 @@ async def test_button_press_config_passes_orig_context():
     hutbot.state.pending_buttons[("C12345", "10.1")] = {"task": None, "orig": {"user_id": "U5", "text": "help", "ts": "9.9", "permalink": "p"}}
     body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
     action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
-    with patch('hutbot.buttons.cancel_pending_button', new=AsyncMock()), \
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
@@ -186,13 +208,16 @@ async def test_button_press_delay_reschedules():
     channel = _mk_channel({"src": src_config})
     body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
     action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
-    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+    key = ("C12345", "10.1")
+    entry = {"task": None, "buttons": src_config["buttons"], "orig": {}}
+    hutbot.state.pending_buttons[key] = entry
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
-         patch('hutbot.buttons.cancel_pending_button', new=AsyncMock()) as cancel, \
          patch('hutbot.buttons.reschedule_escalation', new=AsyncMock()) as resched:
         await hutbot.buttons.handle_button_press(app, "token", body, action)
-    resched.assert_awaited_once_with(app, "token", "C12345", "10.1", 3)
-    cancel.assert_not_awaited()  # delay reschedules, does not cancel
+    assert resched.await_args.args == (app, "token", "C12345", "10.1", 3)
+    assert resched.await_args.kwargs == {"_entry": entry}
 
 
 
@@ -212,6 +237,59 @@ async def test_register_and_cancel_escalation():
         await hutbot.buttons.cancel_pending_button("C12345", "10.1")
         assert ("C12345", "10.1") not in hutbot.state.pending_buttons
     await asyncio.sleep(0)  # let the cancelled task settle
+
+
+@pytest.mark.asyncio
+async def test_cancelled_timer_keeps_persisted_record_for_restart():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    config["buttons"] = [{"label": "Ok", "action": "config", "value": "tgt"}]
+    config["button_timeout"] = 3600
+    config["button_timeout_target"] = "escalate"
+    key = ("C12345", "10.1")
+
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()) as flush:
+        await hutbot.buttons.register_escalation(
+            app, "token", "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
+        task = hutbot.state.pending_buttons[key]["task"]
+        await asyncio.sleep(0)
+        flush.reset_mock()
+
+        task.cancel()
+        await task
+
+        assert key in hutbot.state.pending_buttons
+        assert key in hutbot.state._button_states_cache
+        flush.assert_not_awaited()
+        await hutbot.buttons.cancel_pending_button(*key)
+
+
+@pytest.mark.asyncio
+async def test_button_record_is_consumed_once_for_duplicate_and_stale_presses():
+    app = AsyncMock()
+    target = {**DEFAULT_CONFIG.copy(), "trigger": "manual"}
+    src = {**DEFAULT_CONFIG.copy(), "buttons": [{"label": "Go", "action": "config", "value": "tgt"}]}
+    channel = _mk_channel({"src": src, "tgt": target})
+    key = ("C12345", "10.1")
+    record = {"task": None, "buttons": src["buttons"], "orig": {}}
+    hutbot.state.pending_buttons[key] = record
+    hutbot.state._button_states_cache[key] = {k: v for k, v in record.items() if k != "task"}
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"}, "user": {"id": "U9"}}
+    button_action = {"action_id": "hutbot_btn:0", "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
+         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+        await asyncio.gather(
+            hutbot.buttons.handle_button_press(app, "token", body, button_action),
+            hutbot.buttons.handle_button_press(app, "token", body, button_action),
+        )
+        await hutbot.buttons.handle_button_press(app, "token", body, button_action)
+
+    run.assert_awaited_once()
+    assert key not in hutbot.state.pending_buttons
+    assert key not in hutbot.state._button_states_cache
 
 
 
