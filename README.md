@@ -60,7 +60,8 @@ existing configs keep working unchanged.
 - **Triggers** (`/hutbot [config] set trigger <message|schedule|manual>`)
   - `message` — the classic behavior (matches channel messages by pattern/teams/hours).
   - `schedule` — fires on a cron schedule. Set it with `set cron "<expr>"` (5-field cron, e.g.
-    `0 9 * * 1-5`) and optionally `set schedule-timezone <IANA tz>`.
+    `0 9 * * 1-5`). It fires in the config's date/time timezone (see
+    `set datetime-format`), or server local time without one.
   - `manual` — never fires on its own; used as the target of a button or a button timeout.
 
 - **Conditions** (`/hutbot [config] set condition <none|outlook>`) gate a `schedule` trigger.

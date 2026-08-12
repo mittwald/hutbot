@@ -350,19 +350,6 @@ async def set_schedule_cron(app: AsyncApp, channel, config_name: str, cron_expr:
     await messaging.send_message(app, channel, user, f"*Cron schedule* set to `{cron_expr}` in configuration `{config_name}`{note}.", thread_ts)
 
 
-async def set_schedule_timezone(app: AsyncApp, channel, config_name: str, tz_name: str, user, thread_ts: str = "") -> None:
-    tz_name = strip_quotes(tz_name).strip()
-    if tz_name:
-        try:
-            ZoneInfo(tz_name)
-        except ZoneInfoNotFoundError:
-            await messaging.send_message(app, channel, user, f"Unknown timezone: `{tz_name}`. Use an IANA name, e.g. `Europe/Berlin`.", thread_ts)
-            return
-    _ensure_config(channel, config_name)['schedule_timezone'] = tz_name
-    await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"*Schedule timezone* set to `{tz_name or '<server local>'}` in configuration `{config_name}`.", thread_ts)
-
-
 async def set_condition(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:
     value = strip_quotes(value).strip().lower()
     value = {'none': CONDITION_NONE, 'off': CONDITION_NONE, '': CONDITION_NONE,

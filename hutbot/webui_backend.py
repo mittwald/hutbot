@@ -181,16 +181,6 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     else:
         cfg['datetime_locale'] = ""
 
-    sched_tz = str(get('schedule_timezone') or "").strip()
-    if sched_tz:
-        try:
-            ZoneInfo(sched_tz)
-            cfg['schedule_timezone'] = sched_tz
-        except ZoneInfoNotFoundError:
-            errors['schedule_timezone'] = f"Unknown timezone `{sched_tz}`. Use an IANA name, e.g. Europe/Berlin."
-    else:
-        cfg['schedule_timezone'] = ""
-
     cron_expr = str(get('schedule_cron') or "").strip()
     if cron_expr and croniter is not None and not croniter.is_valid(cron_expr):
         errors['schedule_cron'] = "Invalid cron expression. Use 5 fields, e.g. `0 9 * * 1-5`."

@@ -208,7 +208,8 @@ async def test_show_config_names_the_destination_per_action():
     # No message to thread on for a schedule trigger.
     assert "*Replied in* <#C123>\n" in sent_message
     assert "Cron                0 9 * * 1-5" in sent_message
-    assert any(line.startswith("Schedule timezone   ") and "server local" in line for line in sent_message.splitlines())
+    # The cron uses the Date/time timezone, so it is not repeated as its own row.
+    assert "Schedule timezone" not in sent_message
     # Non-reply actions title their template "Message", not "Reply message".
     assert "*Message*:" in sent_message
     assert "Action target" not in sent_message

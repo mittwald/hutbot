@@ -91,7 +91,6 @@ DEFAULT_CONFIG = {
     # Trigger: how the rule starts. "message" keeps the classic behavior.
     "trigger": TRIGGER_MESSAGE,
     "schedule_cron": "",
-    "schedule_timezone": "",
     # Condition: optional gate evaluated when a schedule trigger fires.
     "condition": CONDITION_NONE,
     "condition_negate": False,

@@ -109,3 +109,29 @@ async def test_migration_drops_the_legacy_forward_channel():
     assert "{{message_link}}" in warning
     # Only the config that had one is reported.
     assert mock_log_warning.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_migration_moves_a_schedule_timezone_into_the_datetime_timezone():
+    app = AsyncMock()
+    config = {
+        "C123": {
+            "own": {**DEFAULT_CONFIG.copy(), "schedule_timezone": "Asia/Tokyo"},
+            "both": {**DEFAULT_CONFIG.copy(), "schedule_timezone": "Asia/Tokyo", "datetime_timezone": "Europe/Berlin"},
+            "same": {**DEFAULT_CONFIG.copy(), "schedule_timezone": "Europe/Berlin", "datetime_timezone": "Europe/Berlin"},
+        }
+    }
+
+    with patch('hutbot.persistence.log_warning') as mock_log_warning:
+        migrated = await migrate_and_apply_defaults(app, config)
+
+    assert all("schedule_timezone" not in cfg for cfg in migrated["C123"].values())
+    # No date/time timezone of its own: the cron keeps its wall-clock time.
+    assert migrated["C123"]["own"]["datetime_timezone"] == "Asia/Tokyo"
+    # Both set: the date/time one wins and the shift is reported.
+    assert migrated["C123"]["both"]["datetime_timezone"] == "Europe/Berlin"
+    warnings = [call.args[0] for call in mock_log_warning.call_args_list]
+    assert any("moved the schedule timezone Asia/Tokyo" in w for w in warnings)
+    assert any("dropping the schedule timezone Asia/Tokyo; its cron now fires in Europe/Berlin" in w for w in warnings)
+    # Identical values are not worth a warning.
+    assert len(warnings) == 2

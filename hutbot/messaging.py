@@ -220,7 +220,6 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ("Trigger", [
             (f"{command} [config] set trigger <message|schedule|manual>", "Set how the rule starts."),
             (f"{command} [config] set cron <expr>", "Set the cron schedule, e.g. 0 9 * * 1-5."),
-            (f"{command} [config] set schedule-timezone <tz>", "Set the cron timezone (IANA name)."),
         ]),
         ("Condition", [
             (f"{command} [config] set condition <none|outlook>", "Gate a schedule on a condition."),

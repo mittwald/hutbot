@@ -2,13 +2,13 @@
 
 import asyncio
 import datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from slack_bolt.async_app import AsyncApp
 
 from employee_list import log, log_error, log_warning
 
 from . import state
+from . import datetimefmt
 from . import slackcache
 from . import actions
 from . import persistence
@@ -72,20 +72,12 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: di
         await persistence.flush_replies_cache()
 
 
-def _resolve_schedule_timezone(config: dict):
-    tz_name = config.get('schedule_timezone') or config.get('datetime_timezone') or ''
-    if tz_name:
-        try:
-            return ZoneInfo(tz_name)
-        except ZoneInfoNotFoundError:
-            log_warning(f"Unknown schedule timezone '{tz_name}'; using server local time.")
-    return None
-
-
 def _cron_due(cron_expr: str, config: dict, last: datetime.datetime, now: datetime.datetime) -> bool:
-    tz = _resolve_schedule_timezone(config)
-    base = last.astimezone(tz) if tz else last.astimezone()
-    current = now.astimezone(tz) if tz else now.astimezone()
+    # A cron fires in the config's date/time timezone (server local without one),
+    # the same timezone its work hours and date/time output use.
+    tz = datetimefmt.get_config_timezone(config)
+    base = last.astimezone(tz)
+    current = now.astimezone(tz)
     try:
         nxt = croniter(cron_expr, base).get_next(datetime.datetime)
     except (ValueError, KeyError) as e:

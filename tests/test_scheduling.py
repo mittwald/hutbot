@@ -342,3 +342,31 @@ async def test_handle_channel_message_caches_the_wait_time_it_scheduled_with():
     for scheduled in list(hutbot.state.scheduled_messages.values()):
         scheduled.task.cancel()
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_cron_fires_in_the_configured_datetime_timezone():
+    import hutbot
+    # 09:00 in Tokyo is 00:00 UTC; a daily 9am cron is due at that instant for a
+    # Tokyo config and not for a Berlin one (where 9am is still 7 hours away).
+    last = datetime.datetime(2026, 4, 26, 23, 30, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 4, 27, 0, 5, tzinfo=datetime.timezone.utc)
+
+    tokyo = {**DEFAULT_CONFIG.copy(), "datetime_timezone": "Asia/Tokyo"}
+    berlin = {**DEFAULT_CONFIG.copy(), "datetime_timezone": "Europe/Berlin"}
+
+    assert hutbot.scheduling._cron_due("0 9 * * *", tokyo, last, now) is True
+    assert hutbot.scheduling._cron_due("0 9 * * *", berlin, last, now) is False
+
+
+@pytest.mark.asyncio
+async def test_cron_falls_back_to_server_local_time():
+    import hutbot
+    last = datetime.datetime(2026, 4, 26, 23, 30, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 4, 27, 0, 5, tzinfo=datetime.timezone.utc)
+    config = DEFAULT_CONFIG.copy()
+
+    with patch('hutbot.datetimefmt.get_local_timezone', return_value=ZoneInfo("Asia/Tokyo")):
+        assert hutbot.scheduling._cron_due("0 9 * * *", config, last, now) is True
+    with patch('hutbot.datetimefmt.get_local_timezone', return_value=ZoneInfo("Europe/Berlin")):
+        assert hutbot.scheduling._cron_due("0 9 * * *", config, last, now) is False

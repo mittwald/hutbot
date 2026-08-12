@@ -350,8 +350,8 @@ function renderEditor(name) {
   }
   if (cfg.trigger === "schedule") {
     triggerRows.push(grid(
-      field("Cron schedule", textInput("schedule_cron", { mono: true, placeholder: "0 9 * * 1-5" }), { hint: "5-field cron.", error: fieldErr("schedule_cron") }),
-      field("Schedule timezone", textInput("schedule_timezone", { mono: true, placeholder: "Europe/Berlin" }), { hint: "IANA name; blank = server local.", error: fieldErr("schedule_timezone") }),
+      field("Cron schedule", textInput("schedule_cron", { mono: true, placeholder: "0 9 * * 1-5" }),
+        { hint: "5-field cron, in the Date & time timezone below.", error: fieldErr("schedule_cron") }),
     ));
   }
   wrap.append(section("Status & trigger", null, ...triggerRows));

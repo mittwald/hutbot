@@ -181,13 +181,8 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         groups: list[list[tuple]] = []
 
         if trigger == TRIGGER_SCHEDULE:
-            # Same fallback chain the scheduler uses: own timezone, then the
-            # date/time one, then the server's.
-            schedule_timezone = config.get('schedule_timezone') or config.get('datetime_timezone') or ''
-            groups.append([
-                ("Cron",              config.get('schedule_cron') or '<none>'),
-                ("Schedule timezone", datetimefmt.describe_timezone(schedule_timezone)),
-            ])
+            # The cron fires in the Date/time timezone below, so it is not repeated here.
+            groups.append([("Cron", config.get('schedule_cron') or '<none>')])
 
         condition = config.get('condition') or ''
         if condition:

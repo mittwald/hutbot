@@ -48,6 +48,23 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
                     f"To keep forwarding, add a second config with `set trigger message`, "
                     f"`set action post-channel <#{legacy_forward_channel}>` and a message using {{{{message_link}}}}."
                 )
+            # Crons now fire in the config's date/time timezone. Carry a separate
+            # schedule timezone over so the cron keeps its wall-clock time; if the
+            # two disagree, the date/time one wins and the cron shifts.
+            legacy_schedule_timezone = single_config.pop('schedule_timezone', '')
+            if legacy_schedule_timezone:
+                datetime_timezone = single_config.get('datetime_timezone') or ''
+                if not datetime_timezone:
+                    single_config['datetime_timezone'] = legacy_schedule_timezone
+                    log_warning(
+                        f"Config '{config_name}' in channel {channel_id}: moved the schedule timezone "
+                        f"{legacy_schedule_timezone} to the date/time timezone, which the cron now uses."
+                    )
+                elif datetime_timezone != legacy_schedule_timezone:
+                    log_warning(
+                        f"Config '{config_name}' in channel {channel_id}: dropping the schedule timezone "
+                        f"{legacy_schedule_timezone}; its cron now fires in {datetime_timezone}."
+                    )
             # Keep buttons to {label, action, value} and drop anything unusable.
             buttons = single_config.get('buttons')
             if isinstance(buttons, list):
