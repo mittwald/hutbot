@@ -333,6 +333,16 @@ def parse_opsgenie_datetime(value: str) -> datetime.datetime | None:
     return parsed
 
 
+def parse_slack_timestamp(value: str) -> datetime.datetime | None:
+    """Slack message timestamps are epoch seconds, e.g. "1786453297.645799"."""
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromtimestamp(float(value), datetime.timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
 def format_datetime_value(
     value: str,
     part: str = "datetime",
@@ -343,7 +353,17 @@ def format_datetime_value(
     parsed = parse_opsgenie_datetime(value)
     if not parsed:
         return UNKNOWN_ONCALL_PERIOD_PLACEHOLDER
+    return render_datetime(parsed, part, config, args, local_tz)
 
+
+def render_datetime(
+    parsed: datetime.datetime,
+    part: str = "datetime",
+    config: dict | None = None,
+    args: dict[str, str] | None = None,
+    local_tz: datetime.tzinfo | None = None,
+) -> str:
+    """Format an instant with the config's date/time format, timezone, and locale."""
     args = args or {}
     timezone = get_config_timezone(config, args.get("tz", ""), local_tz)
     local_time = parsed.astimezone(timezone)
@@ -362,6 +382,14 @@ def format_datetime_value(
 
     locale_name = get_config_locale(config, args.get("lc", ""))
     return localize_formatted_datetime(local_time.strftime(fmt), locale_name)
+
+
+def format_timestamp_value(value: str, part: str = "datetime", config: dict | None = None, args: dict[str, str] | None = None) -> str:
+    """Render a Slack message timestamp for `{{date}}` / `{{time}}` / `{{datetime}}`."""
+    parsed = parse_slack_timestamp(value)
+    if not parsed:
+        return ""
+    return render_datetime(parsed, part, config, args)
 
 
 def format_opsgenie_template_datetime(value: str, variable: str, config: dict | None = None, args: dict[str, str] | None = None) -> str:

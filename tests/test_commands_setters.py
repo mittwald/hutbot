@@ -353,3 +353,24 @@ async def test_set_work_hours_still_takes_two_times():
 
     assert channel.configs["default"]["hours"] == ["09:00", "17:00"]
     assert mock_send_message.call_args.args[3] == "*Work hours* set to `09:00` - `17:00` in configuration `default`"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["test", "run"])
+async def test_test_and_run_populate_the_time_variables(command):
+    import hutbot
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "R1"}
+    config = {**DEFAULT_CONFIG.copy(), "reply_message": "at {{time}} on {{date}}, ts {{timestamp}}"}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C1", "ts": "R1"})) as post, \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, command, channel, user)
+
+    rendered = mock_send_message.call_args.args[3] if command == "test" else post.await_args.args[2]
+    assert "at  on , ts \n" not in rendered
+    assert "ts {{timestamp}}" not in rendered
+    assert re.search(r"at \d{2}:\d{2} on \w{3}, \d{2} \w{3} \d{4}, ts \d+\.\d+", rendered), rendered

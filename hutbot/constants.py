@@ -174,7 +174,12 @@ OPSGENIE_TEMPLATE_VARIABLES = {
     "opsgenie_next_user",
     *OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
 }
+# Formatted renderings of ``{{timestamp}}``: the triggering message's time, or the
+# time the rule ran when there is no message behind it. Like the OpsGenie date/time
+# variables they take `fmt`/`tz`/`lc` arguments.
+DATETIME_TEMPLATE_VARIABLES = {"date", "time", "datetime"}
 SUPPORTED_TEMPLATE_VARIABLES = {
+    *DATETIME_TEMPLATE_VARIABLES,
     "channel",
     "channel_name",
     "config",

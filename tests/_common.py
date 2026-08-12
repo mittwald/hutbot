@@ -1,6 +1,7 @@
 """Shared imports, helpers, and hutbot module aliases for the test suite."""
 
 import os
+import re
 import json
 import base64
 import tempfile

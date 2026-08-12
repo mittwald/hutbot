@@ -1,10 +1,13 @@
 """Parsing and rendering of ``{{variable}}`` reply-message templates."""
 
+import datetime
+
 from slack_bolt.async_app import AsyncApp
 
 from . import datetimefmt
 from . import opsgenie
 from .constants import (
+    DATETIME_TEMPLATE_VARIABLES,
     OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
@@ -153,7 +156,7 @@ def validate_template_expressions(message: str) -> str:
         )
 
     for expr in expressions:
-        if expr.args and expr.variable not in OPSGENIE_DATETIME_TEMPLATE_VARIABLES:
+        if expr.args and expr.variable not in OPSGENIE_DATETIME_TEMPLATE_VARIABLES | DATETIME_TEMPLATE_VARIABLES:
             return f"template variable `{{{{{expr.variable}}}}}` does not support arguments"
         if "tz" in expr.args:
             try:
@@ -201,7 +204,9 @@ def render_reply_message_template(message: str, variables: dict[str, str], confi
             last_index = end
             continue
 
-        if expr.variable in OPSGENIE_DATETIME_TEMPLATE_VARIABLES:
+        if expr.variable in DATETIME_TEMPLATE_VARIABLES:
+            rendered.append(datetimefmt.format_timestamp_value(variables.get("__timestamp_raw", ""), expr.variable, config, expr.args))
+        elif expr.variable in OPSGENIE_DATETIME_TEMPLATE_VARIABLES:
             raw_value = variables.get(f"__{expr.variable}_raw", "")
             if raw_value or expr.args:
                 rendered.append(datetimefmt.format_opsgenie_template_datetime(raw_value, expr.variable, config, expr.args))
@@ -221,7 +226,17 @@ async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, cha
     if include_opsgenie:
         opsgenie_template_variables = await opsgenie.get_opsgenie_template_variables(app, opsgenie_token, config)
 
+    # `test`, `run`, and schedule/manual triggers have no message behind them, so
+    # there is no Slack timestamp to report. Stand in the current time instead of
+    # rendering the time variables empty.
+    ts = ts or f"{datetime.datetime.now(datetime.timezone.utc).timestamp():.6f}"
+
     return {
+        "date": datetimefmt.format_timestamp_value(ts, "date", config),
+        "time": datetimefmt.format_timestamp_value(ts, "time", config),
+        "datetime": datetimefmt.format_timestamp_value(ts, "datetime", config),
+        # The raw timestamp, so `{{date(tz=...)}}` and friends can re-render it.
+        "__timestamp_raw": ts,
         "channel": f"#{channel.name}",
         "channel_name": channel.name,
         "config": config_name,

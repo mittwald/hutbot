@@ -177,6 +177,28 @@ async def fetch_user_by_id(app: AsyncApp, id: str, channel: Channel | None = Non
     return user
 
 
+async def fetch_bot_handle(app: AsyncApp, bot_user_id: str) -> str:
+    """The handle people actually type to mention the bot, e.g. "Hutbot_DEV".
+
+    ``auth.test`` only reports the bot user's username, which Slack derives from
+    the app name by lowercasing it and dropping punctuation ("hutbotdev"). The
+    handle shown in the mention autocomplete is the profile display name.
+    """
+    if not bot_user_id:
+        return ""
+    try:
+        response = await app.client.users_info(user=bot_user_id)
+    except SlackApiError as e:
+        log_error(f"Failed to fetch the bot user `{bot_user_id}`:", e)
+        return ""
+    slack_user = response.get('user') or {}
+    profile = slack_user.get('profile') or {}
+    for candidate in (profile.get('display_name'), profile.get('display_name_normalized'), slack_user.get('name')):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
 async def get_user_by_id(app: AsyncApp, id: str, channel: Channel | None = None) -> User:
     await update_user_cache(app)
     user = state.id_user_cache.get(id, None)

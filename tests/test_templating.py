@@ -123,3 +123,71 @@ async def test_validate_config_payload_rejects_unknown_template_variable():
 
     assert cfg is None
     assert "reply_message" in errors
+
+
+def test_render_date_time_and_datetime_from_the_message_timestamp():
+    import hutbot
+    config = {**DEFAULT_CONFIG.copy(), "date_format": "%d.%m.%Y", "time_format": "%H:%M", "datetime_timezone": "Europe/Berlin"}
+    variables = {"__timestamp_raw": "1786453297.645799"}
+
+    rendered = hutbot.templating.render_reply_message_template(
+        "{{date}} / {{time}} / {{datetime}}", variables, config,
+    )
+
+    assert rendered == "11.08.2026 / 15:01 / 11.08.2026 15:01"
+
+
+def test_date_time_variables_take_format_timezone_and_locale_arguments():
+    import hutbot
+    config = {**DEFAULT_CONFIG.copy(), "datetime_timezone": "Europe/Berlin"}
+    variables = {"__timestamp_raw": "1786453297.645799"}
+
+    rendered = hutbot.templating.render_reply_message_template(
+        "{{datetime(tz='Asia/Tokyo')}} | {{date(lc='de_DE', fmt='%A, %d %B %Y')}} | {{time(fmt='15:04')}}",
+        variables,
+        config,
+    )
+
+    assert rendered == "Tue, 11 Aug 2026 22:01 | Dienstag, 11 August 2026 | 15:01"
+    assert hutbot.templating.validate_template_expressions("{{date(tz='Asia/Tokyo')}}") == ""
+    assert "does not support arguments" in hutbot.templating.validate_template_expressions("{{user(tz='Asia/Tokyo')}}")
+
+
+def test_date_time_variables_are_supported_and_listed():
+    import hutbot
+    assert hutbot.templating.validate_template_expressions("{{date}} {{time}} {{datetime}}") == ""
+    assert {"date", "time", "datetime"} <= hutbot.constants.SUPPORTED_TEMPLATE_VARIABLES
+
+
+@pytest.mark.asyncio
+async def test_build_template_variables_stands_in_now_without_a_message_timestamp():
+    import hutbot
+    app = AsyncMock()
+    channel = Channel(id="C1", name="davetest", configs={})
+    user = User("U1", "dave", "Dave", "T")
+
+    variables = await hutbot.templating.build_reply_template_variables(
+        app, "tok", channel, DEFAULT_CONFIG.copy(), "default", user, "", "", "",
+    )
+
+    assert variables["timestamp"]
+    assert float(variables["timestamp"]) > 0
+    assert variables["date"] and variables["time"] and variables["datetime"]
+    assert variables["__timestamp_raw"] == variables["timestamp"]
+
+
+@pytest.mark.asyncio
+async def test_build_template_variables_keeps_a_real_message_timestamp():
+    import hutbot
+    app = AsyncMock()
+    channel = Channel(id="C1", name="davetest", configs={})
+    user = User("U1", "dave", "Dave", "T")
+    config = {**DEFAULT_CONFIG.copy(), "date_format": "%d.%m.%Y", "datetime_timezone": "Europe/Berlin"}
+
+    variables = await hutbot.templating.build_reply_template_variables(
+        app, "tok", channel, config, "default", user, "hi", "1786453297.645799", "link",
+    )
+
+    assert variables["timestamp"] == "1786453297.645799"
+    assert variables["date"] == "11.08.2026"
+    assert variables["time"] == "15:01"
