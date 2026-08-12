@@ -1,4 +1,4 @@
-"""Scheduled replies (deferred message reminders) and the cron-trigger scheduler."""
+"""Deferred message reminders and the cron-trigger scheduler."""
 
 import asyncio
 import datetime
@@ -12,7 +12,7 @@ from . import datetimefmt
 from . import slackcache
 from . import actions
 from . import persistence
-from .constants import SCHEDULER_INTERVAL, TRIGGER_SCHEDULE
+from .constants import SCHEDULER_INTERVAL, TRIGGER_CRON
 from .models import ScheduledReply
 
 try:
@@ -106,27 +106,27 @@ async def scheduler_tick(app: AsyncApp, opsgenie_token: str) -> None:
     state._scheduler_last_check = now
     for channel_id, configs in list(state.channel_config.items()):
         for config_name, config in list(configs.items()):
-            if config.get('trigger') != TRIGGER_SCHEDULE:
+            if config.get('trigger') != TRIGGER_CRON:
                 continue
             if not config.get('enabled', True):
                 continue
-            cron_expr = config.get('schedule_cron') or ''
+            cron_expr = config.get('cron') or ''
             if not cron_expr:
                 continue
             if croniter is not None and not croniter.is_valid(cron_expr):
-                log_warning(f"Schedule '{config_name}' in channel {channel_id} has invalid cron '{cron_expr}'.")
+                log_warning(f"Cron config '{config_name}' in channel {channel_id} has an invalid expression '{cron_expr}'.")
                 continue
             if not _cron_due(cron_expr, config, last, now):
                 continue
             channel = await slackcache.get_channel_by_id(app, channel_id)
             if not await actions.evaluate_condition(app, config):
-                log(f"Schedule '{config_name}' in #{channel.name} fired but condition not met.")
+                log(f"Cron config '{config_name}' in #{channel.name} fired but condition not met.")
                 continue
-            log(f"Schedule '{config_name}' in #{channel.name} firing.")
+            log(f"Cron config '{config_name}' in #{channel.name} firing.")
             try:
                 await actions.run_action(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel_id})
             except Exception as e:
-                log_error(f"Schedule '{config_name}' action failed:", e)
+                log_error(f"Cron config '{config_name}' action failed:", e)
 
 
 async def restore_scheduled_replies(app: AsyncApp, opsgenie_token: str) -> None:

@@ -27,7 +27,7 @@ from ..constants import (
     ESCALATION_CONFIG,
     ID_PATTERN,
     TRIGGER_MESSAGE,
-    TRIGGER_SCHEDULE,
+    TRIGGER_CRON,
 )
 from ..textutil import log_debug
 
@@ -180,10 +180,6 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         # Each group becomes a blank-line-separated block in the code block.
         groups: list[list[tuple]] = []
 
-        if trigger == TRIGGER_SCHEDULE:
-            # The cron fires in the Date/time timezone below, so it is not repeated here.
-            groups.append([("Cron", config.get('schedule_cron') or '<none>')])
-
         condition = config.get('condition') or ''
         if condition:
             negate = ' (negated)' if config.get('condition_negate') else ''
@@ -255,8 +251,13 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             enabled_label = f'disabled, because {state.bot_name} was removed from this channel'
         else:
             enabled_label = 'disabled'
+        trigger_line = f"*Trigger*: `{trigger}`"
+        if trigger == TRIGGER_CRON:
+            # The expression is part of the trigger, and it fires in the
+            # Date/time timezone printed with the settings below.
+            trigger_line += f" `{config.get('cron') or '<none>'}`"
         quoted_block = (
-            f"> *Trigger*: `{trigger}`\n"
+            f"> {trigger_line}\n"
             f">\n"
             f"> {reply_line.replace('\n', '\n> ')}\n"
             f">\n"

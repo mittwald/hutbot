@@ -181,7 +181,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
     update_text = (
         f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what's :new::\n\n"
         "> :robot_face: *Triggers, actions & buttons*\n>\n"
-        f"> Rules can now run on a `schedule` (cron), DM a user or group, post to a channel, and carry interactive buttons (with an auto-press default + timeout escalation). See `{command} help`.\n>\n"
+        f"> Rules can now run on a `cron` schedule, DM a user or group, post to a channel, and carry interactive buttons (with an auto-press default + timeout escalation). See `{command} help`.\n>\n"
         "> :calendar: *OpsGenie date/time template variables and defaults*\n>\n"
         f"> OpsGenie templates can now include current and next on-call start/end dates, times, and datetimes. Use `{command} [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]` to set the defaults.\n>\n"
         "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
@@ -218,8 +218,8 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} delete config <name>", "Delete a configuration."),
         ]),
         ("Trigger", [
-            (f"{command} [config] set trigger <message|schedule|manual>", "Set how the rule starts."),
-            (f"{command} [config] set cron <expr>", "Set the cron schedule, e.g. 0 9 * * 1-5."),
+            (f"{command} [config] set trigger <message|manual>", "Set how the rule starts."),
+            (f"{command} [config] set trigger cron \"<expr>\"", "Fire on a cron schedule, e.g. 0 9 * * 1-5."),
         ]),
         ("Condition", [
             (f"{command} [config] set condition <none|outlook>", "Gate a schedule on a condition."),

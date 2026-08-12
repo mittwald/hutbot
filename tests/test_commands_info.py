@@ -193,7 +193,7 @@ async def test_show_config_names_the_destination_per_action():
         "post": {**DEFAULT_CONFIG.copy(), "action": ACTION_POST_CHANNEL, "action_target": "<#CTARGET|targets>"},
         "dm": {**DEFAULT_CONFIG.copy(), "action": ACTION_DM_USER, "action_target": "d.grieser@mittwald.de"},
         "group": {**DEFAULT_CONFIG.copy(), "action": ACTION_GROUP_DM, "action_target": "SGROUP"},
-        "scheduled": {**DEFAULT_CONFIG.copy(), "trigger": TRIGGER_SCHEDULE, "schedule_cron": "0 9 * * 1-5"},
+        "scheduled": {**DEFAULT_CONFIG.copy(), "trigger": TRIGGER_CRON, "cron": "0 9 * * 1-5"},
     }
     channel = Channel(id="C123", name="general", configs=configs)
     user = User(id="U123", name="test", real_name="Test User", team="A")
@@ -207,9 +207,9 @@ async def test_show_config_names_the_destination_per_action():
     assert "*Sent to* <!subteam^SGROUP> (group message)" in sent_message
     # No message to thread on for a schedule trigger.
     assert "*Replied in* <#C123>\n" in sent_message
-    assert "Cron                0 9 * * 1-5" in sent_message
-    # The cron uses the Date/time timezone, so it is not repeated as its own row.
-    assert "Schedule timezone" not in sent_message
+    # The cron expression rides with the trigger, not as a settings row.
+    assert "> *Trigger*: `cron` `0 9 * * 1-5`" in sent_message
+    assert "\nCron " not in sent_message
     # Non-reply actions title their template "Message", not "Reply message".
     assert "*Message*:" in sent_message
     assert "Action target" not in sent_message

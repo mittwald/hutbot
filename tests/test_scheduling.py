@@ -161,18 +161,6 @@ async def test_schedule_reply_removes_entry_from_cache():
     assert key not in hutbot.state._scheduled_replies_cache
 
 
-@pytest.mark.asyncio
-async def test_set_schedule_cron_valid_and_invalid():
-    app = AsyncMock()
-    channel = _mk_channel()
-    user = User("U1", "test", "Test User", "Testers")
-    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
-        await process_command(app, "set cron 0 9 * * 1-5", channel, user)
-        assert channel.configs["default"]["schedule_cron"] == "0 9 * * 1-5"
-        await process_command(app, "set cron not a cron", channel, user)
-        assert channel.configs["default"]["schedule_cron"] == "0 9 * * 1-5"  # unchanged
-        assert "Invalid *cron*" in send.call_args_list[-1].args[3]
-
 
 
 # ----- Scheduler -----
@@ -181,8 +169,8 @@ async def test_set_schedule_cron_valid_and_invalid():
 async def test_scheduler_tick_fires_due_schedule_when_condition_met():
     app = AsyncMock()
     sched = DEFAULT_CONFIG.copy()
-    sched["trigger"] = "schedule"
-    sched["schedule_cron"] = "* * * * *"
+    sched["trigger"] = TRIGGER_CRON
+    sched["cron"] = "* * * * *"
     channel = _mk_channel({"sched": sched})
     hutbot.state._scheduler_last_check = datetime.datetime.now(datetime.timezone.utc)
     with patch.dict('hutbot.state.channel_config', {"C12345": {"sched": sched}}, clear=True), \
@@ -200,8 +188,8 @@ async def test_scheduler_tick_fires_due_schedule_when_condition_met():
 async def test_scheduler_tick_skips_when_condition_not_met():
     app = AsyncMock()
     sched = DEFAULT_CONFIG.copy()
-    sched["trigger"] = "schedule"
-    sched["schedule_cron"] = "* * * * *"
+    sched["trigger"] = TRIGGER_CRON
+    sched["cron"] = "* * * * *"
     channel = _mk_channel({"sched": sched})
     hutbot.state._scheduler_last_check = datetime.datetime.now(datetime.timezone.utc)
     with patch.dict('hutbot.state.channel_config', {"C12345": {"sched": sched}}, clear=True), \

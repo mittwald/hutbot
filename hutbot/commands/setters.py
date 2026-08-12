@@ -33,7 +33,7 @@ from ..constants import (
     OPSGENIE_PRIORITIES,
     SUPPORTED_TEMPLATE_VARIABLES,
     TRIGGER_MESSAGE,
-    TRIGGER_SCHEDULE,
+    TRIGGER_CRON,
     TRIGGERS,
 )
 from ..textutil import log_debug, parse_quoted_tokens, strip_quotes
@@ -324,30 +324,40 @@ async def delete_config(app: AsyncApp, channel, config_name: str, user, thread_t
     await messaging.send_message(app, channel, user, f"Configuration `{config_name}` has been deleted.", thread_ts)
 
 
-async def set_trigger(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:
+async def set_trigger(app: AsyncApp, channel, config_name: str, value: str, expression: str, user, thread_ts: str = "") -> None:
+    """`set trigger <trigger> [<expression>]` — the cron trigger carries its cron.
+
+    A cron trigger without an expression never fires and the scheduler skips it
+    without a word, so the expression is part of choosing the trigger.
+    """
     value = strip_quotes(value).strip().lower()
-    value = {'msg': TRIGGER_MESSAGE, 'cron': TRIGGER_SCHEDULE, 'scheduled': TRIGGER_SCHEDULE}.get(value, value)
+    value = {'msg': TRIGGER_MESSAGE, 'schedule': TRIGGER_CRON, 'scheduled': TRIGGER_CRON}.get(value, value)
     if value not in TRIGGERS:
         supported = ", ".join(f"`{t}`" for t in sorted(TRIGGERS))
         await messaging.send_message(app, channel, user, f"Invalid *trigger*. Must be one of {supported}.", thread_ts)
         return
-    _ensure_config(channel, config_name)['trigger'] = value
-    await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"*Trigger* set to `{value}` in configuration `{config_name}`.", thread_ts)
+    expression = strip_quotes(expression or "").strip()
 
+    if value == TRIGGER_CRON:
+        if not expression:
+            await messaging.send_message(app, channel, user, f"Trigger `{TRIGGER_CRON}` needs an expression: `{state.slash_command} {config_name} set trigger cron \"0 9 * * 1-5\"`.", thread_ts)
+            return
+        if croniter is not None and not croniter.is_valid(expression):
+            await messaging.send_message(app, channel, user, f"Invalid *cron* expression: `{expression}`. Use 5-field cron, e.g. `0 9 * * 1-5`.", thread_ts)
+            return
+    elif expression:
+        await messaging.send_message(app, channel, user, f"Trigger `{value}` takes no expression; only `{TRIGGER_CRON}` does.", thread_ts)
+        return
 
-async def set_schedule_cron(app: AsyncApp, channel, config_name: str, cron_expr: str, user, thread_ts: str = "") -> None:
-    cron_expr = strip_quotes(cron_expr).strip()
-    if not cron_expr:
-        await messaging.send_message(app, channel, user, "Invalid *cron* expression. Must be non-empty.", thread_ts)
-        return
-    if croniter is not None and not croniter.is_valid(cron_expr):
-        await messaging.send_message(app, channel, user, f"Invalid *cron* expression: `{cron_expr}`. Use 5-field cron, e.g. `0 9 * * 1-5`.", thread_ts)
-        return
-    _ensure_config(channel, config_name)['schedule_cron'] = cron_expr
+    config = _ensure_config(channel, config_name)
+    config['trigger'] = value
+    config['cron'] = expression
     await persistence.save_configuration()
-    note = "" if croniter is not None else " (not validated — `croniter` not installed)"
-    await messaging.send_message(app, channel, user, f"*Cron schedule* set to `{cron_expr}` in configuration `{config_name}`{note}.", thread_ts)
+    if value == TRIGGER_CRON:
+        note = "" if croniter is not None else " (not validated — `croniter` not installed)"
+        await messaging.send_message(app, channel, user, f"*Trigger* set to `{value}` running `{expression}` in configuration `{config_name}`{note}.", thread_ts)
+    else:
+        await messaging.send_message(app, channel, user, f"*Trigger* set to `{value}` in configuration `{config_name}`.", thread_ts)
 
 
 async def set_condition(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:

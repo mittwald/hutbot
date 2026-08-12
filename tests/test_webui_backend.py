@@ -9,7 +9,7 @@ async def test_validate_config_payload_accepts_good_config():
     payload = {
         "enabled": True,
         "trigger": "schedule",
-        "schedule_cron": "0 9 * * 1-5",
+        "cron": "0 9 * * 1-5",
         "reply_message": "Hi {{user}} in {{channel}}",
         "action": "post-channel",
         "action_target": "C0123ABCD",
@@ -28,8 +28,8 @@ async def test_validate_config_payload_accepts_good_config():
 
     assert errors == {}
     assert cfg is not None
-    assert cfg["trigger"] == "schedule"
-    assert cfg["schedule_cron"] == "0 9 * * 1-5"
+    assert cfg["trigger"] == "cron"
+    assert cfg["cron"] == "0 9 * * 1-5"
     # action "post-channel" normalizes to "post_channel" with target preserved.
     assert cfg["action"] == "post_channel"
     assert cfg["action_target"] == "C0123ABCD"
@@ -59,7 +59,7 @@ async def test_validate_config_payload_collects_field_errors():
     payload = {
         "reply_message": "",
         "trigger": "bogus",
-        "schedule_cron": "nope",
+        "cron": "nope",
         "wait_time": 0,
         "datetime_timezone": "Mars/Phobos",
         "opsgenie_priority": "P9",
@@ -78,7 +78,7 @@ async def test_validate_config_payload_collects_field_errors():
     cfg, errors = await validate_config_payload(payload, app)
 
     assert cfg is None
-    for field in ("reply_message", "trigger", "schedule_cron", "wait_time",
+    for field in ("reply_message", "trigger", "cron", "wait_time",
                   "datetime_timezone", "opsgenie_priority", "included_teams",
                   "pattern", "hours", "action_target"):
         assert field in errors, f"expected an error for {field}, got {sorted(errors)}"

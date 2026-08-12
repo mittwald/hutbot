@@ -41,7 +41,7 @@ from .constants import (
     SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
     TRIGGER_MESSAGE,
-    TRIGGER_SCHEDULE,
+    TRIGGER_CRON,
     TRIGGERS,
 )
 from .models import User
@@ -181,14 +181,14 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     else:
         cfg['datetime_locale'] = ""
 
-    cron_expr = str(get('schedule_cron') or "").strip()
+    cron_expr = str(get('cron') or "").strip()
     if cron_expr and croniter is not None and not croniter.is_valid(cron_expr):
-        errors['schedule_cron'] = "Invalid cron expression. Use 5 fields, e.g. `0 9 * * 1-5`."
+        errors['cron'] = "Invalid cron expression. Use 5 fields, e.g. `0 9 * * 1-5`."
     else:
-        cfg['schedule_cron'] = cron_expr
+        cfg['cron'] = cron_expr
 
     trigger = str(get('trigger') or TRIGGER_MESSAGE).strip().lower()
-    trigger = {'msg': TRIGGER_MESSAGE, 'cron': TRIGGER_SCHEDULE, 'scheduled': TRIGGER_SCHEDULE}.get(trigger, trigger)
+    trigger = {'msg': TRIGGER_MESSAGE, 'schedule': TRIGGER_CRON, 'scheduled': TRIGGER_CRON}.get(trigger, trigger)
     if trigger not in TRIGGERS:
         errors['trigger'] = "Trigger must be one of " + ", ".join(sorted(TRIGGERS)) + "."
     else:

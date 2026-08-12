@@ -305,11 +305,55 @@ async def test_set_trigger_valid_and_invalid():
     channel = _mk_channel()
     user = User("U1", "test", "Test User", "Testers")
     with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
-        await process_command(app, "set trigger schedule", channel, user)
-        assert channel.configs["default"]["trigger"] == "schedule"
+        await process_command(app, "set trigger cron \"0 9 * * 1-5\"", channel, user)
+        assert channel.configs["default"]["trigger"] == TRIGGER_CRON
+        assert channel.configs["default"]["cron"] == "0 9 * * 1-5"
+        # `schedule` still resolves to the cron trigger.
+        await process_command(app, "set trigger schedule \"0 8 * * *\"", channel, user)
+        assert channel.configs["default"]["cron"] == "0 8 * * *"
         await process_command(app, "set trigger bogus", channel, user)
-        assert channel.configs["default"]["trigger"] == "schedule"  # unchanged
+        assert channel.configs["default"]["trigger"] == TRIGGER_CRON  # unchanged
         assert "Invalid *trigger*" in send.call_args_list[-1].args[3]
+
+
+@pytest.mark.asyncio
+async def test_set_trigger_cron_requires_a_valid_expression():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set trigger cron", channel, user)
+        assert send.call_args.args[3] == (
+            'Trigger `cron` needs an expression: `/hutbot default set trigger cron "0 9 * * 1-5"`.'
+        )
+        await process_command(app, "set trigger cron not a cron", channel, user)
+        assert "Invalid *cron* expression: `not a cron`" in send.call_args.args[3]
+
+    # Neither attempt stored anything, so no rule sits there never firing.
+    assert config["trigger"] == "message"
+    assert config["cron"] == ""
+
+
+@pytest.mark.asyncio
+async def test_set_trigger_message_takes_no_expression_and_clears_the_cron():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "trigger": TRIGGER_CRON, "cron": "0 9 * * 1-5"}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set trigger message 0 9 * * 1-5", channel, user)
+        assert send.call_args.args[3] == "Trigger `message` takes no expression; only `cron` does."
+        assert config["cron"] == "0 9 * * 1-5"
+
+        await process_command(app, "set trigger message", channel, user)
+
+    assert send.call_args.args[3] == "*Trigger* set to `message` in configuration `default`."
+    assert config["cron"] == ""
 
 
 @pytest.mark.asyncio

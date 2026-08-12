@@ -49,8 +49,8 @@ const state = {
 };
 
 // ---------- labels ----------
-const TRIGGER_LABEL = { message: "Message (classic)", schedule: "Schedule (cron)", manual: "Manual" };
-const TRIGGER_SHORT = { message: "message", schedule: "schedule", manual: "manual" };
+const TRIGGER_LABEL = { message: "Message (classic)", cron: "Cron schedule", manual: "Manual" };
+const TRIGGER_SHORT = { message: "message", cron: "cron", manual: "manual" };
 const ACTION_LABEL = { reply: "Reply in thread", dm_user: "Direct message", group_dm: "Group DM", post_channel: "Post to channel" };
 const ACTION_SHORT = { reply: "reply", dm_user: "dm", group_dm: "group dm", post_channel: "post" };
 const CONDITION_LABEL = { "": "None (always)", outlook_calendar: "Outlook calendar" };
@@ -236,7 +236,7 @@ function cardIdBlock(name, cfg) {
 }
 
 function pipelineFor(cfg) {
-  const condText = cfg.trigger === "schedule" && cfg.condition === "outlook_calendar"
+  const condText = cfg.trigger === "cron" && cfg.condition === "outlook_calendar"
     ? (cfg.condition_negate ? "no outlook" : "outlook") : "—";
   const chip = (kind, text, muted) => h("span", { class: "pipe-chip" + (muted ? " muted" : "") },
     h("span", { class: "pipe-kind", text: kind }), text);
@@ -348,16 +348,16 @@ function renderEditor(name) {
     triggerRows.push(grid(field("Reminder delay (minutes)", minutesInput("wait_time"),
       { hint: "How long to wait for a reply before nudging.", error: fieldErr("wait_time") })));
   }
-  if (cfg.trigger === "schedule") {
+  if (cfg.trigger === "cron") {
     triggerRows.push(grid(
-      field("Cron schedule", textInput("schedule_cron", { mono: true, placeholder: "0 9 * * 1-5" }),
-        { hint: "5-field cron, in the Date & time timezone below.", error: fieldErr("schedule_cron") }),
+      field("Cron schedule", textInput("cron", { mono: true, placeholder: "0 9 * * 1-5" }),
+        { hint: "5-field cron, in the Date & time timezone below.", error: fieldErr("cron") }),
     ));
   }
   wrap.append(section("Status & trigger", null, ...triggerRows));
 
   // — Condition (schedule only) —
-  if (cfg.trigger === "schedule") {
+  if (cfg.trigger === "cron") {
     const condRows = [grid(field("Condition", selectInput("condition", state.meta.conditions, CONDITION_LABEL, structuralRefresh),
       { hint: "Gate the schedule on an Outlook calendar entry." }))];
     if (cfg.condition === "outlook_calendar") {
@@ -367,7 +367,7 @@ function renderEditor(name) {
       ));
       condRows.push(h("div", { class: "toggles-row" }, toggleInput("condition_negate", "Fire when no matching entry exists")));
     }
-    wrap.append(section("Condition", "schedule", ...condRows));
+    wrap.append(section("Condition", "cron", ...condRows));
   }
 
   // — Action —
@@ -407,7 +407,7 @@ function structuralRefreshLabelOnly() {
 
 function triggerHint(t) {
   if (t === "message") return "Watches channel messages and nudges if unanswered.";
-  if (t === "schedule") return "Fires on a cron schedule.";
+  if (t === "cron") return "Fires on a cron schedule.";
   return "Only runs when a button or another rule calls it.";
 }
 

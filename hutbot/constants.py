@@ -23,9 +23,9 @@ DEFAULT_OPSGENIE_PRIORITY = "P4"
 OPSGENIE_PRIORITIES = {"P1", "P2", "P3", "P4", "P5"}
 
 TRIGGER_MESSAGE = "message"
-TRIGGER_SCHEDULE = "schedule"
+TRIGGER_CRON = "cron"
 TRIGGER_MANUAL = "manual"
-TRIGGERS = {TRIGGER_MESSAGE, TRIGGER_SCHEDULE, TRIGGER_MANUAL}
+TRIGGERS = {TRIGGER_MESSAGE, TRIGGER_CRON, TRIGGER_MANUAL}
 
 CONDITION_NONE = ""
 CONDITION_OUTLOOK = "outlook_calendar"
@@ -88,10 +88,11 @@ DEFAULT_CONFIG = {
     "enabled": True,
     # Why the bot disabled this config on its own; empty for a user-made change.
     "disabled_reason": "",
-    # Trigger: how the rule starts. "message" keeps the classic behavior.
+    # Trigger: how the rule starts. "message" keeps the classic behavior; "cron"
+    # carries its expression in `cron`.
     "trigger": TRIGGER_MESSAGE,
-    "schedule_cron": "",
-    # Condition: optional gate evaluated when a schedule trigger fires.
+    "cron": "",
+    # Condition: optional gate evaluated when a cron trigger fires.
     "condition": CONDITION_NONE,
     "condition_negate": False,
     "outlook_subject_pattern": "",

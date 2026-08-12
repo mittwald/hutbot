@@ -2,7 +2,7 @@
 
 The hutbot is a simple Slack bot that monitors messages in a channel and automatically replies in a thread if no one reacts or responds to the message within a configurable time period (by default 30 minutes). The bot reminds channel members that a message has gone unanswered. Scheduled reminders are cancelled when someone replies in the thread or reacts in a way that does not match the config criteria that caused that reminder to be scheduled, or when the original message is deleted. Users can adjust both the waiting time and the reminder message directly within the channel, including `{{variable}}` placeholders in the reminder text.
 
-Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. `{{date}}`, `{{time}}`, and `{{datetime}}` render the triggering message's time — or the time the rule ran, for `schedule`/`manual` triggers and for `test`/`run` — using the config's date/time format, timezone, and locale, and take the same `fmt`/`tz`/`lc` arguments as the Opsgenie date/time variables below. `{{timestamp}}` is the raw Slack timestamp of the same instant. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
+Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. `{{date}}`, `{{time}}`, and `{{datetime}}` render the triggering message's time — or the time the rule ran, for `cron`/`manual` triggers and for `test`/`run` — using the config's date/time format, timezone, and locale, and take the same `fmt`/`tz`/`lc` arguments as the Opsgenie date/time variables below. `{{timestamp}}` is the raw Slack timestamp of the same instant. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
 
 - `{{opsgenie_schedule_name}}` for the configured schedule
 - `{{opsgenie_current_user}}` for a Slack `@mention`
@@ -57,14 +57,15 @@ Beyond the classic "reply if a message goes unanswered" behavior, each named con
 with a `trigger`, an optional `condition`, and an `action`. The trigger defaults to `message`, so
 existing configs keep working unchanged.
 
-- **Triggers** (`/hutbot [config] set trigger <message|schedule|manual>`)
-  - `message` — the classic behavior (matches channel messages by pattern/teams/hours).
-  - `schedule` — fires on a cron schedule. Set it with `set cron "<expr>"` (5-field cron, e.g.
-    `0 9 * * 1-5`). It fires in the config's date/time timezone (see
-    `set datetime-format`), or server local time without one.
-  - `manual` — never fires on its own; used as the target of a button or a button timeout.
+- **Triggers** (`/hutbot [config] set trigger <trigger> [<cron expression>]`). The cron trigger
+  carries its expression, so a rule can never be left with a schedule that never fires.
+  - `set trigger message` — the classic behavior (matches channel messages by pattern/teams/hours).
+  - `set trigger cron "0 9 * * 1-5"` — fires on a 5-field cron schedule, in the config's date/time
+    timezone (see `set datetime-format`) or server local time without one. `schedule` and
+    `scheduled` are accepted as names for this trigger.
+  - `set trigger manual` — never fires on its own; used as the target of a button or a button timeout.
 
-- **Conditions** (`/hutbot [config] set condition <none|outlook>`) gate a `schedule` trigger.
+- **Conditions** (`/hutbot [config] set condition <none|outlook>`) gate a `cron` trigger.
   - `outlook` — matches Outlook calendar entries by `set outlook-subject <regex>` /
     `set outlook-body <regex>`. Use `enable negate` to fire when *no* matching entry exists.
     **Note:** the Outlook integration is currently a stub (events come from the
@@ -130,7 +131,7 @@ Use `/hutbot [config] run` to fire a configuration's action immediately (handy f
 ## Leaving and rejoining a channel
 
 Configurations outlive channel membership, so removing the bot from a channel would otherwise leave
-`schedule` rules firing (and pending reminders/escalations coming due) for a channel it can no longer
+`cron` rules firing (and pending reminders/escalations coming due) for a channel it can no longer
 post in. When Hutbot is removed from a channel (kicked, or `/remove`d):
 
 - every enabled configuration of that channel is disabled and marked as *disabled because Hutbot was

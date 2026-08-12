@@ -83,9 +83,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     elif (match := patterns.CLEAR_INCLUDED_TEAM_PATTERN.match(command_text)):
         await setters.clear_included_team(app, channel, config_name, user, thread_ts)
     elif (match := patterns.SET_TRIGGER_PATTERN.match(command_text)):
-        await setters.set_trigger(app, channel, config_name, match.group("trigger"), user, thread_ts)
-    elif (match := patterns.SET_CRON_PATTERN.match(command_text)):
-        await setters.set_schedule_cron(app, channel, config_name, match.group("cron"), user, thread_ts)
+        await setters.set_trigger(app, channel, config_name, match.group("trigger"), match.group("expression"), user, thread_ts)
     elif (match := patterns.SET_CONDITION_PATTERN.match(command_text)):
         await setters.set_condition(app, channel, config_name, match.group("condition"), user, thread_ts)
     elif (match := patterns.SET_OUTLOOK_SUBJECT_PATTERN.match(command_text)):
