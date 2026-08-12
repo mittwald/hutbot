@@ -19,7 +19,7 @@ async def test_show_config():
     with patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
 
-        sent_message = mock_send_message.call_args.args[3]
+        sent_message = sent_messages(mock_send_message)
         assert "\n\n*Configuration*: `default` (enabled)" in sent_message
         assert "> *Trigger*: `message`\n>\n> *Reply message*:\n> Default message\n>\n> *Replied in* <#C123> (in thread)\n>\n> *Settings*:\n```" in sent_message
         assert "\nTrigger" not in sent_message
@@ -59,12 +59,12 @@ async def test_show_config_resolves_the_server_timezone_and_locale():
          patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
 
-    lines = mock_send_message.call_args.args[3].splitlines()
+    lines = sent_messages(mock_send_message).splitlines()
     assert any(line.startswith("Date/time timezone  Europe/Berlin (") and line.endswith(", server local time)") for line in lines)
     assert "Date/time locale    English names (server locale de_DE not applied)" in lines
     assert "Date/time timezone  Asia/Tokyo (JST, UTC+09:00)" in lines
     assert "Date/time locale    de_DE" in lines
-    assert "<server local>" not in mock_send_message.call_args.args[3]
+    assert "<server local>" not in sent_messages(mock_send_message)
 
 
 
@@ -86,7 +86,7 @@ async def test_show_config_displays_multiline_team_values():
     with patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert (
         "Excluded teams      Cloud Hosting\n"
         "                    m-kubed (m³)\n"
@@ -112,7 +112,7 @@ async def test_process_command_mention_test_uses_trailing_text_as_message():
         await process_command(app, "<@UBOT> test hello world", channel, user, "1234.1", allow_test_message=True, command_ts="1234.1")
 
     app.client.chat_getPermalink.assert_awaited_once_with(channel="C12345", message_ts="1234.1")
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "Preview: hello world 1234.1 https://slack.test/message" in sent_message
     assert "`{{message}}`: hello world" in sent_message
     assert "`{{timestamp}}`: 1234.1" in sent_message
@@ -129,7 +129,7 @@ async def test_process_command_help_uses_compact_command_reference():
     with patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, "help", channel, user)
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "*Show All Configurations:*" in sent_message
     assert "Either use the command `/hutbot` or just `@Hutbot` me." in sent_message
     assert "```/hutbot show config\n@Hutbot show config```" in sent_message
@@ -160,7 +160,7 @@ async def test_process_command_help_uses_configured_slash_command():
          patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, "help", channel, user)
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "Either use the command `/hutbot_dev` or just `@Hutbot` me." in sent_message
     assert "/hutbot_dev [config] set wait-time <minutes>" in sent_message
     assert "/hutbot " not in sent_message
@@ -178,7 +178,7 @@ async def test_process_command_help_uses_configured_bot_name():
          patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, "help", channel, user)
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "I am *Hutbot (DEV)*" in sent_message
     assert "or just `@hutbot_dev` me." in sent_message
     assert "@hutbot_dev show config```" in sent_message
@@ -217,7 +217,7 @@ async def test_show_config_displays_forward_channel():
     with patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "*Replied in* <#C123> (in thread)\n> *Forwarded to* <#CFWDCHAN>" in sent_message
 
 
@@ -231,7 +231,7 @@ async def test_show_config_omits_forward_line_without_forward_channel():
     with patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "*Replied in* <#C123> (in thread)" in sent_message
     assert "Forwarded to" not in sent_message
 
@@ -252,7 +252,7 @@ async def test_show_config_names_the_destination_per_action():
     with patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "*Posted in* <#CTARGET>" in sent_message
     assert "*Sent to* `d.grieser@mittwald.de` (direct message)" in sent_message
     assert "*Sent to* <!subteam^SGROUP> (group message)" in sent_message
@@ -275,7 +275,7 @@ async def test_show_config_displays_replies_enabled():
     with patch('hutbot.messaging.send_message') as mock_send:
         await show_config(app, channel, user)
 
-    sent_message = mock_send.call_args[0][3]
+    sent_message = sent_messages(mock_send)
     assert "\n\n*Configuration*: `default` (enabled)" in sent_message
 
 
@@ -289,7 +289,7 @@ async def test_show_config_displays_replies_disabled():
     with patch('hutbot.messaging.send_message') as mock_send:
         await show_config(app, channel, user)
 
-    sent_message = mock_send.call_args[0][3]
+    sent_message = sent_messages(mock_send)
     assert "\n\n*Configuration*: `default` (disabled)" in sent_message
 
 
@@ -343,7 +343,7 @@ async def test_show_config_explains_an_automatic_disable():
     with patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "*Configuration*: `removed` (disabled, because Hutbot was removed from this channel)" in sent_message
     assert "*Configuration*: `by-hand` (disabled)" in sent_message
 
@@ -358,7 +358,7 @@ async def test_show_config_marks_the_instance_default_locale():
          patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
 
-    assert "Date/time locale    de_DE (instance default)" in mock_send_message.call_args.args[3].splitlines()
+    assert "Date/time locale    de_DE (instance default)" in sent_messages(mock_send_message).splitlines()
 
 
 @pytest.mark.asyncio
@@ -372,4 +372,57 @@ async def test_help_and_news_name_the_running_version(command):
          patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, command, channel, user)
 
-    assert "I am *Hutbot* `v1.2.3` :palm_up_hand::tophat:" in mock_send_message.call_args.args[3]
+    assert "I am *Hutbot* `v1.2.3` :palm_up_hand::tophat:" in sent_messages(mock_send_message)
+
+
+@pytest.mark.asyncio
+async def test_help_is_split_into_messages_slack_will_not_cut_apart():
+    import hutbot
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "help", channel, user)
+
+    texts = [call.args[3] for call in mock_send_message.call_args_list]
+    assert len(texts) > 1
+    for text in texts:
+        assert len(text) <= hutbot.messaging.SLACK_MESSAGE_CHARACTER_LIMIT, len(text)
+        # Every code fence a message opens, it also closes.
+        assert text.count("```") % 2 == 0, text
+    assert "*Commands:*" in texts[1]
+    assert "*Commands (continued):*" in texts[2]
+
+
+@pytest.mark.asyncio
+async def test_show_config_splits_many_configs_into_several_messages():
+    import hutbot
+    app = AsyncMock()
+    configs = {f"config-{index}": DEFAULT_CONFIG.copy() for index in range(8)}
+    channel = Channel(id="C1", name="general", configs=configs)
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    texts = [call.args[3] for call in mock_send_message.call_args_list]
+    assert len(texts) > 1
+    for text in texts:
+        assert len(text) <= hutbot.messaging.SLACK_MESSAGE_CHARACTER_LIMIT, len(text)
+        assert text.count("```") % 2 == 0, text
+    # No config is spread over two messages.
+    joined = sent_messages(mock_send_message)
+    for name in configs:
+        assert joined.count(f"*Configuration*: `{name}`") == 1
+
+
+def test_pack_message_chunks_keeps_an_oversized_part_whole():
+    import hutbot
+    parts = ["a" * 3000, "b" * 3000, "c" * 5000]
+
+    chunks = hutbot.messaging.pack_message_chunks(parts)
+
+    assert chunks == ["a" * 3000, "b" * 3000, "c" * 5000]
+    assert hutbot.messaging.pack_message_chunks(["x", "y"]) == ["x\n\ny"]
+    assert hutbot.messaging.pack_message_chunks([]) == []

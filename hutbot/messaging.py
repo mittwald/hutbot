@@ -15,6 +15,31 @@ from .models import Channel, User
 from .textutil import log_debug
 
 
+# Slack cuts a message this long into several, wherever the break happens to fall —
+# mid code fence included. Anything longer has to be split by us, on our own lines.
+SLACK_MESSAGE_CHARACTER_LIMIT = 3800
+
+
+def pack_message_chunks(parts: list[str], separator: str = "\n\n", limit: int = SLACK_MESSAGE_CHARACTER_LIMIT) -> list[str]:
+    """Greedily group `parts` into messages no longer than `limit`.
+
+    A single part longer than the limit is kept whole — splitting it would break
+    whatever made it one part (a code block, one config's settings).
+    """
+    chunks: list[str] = []
+    current = ""
+    for part in parts:
+        candidate = f"{current}{separator}{part}" if current else part
+        if current and len(candidate) > limit:
+            chunks.append(current)
+            current = part
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "") -> None:
     log_debug(channel, f"Attempting to send message to #{channel.name}, user @{user.name}: {text.replace(chr(10), '\\n')}")
     retries = 3
@@ -262,20 +287,28 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ]),
     ]
     command_width = max(len(command) for _, rows in command_groups for command, _ in rows)
-    command_usage = "\n\n".join(
+    group_blocks = [
         f"# {title}\n" + "\n".join(f"{command:<{command_width}}  {description}" for command, description in rows)
         for title, rows in command_groups
-    )
-    help_text = (
+    ]
+    intro = (
         f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what I can do:\n\n"
         "*Show All Configurations:*\n"
         f"> Either use the command `{command}` or just `{mention}` me.\n"
         f"```{command} show config\n"
         f"{mention} show config```\n"
-        f"Displays all configurations for `#{channel.name}`.\n\n"
-        "*Commands:*\n"
-        f"```\n{command_usage}\n```\n\n"
+        f"Displays all configurations for `#{channel.name}`."
+    )
+    outro = (
         "`[config]` is optional; omitted commands use `default`.\n\n"
         f"Supported reply variables: {supported_template_variables}."
     )
-    await send_message(app, channel, user, help_text, thread_ts)
+    # The command table alone is well past Slack's per-message limit, and Slack
+    # splits an oversized message wherever it happens to land — which cuts the code
+    # fence in half. Send it in chunks that each close their own fence.
+    command_messages = [
+        f"*Commands{'' if index == 0 else ' (continued)'}:*\n```\n{chunk}\n```"
+        for index, chunk in enumerate(pack_message_chunks(group_blocks, limit=SLACK_MESSAGE_CHARACTER_LIMIT - 200))
+    ]
+    for message in [intro, *command_messages, outro]:
+        await send_message(app, channel, user, message, thread_ts)

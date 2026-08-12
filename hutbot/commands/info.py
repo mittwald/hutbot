@@ -156,6 +156,7 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         return [f"*Action* `{action}`, target {format_target(action_target)}"]
 
     message = f"This is the configuration for #{channel.name}:"
+    config_sections = []
     for config_name, config in sorted(channel.configs.items()):
         opsgenie_enabled = config.get('opsgenie')
         wait_time_minutes = config.get('wait_time') // 60
@@ -272,9 +273,12 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             f">\n"
             f"> *Settings*:\n"
         )
-        message += (
-            f"\n\n*Configuration*: `{config_name}` ({enabled_label})\n"
+        config_sections.append(
+            f"*Configuration*: `{config_name}` ({enabled_label})\n"
             f"{quoted_block}"
             f"```\n{config_block}\n```"
         )
-    await messaging.send_message(app, channel, user, message, thread_ts)
+    # Slack splits an oversized message wherever the break lands, cutting the code
+    # fence in half, so a channel with several configs is sent as several messages.
+    for chunk in messaging.pack_message_chunks([message, *config_sections]):
+        await messaging.send_message(app, channel, user, chunk, thread_ts)

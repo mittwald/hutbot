@@ -87,4 +87,13 @@ def _ui_app():
     return app
 
 
+def sent_messages(mock) -> str:
+    """Every text a patched `send_message` received, joined.
+
+    Long replies (help, `show config` for many configs) are split into several
+    messages, so assertions have to look at all of them.
+    """
+    return "\n".join(call.args[3] for call in mock.call_args_list)
+
+
 __all__ = [name for name in list(globals()) if not name.startswith('__')]

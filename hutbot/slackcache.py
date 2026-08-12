@@ -193,7 +193,17 @@ async def fetch_bot_handle(app: AsyncApp, bot_user_id: str) -> str:
         return ""
     slack_user = response.get('user') or {}
     profile = slack_user.get('profile') or {}
-    for candidate in (profile.get('display_name'), profile.get('display_name_normalized'), slack_user.get('name')):
+    # Bot users usually have no display name; their `real_name` carries the app's
+    # display name ("Hutbot_DEV"), which is what the mention autocomplete offers.
+    # `name` is the flattened username and only a last resort.
+    candidates = (
+        profile.get('display_name'),
+        profile.get('display_name_normalized'),
+        slack_user.get('real_name'),
+        profile.get('real_name'),
+        slack_user.get('name'),
+    )
+    for candidate in candidates:
         if candidate and candidate.strip():
             return candidate.strip()
     return ""
