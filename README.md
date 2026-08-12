@@ -69,13 +69,15 @@ existing configs keep working unchanged.
     **Note:** the Outlook integration is currently a stub (events come from the
     `HUTBOT_OUTLOOK_STUB_EVENTS` env var); the real implementation lands in a later task.
 
-- **Actions** (`/hutbot [config] set action <reply|dm-user|group-dm|post-channel>`) decide what the
-  rule does, using `reply_message` (with the usual `{{variables}}`) as the body.
-  - `reply` — post in the rule's channel.
-  - `dm-user` — DM a single user. Set the recipient with `set target <@user>`.
-  - `group-dm` — open one group DM (mpim) with all members of a Slack user group and post once.
-    Set the group with `set target <@usergroup>` (Slack caps a group DM at 8 members).
-  - `post-channel` — post to another channel. Set it with `set target <#channel>`.
+- **Actions** (`/hutbot [config] set action <action> [<target>]`) decide what the rule does, using
+  `reply_message` (with the usual `{{variables}}`) as the body. The recipient is part of the same
+  command, so a config can never be left with an action that has nowhere to send.
+  - `set action reply` — post in the rule's channel. Takes no target.
+  - `set action dm-user <@user>` — DM a single user.
+  - `set action group-dm <@usergroup>` — open one group DM (mpim) with all members of a Slack user
+    group and post once (Slack caps a group DM at 8 members).
+  - `set action post-channel <#channel>` — post to another channel. Pick the channel from Slack's
+    autocomplete so it arrives as a link, or pass its `C…` id.
 
 - **Buttons** attach interactive buttons to the message a rule sends (including the classic
   unanswered-message reply). Each button is added incrementally with a typed action:
@@ -88,7 +90,6 @@ existing configs keep working unchanged.
   - `/hutbot [config] set button-timeout <minutes>` — escalate if no button is pressed in time, then
     either `set default-button "<label>"` (auto-press that button) or `set button-timeout-target
     <config>` (run that config). Pending escalations survive restarts.
-  - A bare `add button "<label>" <config>` (no action keyword) is still treated as `config <config>`.
   - A button/timeout that runs a config passes the **original message context** to it, so the target's
     templates and any OpsGenie alert reference the original message.
 
@@ -450,7 +451,6 @@ The name is used everywhere the instance identifies itself:
 | Surface           | With `HUTBOT_BOT_NAME='Hutbot (DEV)'`                       |
 | ----------------- | ----------------------------------------------------------- |
 | Help / news       | *Hi! I am **Hutbot (DEV)*** …                                 |
-| Forwarding notice | "… will now be forwarded here by Hutbot (DEV)"               |
 | Web UI            | Page title, wordmark and messages (served via `/api/meta`)   |
 | OpsGenie alert    | Tag `Hutbot (DEV)`, detail `bot: hutbot-dev`                  |
 

@@ -13,8 +13,12 @@ from .. import templating
 from .. import datetimefmt
 from .. import slackcache
 from .. import actions
+from .. import targets
 from ..buttonutil import _find_button_index
 from ..constants import (
+    ACTION_POST_CHANNEL,
+    ACTION_REPLY,
+    ACTION_TARGET_HINTS,
     ACTIONS,
     BUTTON_ACTION_CONFIG,
     BUTTON_ACTION_DELAY,
@@ -44,6 +48,13 @@ def _ensure_config(channel, config_name: str) -> dict:
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()
     return channel.configs[config_name]
+
+
+def _set_action_hint(config_name: str, config: dict) -> str:
+    """The command that gives this config's action a usable target."""
+    action = config.get('action', ACTION_REPLY)
+    hint = ACTION_TARGET_HINTS.get(action, '<target>')
+    return f"`{state.slash_command} {config_name} set action {action.replace('_', '-')} {hint}`"
 
 
 async def set_bots(app: AsyncApp, channel, config_name: str, enabled: bool, user, thread_ts: str = "") -> None:
@@ -89,46 +100,6 @@ async def set_work_hours(app: AsyncApp, channel, config_name: str, start: str, e
     channel.configs[config_name]['hours'] = hours
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"*Work hours* set to {f'`{hours[0]}` - `{hours[1]}`' if len(hours) == 2 else 'all day'} in configuration `{config_name}`", thread_ts)
-
-
-async def set_forward_channel(app: AsyncApp, channel, config_name: str, channel_ref: str, user, thread_ts: str = "") -> None:
-    channel_id = None
-    for match in ID_PATTERN.finditer(channel_ref):
-        id = match.group(1)
-        if id and id[0] == '#':
-            channel_id = id[1:]
-            break
-    if not channel_id:
-        stripped = channel_ref.strip()
-        if re.match(r'^C[A-Z0-9]+$', stripped):
-            channel_id = stripped
-
-    if not channel_id:
-        await messaging.send_message(app, channel, user, f"Invalid channel: `{channel_ref}`. Use a #channel mention.", thread_ts)
-        return
-
-    try:
-        confirmation = (
-            f"Reply messages from #{channel.name} (config `{config_name}`) "
-            f"will now be forwarded here by {state.bot_name} :palm_up_hand::tophat:"
-        )
-        await app.client.chat_postMessage(channel=channel_id, text=confirmation, mrkdwn=True)
-    except SlackApiError as e:
-        await messaging.send_message(app, channel, user, f"Cannot post to <#{channel_id}>: `{e.response['error']}`.", thread_ts)
-        return
-
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
-    channel.configs[config_name]['forward_channel'] = channel_id
-    await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"*Forward channel* set to <#{channel_id}> in configuration `{config_name}`.", thread_ts)
-
-
-async def clear_forward_channel(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
-    if config_name in channel.configs:
-        channel.configs[config_name].pop('forward_channel', None)
-        await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"*Forward channel* cleared in configuration `{config_name}`.", thread_ts)
 
 
 async def set_opsgenie(app: AsyncApp, channel, config_name: str, enabled: bool, user, thread_ts: str = "") -> None:
@@ -424,25 +395,39 @@ async def set_condition_negate(app: AsyncApp, channel, config_name: str, enabled
     await messaging.send_message(app, channel, user, f"*Condition negation* {'*enabled*' if enabled else '*disabled*'} in configuration `{config_name}`.", thread_ts)
 
 
-async def set_action(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:
+async def set_action(app: AsyncApp, channel, config_name: str, value: str, target: str, user, thread_ts: str = "") -> None:
+    """`set action <action> [<target>]` — the target is part of choosing the action.
+
+    Every action except `reply` sends somewhere else, so it is only a complete
+    instruction together with its recipient. Requiring both in one command means a
+    config can never be left in a state that fails when the rule fires.
+    """
     value = strip_quotes(value).strip().lower().replace('-', '_')
     if value not in ACTIONS:
         supported = ", ".join(f"`{a}`" for a in sorted(ACTIONS))
         await messaging.send_message(app, channel, user, f"Invalid *action*. Must be one of {supported}.", thread_ts)
         return
-    _ensure_config(channel, config_name)['action'] = value
-    await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"*Action* set to `{value}` in configuration `{config_name}`.", thread_ts)
+    target = strip_quotes(target or "").strip()
 
-
-async def set_action_target(app: AsyncApp, channel, config_name: str, target: str, user, thread_ts: str = "") -> None:
-    target = strip_quotes(target).strip()
-    if not target:
-        await messaging.send_message(app, channel, user, "Invalid *target*. Must be non-empty.", thread_ts)
+    if value == ACTION_REPLY:
+        if target:
+            await messaging.send_message(app, channel, user, f"Action `{ACTION_REPLY}` posts in this channel and takes no target.", thread_ts)
+            return
+    elif not target:
+        await messaging.send_message(app, channel, user, f"Action `{value}` needs a target: `{state.slash_command} {config_name} set action {value.replace('_', '-')} {ACTION_TARGET_HINTS[value]}`.", thread_ts)
         return
-    _ensure_config(channel, config_name)['action_target'] = target
+    elif value == ACTION_POST_CHANNEL and not targets.parse_channel_ref(target):
+        await messaging.send_message(app, channel, user, f"Invalid *target* `{target}` for action `{value}`. Pick the channel from Slack's autocomplete so it becomes a link, or pass its `C…` id.", thread_ts)
+        return
+
+    config = _ensure_config(channel, config_name)
+    config['action'] = value
+    config['action_target'] = target
     await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"*Action target* set to `{target}` in configuration `{config_name}`.", thread_ts)
+    if target:
+        await messaging.send_message(app, channel, user, f"*Action* set to `{value}` sending to `{target}` in configuration `{config_name}`.", thread_ts)
+    else:
+        await messaging.send_message(app, channel, user, f"*Action* set to `{value}` in configuration `{config_name}`.", thread_ts)
 
 
 async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec: str, user, thread_ts: str = "") -> None:
@@ -451,16 +436,15 @@ async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec:
         await messaging.send_message(app, channel, user, "Invalid *button label*. Must be non-empty.", thread_ts)
         return
 
-    # spec is either "<action> [arg]" or a bare config name (back-compat).
-    spec = spec.strip()
-    parts = spec.split(None, 1)
-    first = parts[0].lower() if parts else ""
-    if first in BUTTON_ACTIONS:
-        action = first
-        value = strip_quotes(parts[1]).strip() if len(parts) > 1 else ""
-    else:
-        action = BUTTON_ACTION_CONFIG
-        value = strip_quotes(spec).strip()
+    # spec is "<action> [arg]". The action keyword is required: without it a config
+    # named after one (`ack`, `message`, `delay`) could never be attached.
+    parts = spec.strip().split(None, 1)
+    action = parts[0].lower() if parts else ""
+    if action not in BUTTON_ACTIONS:
+        supported = ", ".join(f"`{a}`" for a in sorted(BUTTON_ACTIONS))
+        await messaging.send_message(app, channel, user, f"Invalid *button action* `{parts[0] if parts else ''}`. Must be one of {supported}.", thread_ts)
+        return
+    value = strip_quotes(parts[1]).strip() if len(parts) > 1 else ""
 
     if action in (BUTTON_ACTION_CONFIG, BUTTON_ACTION_MESSAGE) and not value:
         what = "a configuration name" if action == BUTTON_ACTION_CONFIG else "a message"
@@ -544,8 +528,14 @@ async def run_config_now(app: AsyncApp, opsgenie_token: str, channel, config_nam
     if not config:
         await messaging.send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
         return
+    reason = actions.missing_target_reason(config)
+    if reason:
+        await messaging.send_message(app, channel, user, f"Cannot run configuration `{config_name}`: {reason}. Set one with {_set_action_hint(config_name, config)}.", thread_ts)
+        return
     await messaging.send_message(app, channel, user, f"Running configuration `{config_name}` now…", thread_ts)
-    await actions.run_action(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel.id, 'user': user})
+    posted = await actions.run_action(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel.id, 'user': user})
+    if not posted:
+        await messaging.send_message(app, channel, user, f"Configuration `{config_name}` did not send anything. Check its action and target with `{state.slash_command} show config`.", thread_ts)
 
 
 async def add_excluded_team(app: AsyncApp, channel, config_name: str, team: str, user, thread_ts: str = "") -> None:

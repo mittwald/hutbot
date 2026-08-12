@@ -86,3 +86,26 @@ async def test_load_replies_cache_handles_missing_file():
         hutbot.state._scheduled_replies_cache.clear()
         await load_replies_cache()
         assert hutbot.state._scheduled_replies_cache == {}
+
+
+@pytest.mark.asyncio
+async def test_migration_drops_the_legacy_forward_channel():
+    app = AsyncMock()
+    config = {
+        "C123": {
+            "default": {**DEFAULT_CONFIG.copy(), "forward_channel": "CFWDCHAN"},
+            "clean": DEFAULT_CONFIG.copy(),
+        }
+    }
+
+    with patch('hutbot.persistence.log_warning') as mock_log_warning:
+        migrated = await migrate_and_apply_defaults(app, config)
+
+    assert "forward_channel" not in migrated["C123"]["default"]
+    assert "forward_channel" not in migrated["C123"]["clean"]
+    warning = mock_log_warning.call_args.args[0]
+    assert "Dropping the forward channel CFWDCHAN of config 'default' in channel C123" in warning
+    assert "set action post-channel <#CFWDCHAN>" in warning
+    assert "{{message_link}}" in warning
+    # Only the config that had one is reported.
+    assert mock_log_warning.call_count == 1

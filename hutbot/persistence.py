@@ -39,7 +39,16 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
             for key, value in constants.DEFAULT_CONFIG.items():
                 if key not in single_config:
                     single_config[key] = value
-            # Normalize legacy {label, target} buttons to {label, action, value}.
+            # `forward_channel` was replaced by the `post_channel` action. Drop it
+            # instead of silently keeping a field nothing reads any more.
+            legacy_forward_channel = single_config.pop('forward_channel', '')
+            if legacy_forward_channel:
+                log_warning(
+                    f"Dropping the forward channel {legacy_forward_channel} of config '{config_name}' in channel {channel_id}. "
+                    f"To keep forwarding, add a second config with `set trigger message`, "
+                    f"`set action post-channel <#{legacy_forward_channel}>` and a message using {{{{message_link}}}}."
+                )
+            # Keep buttons to {label, action, value} and drop anything unusable.
             buttons = single_config.get('buttons')
             if isinstance(buttons, list):
                 normalized = []

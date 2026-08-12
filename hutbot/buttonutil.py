@@ -8,13 +8,8 @@ from .constants import BUTTON_ACTION_CONFIG
 
 
 def normalize_button(button: dict) -> tuple[str, str]:
-    """Return (action, value) for a button, tolerating the legacy {label, target} form."""
-    action = button.get('action') or BUTTON_ACTION_CONFIG
-    if action == BUTTON_ACTION_CONFIG:
-        value = button.get('value') or button.get('target') or ''
-    else:
-        value = button.get('value', '') or ''
-    return action, value
+    """Return (action, value) for a button, defaulting a missing action to `config`."""
+    return button.get('action') or BUTTON_ACTION_CONFIG, button.get('value', '') or ''
 
 
 def _find_button_index(config: dict | None, label: str) -> int | None:

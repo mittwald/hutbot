@@ -186,57 +186,6 @@ async def test_process_command_help_uses_configured_bot_name():
     assert "@Hutbot" not in sent_message
 
 
-
-@pytest.mark.asyncio
-async def test_set_forward_channel_with_mention():
-    app = AsyncMock()
-    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
-    user = User("U12345", "test", "Test User", "Testers")
-    thread_ts = "1234567890.123456"
-
-    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as mock_send_message:
-        await set_forward_channel(app, channel, "default", "<#CFWDCHAN|forward-channel>", user, thread_ts)
-
-    assert channel.configs["default"]["forward_channel"] == "CFWDCHAN"
-    app.client.chat_postMessage.assert_awaited_once_with(
-        channel="CFWDCHAN",
-        text="Reply messages from #general (config `default`) will now be forwarded here by Hutbot :palm_up_hand::tophat:",
-        mrkdwn=True,
-    )
-    mock_send_message.assert_called_with(app, channel, user, "*Forward channel* set to <#CFWDCHAN> in configuration `default`.", thread_ts)
-
-
-
-@pytest.mark.asyncio
-async def test_show_config_displays_forward_channel():
-    app = AsyncMock()
-    config = {**DEFAULT_CONFIG.copy(), "forward_channel": "CFWDCHAN"}
-    channel = Channel(id="C123", name="general", configs={"default": config})
-    user = User(id="U123", name="test", real_name="Test User", team="A")
-
-    with patch('hutbot.messaging.send_message') as mock_send_message:
-        await show_config(app, channel, user, "")
-
-    sent_message = sent_messages(mock_send_message)
-    assert "*Replied in* <#C123> (in thread)\n> *Forwarded to* <#CFWDCHAN>" in sent_message
-
-
-
-@pytest.mark.asyncio
-async def test_show_config_omits_forward_line_without_forward_channel():
-    app = AsyncMock()
-    channel = Channel(id="C123", name="general", configs={"default": DEFAULT_CONFIG.copy()})
-    user = User(id="U123", name="test", real_name="Test User", team="A")
-
-    with patch('hutbot.messaging.send_message') as mock_send_message:
-        await show_config(app, channel, user, "")
-
-    sent_message = sent_messages(mock_send_message)
-    assert "*Replied in* <#C123> (in thread)" in sent_message
-    assert "Forwarded to" not in sent_message
-
-
-
 @pytest.mark.asyncio
 async def test_show_config_names_the_destination_per_action():
     app = AsyncMock()

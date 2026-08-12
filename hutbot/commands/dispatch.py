@@ -82,11 +82,6 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.add_included_team(app, channel, config_name, team, user, thread_ts)
     elif (match := patterns.CLEAR_INCLUDED_TEAM_PATTERN.match(command_text)):
         await setters.clear_included_team(app, channel, config_name, user, thread_ts)
-    elif (match := patterns.SET_FORWARD_CHANNEL_PATTERN.match(command_text)):
-        channel_ref = strip_quotes(match.group("channel"))
-        await setters.set_forward_channel(app, channel, config_name, channel_ref, user, thread_ts)
-    elif patterns.CLEAR_FORWARD_CHANNEL_PATTERN.match(command_text):
-        await setters.clear_forward_channel(app, channel, config_name, user, thread_ts)
     elif (match := patterns.SET_TRIGGER_PATTERN.match(command_text)):
         await setters.set_trigger(app, channel, config_name, match.group("trigger"), user, thread_ts)
     elif (match := patterns.SET_CRON_PATTERN.match(command_text)):
@@ -104,9 +99,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     elif patterns.DISABLE_CONDITION_NEGATE_PATTERN.match(command_text):
         await setters.set_condition_negate(app, channel, config_name, False, user, thread_ts)
     elif (match := patterns.SET_ACTION_PATTERN.match(command_text)):
-        await setters.set_action(app, channel, config_name, match.group("action"), user, thread_ts)
-    elif (match := patterns.SET_TARGET_PATTERN.match(command_text)):
-        await setters.set_action_target(app, channel, config_name, match.group("target"), user, thread_ts)
+        await setters.set_action(app, channel, config_name, match.group("action"), match.group("target"), user, thread_ts)
     elif (match := patterns.ADD_BUTTON_PATTERN.match(command_text)):
         await setters.add_button(app, channel, config_name, match.group("label"), match.group("spec"), user, thread_ts)
     elif patterns.CLEAR_BUTTONS_PATTERN.match(command_text):

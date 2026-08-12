@@ -374,9 +374,6 @@ function renderEditor(name) {
   const actionRows = [grid(field("Action", selectInput("action", state.meta.actions, ACTION_LABEL, structuralRefresh), { hint: ACTION_LABEL[cfg.action] }))];
   if (cfg.action !== "reply") {
     actionRows[0].append(field("Target", textInput("action_target", { mono: true }), { hint: TARGET_HINT[cfg.action], error: fieldErr("action_target") }));
-  } else {
-    actionRows[0].append(field("Forward replies to (optional)", textInput("forward_channel", { mono: true, placeholder: "C0123ABCD" }),
-      { hint: "Channel ID to also post the reply into.", error: fieldErr("forward_channel") }));
   }
   wrap.append(section("Action", null, ...actionRows));
 

@@ -22,6 +22,7 @@ from hutbot.constants import (
     ACTION_DM_USER,
     ACTION_GROUP_DM,
     ACTION_POST_CHANNEL,
+    ACTION_REPLY,
     DEFAULT_CONFIG,
     DISABLED_REASON_REMOVED,
     TRIGGER_SCHEDULE,
@@ -46,7 +47,7 @@ from hutbot.webui_backend import (
 from hutbot.commands.dispatch import process_command
 from hutbot.commands.setters import (
     set_work_hours, set_pattern, set_reply_message,
-    set_forward_channel, clear_forward_channel, set_replies_enabled,
+    set_replies_enabled,
 )
 from hutbot.commands.info import get_team_of, show_config
 

@@ -23,6 +23,8 @@ from .constants import (
     ACTION_GROUP_DM,
     ACTION_POST_CHANNEL,
     ACTION_REPLY,
+    ACTIONS_REQUIRING_TARGET,
+    ACTION_TARGET_HINTS,
     CONDITION_NONE,
     CONDITION_OUTLOOK,
     OPSGENIE_TEMPLATE_VARIABLES,
@@ -127,7 +129,7 @@ async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: s
 
 
 async def action_post_channel(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None) -> dict | None:
-    target = (config.get('action_target') or '').strip() or (config.get('forward_channel') or '')
+    target = (config.get('action_target') or '').strip()
     channel_id = targets.parse_channel_ref(target)
     if not channel_id:
         log_error(f"Action post_channel: invalid channel target '{target}'.")
@@ -135,11 +137,32 @@ async def action_post_channel(app: AsyncApp, channel: Channel, config: dict, tex
     return await messaging._post_message(app, channel_id, text, blocks)
 
 
+def missing_target_reason(config: dict) -> str:
+    """Why this config's action cannot run, or "" when it can.
+
+    Every action except `reply` sends somewhere else and needs a target; a config
+    that has none would only fail deep inside the action with an empty target.
+    """
+    action = config.get('action', ACTION_REPLY)
+    if action not in ACTIONS_REQUIRING_TARGET:
+        return ""
+    target = (config.get('action_target') or '').strip()
+    if not target:
+        return f"action `{action}` has no target"
+    if action == ACTION_POST_CHANNEL and not targets.parse_channel_ref(target):
+        return f"action `{action}` target `{target}` is not a channel"
+    return ""
+
+
 async def run_action(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None, _depth: int = 0) -> dict | None:
     if _depth > 5:
         log_warning(f"Action chain too deep at config '{config_name}'; aborting to avoid loops.")
         return None
     action = config.get('action', ACTION_REPLY)
+    reason = missing_target_reason(config)
+    if reason:
+        log_error(f"Config '{config_name}' in #{channel.name} cannot run: {reason}; set one with `set action {action.replace('_', '-')} {ACTION_TARGET_HINTS[action]}`.")
+        return None
     text = await render_action_text(app, opsgenie_token, channel, config, config_name, context)
     blocks = buttons.build_button_blocks(config, channel.id, config_name, text)
     log(f"Running action '{action}' for config '{config_name}' in #{channel.name}.")

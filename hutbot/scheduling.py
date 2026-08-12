@@ -5,7 +5,6 @@ import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from slack_bolt.async_app import AsyncApp
-from slack_sdk.errors import SlackApiError
 
 from employee_list import log, log_error, log_warning
 
@@ -13,7 +12,7 @@ from . import state
 from . import slackcache
 from . import actions
 from . import persistence
-from .constants import ACTION_REPLY, SCHEDULER_INTERVAL, TRIGGER_SCHEDULE
+from .constants import SCHEDULER_INTERVAL, TRIGGER_SCHEDULE
 from .models import ScheduledReply
 
 try:
@@ -60,14 +59,6 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: di
             'channel_id': channel.id,
             'permalink': permalink,
         })
-        reply_message = (posted or {}).get('text', '')
-        forward_channel_id = config.get('forward_channel')
-        if config.get('action', ACTION_REPLY) == ACTION_REPLY and forward_channel_id and reply_message:
-            try:
-                forward_text = f"{reply_message}\n\n*Original message in #{channel.name}:* {permalink}"
-                await app.client.chat_postMessage(channel=forward_channel_id, text=forward_text, mrkdwn=True)
-            except SlackApiError as e:
-                log_error(f"Failed to forward reply to channel {forward_channel_id}:", e)
         # OpsGenie is fired inside run_action when this config has it enabled. To
         # button-gate an alert, put OpsGenie on a separate (manual) config and run
         # it from a button / button-timeout instead of on the reply config itself.

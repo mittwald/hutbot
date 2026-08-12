@@ -136,19 +136,16 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             return f"<!subteam^{target}>"
         return f"`{target}`"
 
-    def destination_lines(config: dict, action: str, trigger: str, forward_channel_id: str) -> list[str]:
+    def destination_lines(config: dict, action: str, trigger: str) -> list[str]:
         """Where the message ends up, phrased per action instead of as raw fields."""
         action_target = config.get('action_target') or ''
         if action == ACTION_REPLY:
             # A reply threads on the triggering message; schedule/manual runs have
             # no message to thread on and land in the channel itself.
             thread = ' (in thread)' if trigger == TRIGGER_MESSAGE else ''
-            lines = [f"*Replied in* <#{channel.id}>{thread}"]
-            if forward_channel_id:
-                lines.append(f"*Forwarded to* <#{forward_channel_id}>")
-            return lines
+            return [f"*Replied in* <#{channel.id}>{thread}"]
         if action == ACTION_POST_CHANNEL:
-            return [f"*Posted in* {format_target(action_target or forward_channel_id)}"]
+            return [f"*Posted in* {format_target(action_target)}"]
         if action == ACTION_DM_USER:
             return [f"*Sent to* {format_target(action_target)} (direct message)"]
         if action == ACTION_GROUP_DM:
@@ -168,7 +165,6 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         pattern = config.get('pattern')
         pattern_case_sensitive = config.get('pattern_case_sensitive')
         reply_message = config.get('reply_message')
-        forward_channel_id = config.get('forward_channel') or ''
         opsgenie_schedule_name = config.get('opsgenie_schedule_name')
         date_format = config.get('date_format') or DEFAULT_DATE_FORMAT
         time_format = config.get('time_format') or DEFAULT_TIME_FORMAT
@@ -257,7 +253,7 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         )
         message_label = 'Reply message' if action == ACTION_REPLY else 'Message'
         reply_line = f"*{message_label}*:\n{reply_message}" if reply_message else f"*{message_label}*: <none>"
-        destinations = "\n".join(destination_lines(config, action, trigger, forward_channel_id))
+        destinations = "\n".join(destination_lines(config, action, trigger))
         if replies_enabled:
             enabled_label = 'enabled'
         elif config.get('disabled_reason') == DISABLED_REASON_REMOVED:

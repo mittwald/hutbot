@@ -247,11 +247,6 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
         except re.error as e:
             errors['pattern'] = f"Invalid pattern: {e}"
 
-    forward_channel = str(get('forward_channel') or "").strip()
-    if forward_channel and not re.match(r'^C[A-Z0-9]+$', forward_channel):
-        errors['forward_channel'] = "Use a Slack channel ID like `C0123ABCD`."
-    else:
-        cfg['forward_channel'] = forward_channel
 
     await slackcache.update_user_cache(app)
     included = _ui_team_list(get('included_teams'))

@@ -37,6 +37,15 @@ ACTION_GROUP_DM = "group_dm"
 ACTION_POST_CHANNEL = "post_channel"
 ACTIONS = {ACTION_REPLY, ACTION_DM_USER, ACTION_GROUP_DM, ACTION_POST_CHANNEL}
 
+# Actions that go somewhere other than the channel the rule lives in, and what a
+# usable target looks like. `reply` is the only action that needs none.
+ACTION_TARGET_HINTS = {
+    ACTION_DM_USER: "<@user>",
+    ACTION_GROUP_DM: "@usergroup",
+    ACTION_POST_CHANNEL: "<#channel>",
+}
+ACTIONS_REQUIRING_TARGET = set(ACTION_TARGET_HINTS)
+
 BUTTON_ACTION_PREFIX = "hutbot_btn"
 
 # Marker written to a config's ``disabled_reason`` when the bot disabled it by
@@ -76,7 +85,6 @@ DEFAULT_CONFIG = {
     "hours": [],
     "pattern": None,
     "pattern_case_sensitive": False,
-    "forward_channel": "",
     "enabled": True,
     # Why the bot disabled this config on its own; empty for a user-made change.
     "disabled_reason": "",

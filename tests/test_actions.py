@@ -40,9 +40,9 @@ async def test_set_action_normalizes_dashes():
     channel = _mk_channel()
     user = User("U1", "test", "Test User", "Testers")
     with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
-        await process_command(app, "set action dm-user", channel, user)
+        await process_command(app, "set action dm-user <@U999>", channel, user)
         assert channel.configs["default"]["action"] == "dm_user"
-        await process_command(app, "set action group-dm", channel, user)
+        await process_command(app, "set action group-dm @sre", channel, user)
         assert channel.configs["default"]["action"] == "group_dm"
 
 

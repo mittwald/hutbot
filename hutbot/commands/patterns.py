@@ -39,8 +39,6 @@ ENABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'enable\s+(only[_ -]?)?w
 DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)?work[_ -]?days')
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)')
-SET_FORWARD_CHANNEL_PATTERN = create_command_pattern(r'set\s+forward[_ -]?channel\s+(?P<channel>.+)')
-CLEAR_FORWARD_CHANNEL_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+forward[_ -]?channel')
 ENABLE_REPLIES_PATTERN = create_command_pattern(r'enable$')
 DISABLE_REPLIES_PATTERN = create_command_pattern(r'disable$')
 SET_TRIGGER_PATTERN = create_command_pattern(r'set\s+trigger\s+(?P<trigger>.+)')
@@ -51,8 +49,9 @@ SET_OUTLOOK_SUBJECT_PATTERN = create_command_pattern(r'set\s+outlook[_ -]?subjec
 SET_OUTLOOK_BODY_PATTERN = create_command_pattern(r'set\s+outlook[_ -]?body\s+(?P<pattern>.+)')
 ENABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'enable\s+(condition[_ -]?)?negate')
 DISABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'disable\s+(condition[_ -]?)?negate')
-SET_ACTION_PATTERN = create_command_pattern(r'set\s+action\s+(?P<action>.+)')
-SET_TARGET_PATTERN = create_command_pattern(r'set\s+target\s+(?P<target>.+)')
+# The target belongs to the action, so both arrive in one command. `set` is
+# optional, like it is for `wait-time` and `message`.
+SET_ACTION_PATTERN = create_command_pattern(r'(set\s+)?action\s+(?P<action>\S+)(?:\s+(?P<target>.+))?$')
 ADD_BUTTON_PATTERN = create_command_pattern(r'add\s+button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<spec>.+)')
 CLEAR_BUTTONS_PATTERN = create_command_pattern(r'clear\s+buttons?')
 SET_BUTTON_TIMEOUT_TARGET_PATTERN = create_command_pattern(r'set\s+button[_ -]?timeout[_ -]?target\s+(?P<target>.+)')

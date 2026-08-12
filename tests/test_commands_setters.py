@@ -374,3 +374,159 @@ async def test_test_and_run_populate_the_time_variables(command):
     assert "at  on , ts \n" not in rendered
     assert "ts {{timestamp}}" not in rendered
     assert re.search(r"at \d{2}:\d{2} on \w{3}, \d{2} \w{3} \d{4}, ts \d+\.\d+", rendered), rendered
+
+
+@pytest.mark.asyncio
+async def test_set_action_requires_a_target_in_the_same_command():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "set action post-channel", channel, user)
+
+    assert mock_send_message.call_args.args[3] == (
+        "Action `post_channel` needs a target: `/hutbot default set action post-channel <#channel>`."
+    )
+    # Nothing was stored, so the config cannot end up in a state that fails when it runs.
+    assert config["action"] == ACTION_REPLY
+    assert config["action_target"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command,action,target", [
+    ("set action post-channel <#CTARGET|targets>", ACTION_POST_CHANNEL, "<#CTARGET|targets>"),
+    ("set action dm-user <@U999>", ACTION_DM_USER, "<@U999>"),
+    ("set action group-dm @sre", ACTION_GROUP_DM, "@sre"),
+])
+async def test_set_action_stores_action_and_target_together(command, action, target):
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, command, channel, user)
+
+    assert config["action"] == action
+    assert config["action_target"] == target
+    assert mock_send_message.call_args.args[3] == (
+        f"*Action* set to `{action}` sending to `{target}` in configuration `default`."
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_action_reply_takes_no_target_and_clears_the_old_one():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "action": ACTION_POST_CHANNEL, "action_target": "<#CTARGET|targets>"}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "set action reply <#CTARGET|targets>", channel, user)
+        assert mock_send_message.call_args.args[3] == "Action `reply` posts in this channel and takes no target."
+        assert config["action"] == ACTION_POST_CHANNEL
+
+        await process_command(app, "set action reply", channel, user)
+
+    assert mock_send_message.call_args.args[3] == "*Action* set to `reply` in configuration `default`."
+    assert config["action"] == ACTION_REPLY
+    assert config["action_target"] == ""
+
+
+@pytest.mark.asyncio
+async def test_set_action_rejects_a_non_channel_target_for_post_channel():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "set action post-channel @dave", channel, user)
+
+    assert "Invalid *target* `@dave` for action `post_channel`" in mock_send_message.call_args.args[3]
+    assert config["action"] == ACTION_REPLY
+    assert config["action_target"] == ""
+
+
+@pytest.mark.asyncio
+async def test_run_refuses_a_config_whose_action_has_no_target():
+    import hutbot
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "action": ACTION_POST_CHANNEL}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.messaging._post_message', new=AsyncMock()) as post, \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "run", channel, user)
+
+    assert mock_send_message.call_args.args[3] == (
+        "Cannot run configuration `default`: action `post_channel` has no target. "
+        "Set one with `/hutbot default set action post-channel <#channel>`."
+    )
+    post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_action_refuses_instead_of_posting_with_an_empty_target():
+    import hutbot
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "action": ACTION_POST_CHANNEL}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+
+    with patch('hutbot.messaging._post_message', new=AsyncMock()) as post:
+        posted = await hutbot.actions.run_action(app, "tok", channel, config, "default", context={'channel_id': channel.id})
+
+    assert posted is None
+    post.assert_not_awaited()
+    assert hutbot.actions.missing_target_reason({**DEFAULT_CONFIG.copy()}) == ""
+    assert hutbot.actions.missing_target_reason({**config, "action_target": "not-a-channel"}) == (
+        "action `post_channel` target `not-a-channel` is not a channel"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", [
+    "action post-channel <#CTARGET|targets>",
+    "set action post-channel <#CTARGET|targets>",
+])
+async def test_action_command_works_with_and_without_set(command):
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, command, channel, user)
+
+    assert config["action"] == ACTION_POST_CHANNEL
+    assert config["action_target"] == "<#CTARGET|targets>"
+    assert mock_send_message.call_args.args[3] == (
+        "*Action* set to `post_channel` sending to `<#CTARGET|targets>` in configuration `default`."
+    )
+
+
+@pytest.mark.asyncio
+async def test_bare_action_command_still_takes_a_config_name():
+    app = AsyncMock()
+    configs = {"logs": DEFAULT_CONFIG.copy()}
+    channel = Channel(id="C1", name="davetest", configs=configs)
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "logs action dm-user <@U999>", channel, user)
+        assert configs["logs"]["action"] == ACTION_DM_USER
+        assert configs["logs"]["action_target"] == "<@U999>"
+
+        # `action` alone is not a command.
+        await process_command(app, "action", channel, user)
+
+    assert "Huh?" in mock_send_message.call_args.args[3]

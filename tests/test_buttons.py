@@ -9,8 +9,7 @@ async def test_add_button_copy_on_write_and_clear():
     user = User("U1", "test", "Test User", "Testers")
     default_buttons_before = list(DEFAULT_CONFIG["buttons"])
     with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
-        await process_command(app, 'add button "Approve" approve-flow', channel, user)
-        # Bare target ⇒ config action (back-compat).
+        await process_command(app, 'add button "Approve" config approve-flow', channel, user)
         assert channel.configs["default"]["buttons"] == [{"label": "Approve", "action": "config", "value": "approve-flow"}]
         # DEFAULT_CONFIG's list must not have been mutated (copy-on-write).
         assert DEFAULT_CONFIG["buttons"] == default_buttons_before
@@ -42,12 +41,33 @@ async def test_add_button_typed_actions():
 
 
 @pytest.mark.asyncio
-async def test_migrate_normalizes_legacy_buttons():
+async def test_migrate_keeps_buttons_to_label_action_value():
     cfg = DEFAULT_CONFIG.copy()
-    cfg["buttons"] = [{"label": "Old", "target": "legacy-flow"}]
+    cfg["buttons"] = [
+        {"label": "Run", "action": "config", "value": "approve-flow", "stray": 1},
+        {"label": "Plain"},
+        "not-a-button",
+    ]
     config = {"C12345": {"default": cfg}}
     migrated = await migrate_and_apply_defaults(AsyncMock(), config)
-    assert migrated["C12345"]["default"]["buttons"] == [{"label": "Old", "action": "config", "value": "legacy-flow"}]
+    assert migrated["C12345"]["default"]["buttons"] == [
+        {"label": "Run", "action": "config", "value": "approve-flow"},
+        {"label": "Plain", "action": "config", "value": ""},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_button_requires_an_action_keyword():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'add button "Approve" approve-flow', channel, user)
+
+    assert channel.configs["default"]["buttons"] == []
+    assert send.call_args.args[3] == (
+        "Invalid *button action* `approve-flow`. Must be one of `ack`, `config`, `delay`, `message`."
+    )
 
 
 
