@@ -283,6 +283,14 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
     await messaging.send_message(app, channel, user, message, thread_ts)
 
 
+async def clear_pattern(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    config = _ensure_config(channel, config_name)
+    config['pattern'] = None
+    config['pattern_case_sensitive'] = False
+    await persistence.save_configuration()
+    await messaging.send_message(app, channel, user, f"*Pattern* cleared in configuration `{config_name}`; every message matches now.", thread_ts)
+
+
 async def set_pattern(app: AsyncApp, channel, config_name: str, pattern_str: str, case_sensitive_str: str | None, user, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()

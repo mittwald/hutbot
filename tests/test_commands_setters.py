@@ -574,3 +574,38 @@ async def test_bare_action_command_still_takes_a_config_name():
         await process_command(app, "action", channel, user)
 
     assert "Huh?" in mock_send_message.call_args.args[3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["clear pattern", "unset pattern", "remove pattern"])
+async def test_clear_pattern_makes_every_message_match_again(command):
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "pattern": ".*alarm.*", "pattern_case_sensitive": True}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, command, channel, user)
+
+    assert config["pattern"] is None
+    # Case sensitivity is part of the pattern, so it goes back to the default too.
+    assert config["pattern_case_sensitive"] is False
+    assert mock_send_message.call_args.args[3] == (
+        "*Pattern* cleared in configuration `default`; every message matches now."
+    )
+
+
+@pytest.mark.asyncio
+async def test_clear_pattern_does_not_shadow_setting_one():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message'):
+        await process_command(app, 'set pattern ".*alarm.*" 1', channel, user)
+
+    assert config["pattern"] == ".*alarm.*"
+    assert config["pattern_case_sensitive"] is True

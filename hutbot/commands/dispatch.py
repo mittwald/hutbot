@@ -39,6 +39,8 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.set_opsgenie_message(app, channel, config_name, strip_quotes(match.group("message")), user, thread_ts)
     elif (match := patterns.SET_DATETIME_FORMAT_PATTERN.match(command_text)):
         await setters.set_datetime_format(app, channel, config_name, match.group("values"), user, thread_ts)
+    elif patterns.CLEAR_PATTERN_PATTERN.match(command_text):
+        await setters.clear_pattern(app, channel, config_name, user, thread_ts)
     elif (match := patterns.SET_PATTERN_PATTERN.match(command_text)):
         pattern = match.group("pattern")
         case_sensitive = match.group("case_sensitive")

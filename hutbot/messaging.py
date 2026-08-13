@@ -222,7 +222,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] set trigger cron \"<expr>\"", "Fire on a cron schedule, e.g. 0 9 * * 1-5."),
         ]),
         ("Condition", [
-            (f"{command} [config] set condition <none|outlook>", "Gate a schedule on a condition."),
+            (f"{command} [config] set condition <none|outlook>", "Gate a cron trigger on a condition."),
             (f"{command} [config] set outlook-subject <regex>", "Match Outlook event subject (stub)."),
             (f"{command} [config] set outlook-body <regex>", "Match Outlook event body (stub)."),
             (f"{command} [config] enable negate", "Invert the condition (e.g. no matching event)."),
@@ -230,6 +230,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ]),
         ("What to react to", [
             (f"{command} [config] set pattern \"<regex>\" [0|1]", "Set message pattern; 1 means case sensitive."),
+            (f"{command} [config] clear pattern", "React to every message again."),
             (f"{command} [config] add included-team <team>", "Add an allowed team."),
             (f"{command} [config] clear included-teams", "Clear allowed teams."),
             (f"{command} [config] add excluded-team <team>", "Add an ignored team."),
@@ -260,6 +261,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] set button-timeout <minutes>", "Escalate if no button is pressed in time."),
             (f"{command} [config] set button-timeout-target <config>", "Config to run on button timeout."),
             (f"{command} [config] set default-button \"<label>\"", "Auto-press this button on timeout."),
+            (f"{command} [config] clear default-button", "Stop auto-pressing on timeout."),
         ]),
         ("OpsGenie", [
             (f"{command} [config] enable opsgenie", "Enable OpsGenie alerts."),
@@ -267,15 +269,16 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] set opsgenie-schedule <name>", "Set the OpsGenie schedule name."),
             (f"{command} [config] set opsgenie-priority <P1-P5>", "Set the OpsGenie alert priority."),
             (f"{command} [config] set opsgenie-message <text>", "Template for the alert text (default: the message)."),
+            (f"{command} [config] clear opsgenie-message", "Back to alerting with the message itself."),
         ]),
         ("Date and time", [
-            (f"{command} [config] set datetime-format \"<date>\" \"<time>\" [<tz> <locale>]", "Set date/time formats."),
+            (f"{command} [config] set datetime-format \"<date>\" \"<time>\" [<tz> <locale>]", "Date/time output; <tz> also drives cron and work hours."),
         ]),
         ("Try it out and look things up", [
             (f"{command} [config] run", "Run this configuration's action now."),
             (f"{command} [config] test", "Preview configured reply."),
             (f"{mention} [config] test <message>", "Preview reply with <message> as {{message}}."),
-            (f"{command} [config] on-call [schedule]", "Show current on-call user."),
+            (f"{command} [config] on-call [opsgenie-schedule]", "Show current on-call user."),
             (f"{command} list teams", "List available teams."),
             (f"{command} list opsgenie-schedules", "List OpsGenie schedules."),
             (f"{command} team of <@user>", "Show a user's team."),

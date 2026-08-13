@@ -144,6 +144,14 @@ async def test_process_command_help_uses_compact_command_reference():
     assert "\n\n# Help\n/hutbot news" in sent_message
     assert sent_message.index("# Trigger") < sent_message.index("# When to react") < sent_message.index("# Buttons")
     assert "/hutbot [config] set work-hours all day" in sent_message
+    assert "/hutbot [config] set trigger cron \"<expr>\"" in sent_message
+    # Removed commands are gone from the reference.
+    for stale in ("set target", "set cron <", "set schedule-timezone", "forward-channel"):
+        assert stale not in sent_message, stale
+    # Every dispatched command is documented.
+    assert "/hutbot [config] clear opsgenie-message" in sent_message
+    assert "/hutbot [config] clear default-button" in sent_message
+    assert "/hutbot [config] clear pattern" in sent_message
     assert "@Hutbot [config] test <message>" in sent_message
     assert "Preview reply with <message> as {{message}}." in sent_message
     assert "*Enable OpsGenie Integration:*" not in sent_message

@@ -18,6 +18,7 @@ SET_OPSGENIE_PRIORITY_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?pri
 CLEAR_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+opsgenie[_ -]?message')
 SET_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?message\s+(?P<message>.+)')
 SET_DATETIME_FORMAT_PATTERN = create_command_pattern(r'(set\s+)?(datetime[_ -]?format|date[_ -]?format|datefmt)\s+(?P<values>.+)')
+CLEAR_PATTERN_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+pattern')
 SET_PATTERN_PATTERN = create_command_pattern(r'set\s+pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|[^\r\n\t\f\v\s"\']+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
 ADD_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)')
 CLEAR_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+excluded?([_ -]?teams?)?')
