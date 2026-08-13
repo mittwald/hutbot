@@ -52,6 +52,11 @@ async def _render_template(app: AsyncApp, opsgenie_token: str, channel: Channel,
     return templating.render_reply_message_template(template, variables, config)
 
 
+async def render_template_text(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, template: str) -> str:
+    """Render any template with a config's variables — a button's message, say."""
+    return await _render_template(app, opsgenie_token, channel, config, config_name, context, template)
+
+
 async def render_action_text(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None) -> str:
     return await _render_template(app, opsgenie_token, channel, config, config_name, context, config.get('reply_message') or '')
 

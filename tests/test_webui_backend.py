@@ -17,7 +17,9 @@ async def test_validate_config_payload_accepts_good_config():
         "hours": ["09:00", "17:00"],
         "opsgenie_priority": "p2",
         "wait_time": 600,
-        "button_timeout": 300,
+        "escalation_timeout": 300,
+        "escalation_kind": "config",
+        "escalation_target": "alarm",
         "buttons": [
             {"label": "Snooze", "action": "delay", "value": "10"},
             {"label": "Note", "action": "message", "value": "Some message"},
@@ -40,9 +42,11 @@ async def test_validate_config_payload_accepts_good_config():
     assert cfg["hours"] == ["09:00", "17:00"]
     # priority lowercased input is uppercased.
     assert cfg["opsgenie_priority"] == "P2"
-    # wait_time/button_timeout stay in seconds.
+    # wait_time/escalation_timeout stay in seconds.
     assert cfg["wait_time"] == 600
-    assert cfg["button_timeout"] == 300
+    assert cfg["escalation_timeout"] == 300
+    assert cfg["escalation_kind"] == "config"
+    assert cfg["escalation_target"] == "alarm"
     assert cfg["buttons"] == [
         {"label": "Snooze", "action": "delay", "value": "10"},
         {"label": "Note", "action": "message", "value": "Some message"},
@@ -259,3 +263,32 @@ async def test_ui_apply_config_stale_save_cannot_undo_removal_disable(monkeypatc
     assert config["reply_message"] == "Updated in stale editor"
     assert config["enabled"] is False
     assert config["disabled_reason"] == DISABLED_REASON_REMOVED
+
+
+@pytest.mark.asyncio
+async def test_validate_config_payload_stores_escalation_as_one_setting():
+    _seed_user_caches()
+    app = _ui_app()
+    base = {
+        "reply_message": "Hi", "wait_time": 600, "trigger": "message", "action": "reply",
+        "buttons": [{"label": "Yes", "action": "ack", "value": ""}],
+    }
+
+    # Half a setting is stored as switched off, not as a timer with nothing to fire.
+    cfg, errors = await validate_config_payload({**base, "escalation_timeout": 300}, app)
+    assert errors == {}
+    assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (0, "none", "")
+
+    cfg, errors = await validate_config_payload(
+        {**base, "escalation_timeout": 0, "escalation_kind": "button", "escalation_target": "Yes"}, app)
+    assert errors == {}
+    assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (0, "none", "")
+
+    # A kind with a timeout but no target is an error, not a silent no-op.
+    cfg, errors = await validate_config_payload(
+        {**base, "escalation_timeout": 300, "escalation_kind": "config", "escalation_target": ""}, app)
+    assert errors == {"escalation_target": "Pick a button label or a rule to escalate to."}
+
+    cfg, errors = await validate_config_payload(
+        {**base, "escalation_timeout": 300, "escalation_kind": "nonsense", "escalation_target": "x"}, app)
+    assert errors == {"escalation_kind": "Escalation must be none, button or config."}

@@ -102,9 +102,11 @@ DEFAULT_CONFIG = {
     "action_target": "",
     # Buttons: interactive buttons attached to the sent message.
     "buttons": [],
-    "button_timeout": 0,
-    "button_timeout_target": "",
-    "default_button": "",  # label of the button to auto-press if none is pressed in time
+    # Escalation: what happens when nobody presses a button in time. The timeout and
+    # its target are one setting, so a timer can never exist with nothing to fire.
+    "escalation_timeout": 0,           # seconds; 0 = never escalate
+    "escalation_kind": ESCALATION_NONE,  # "none" | "button" | "config"
+    "escalation_target": "",           # a button label, or a config name
 }
 
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')

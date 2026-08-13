@@ -58,8 +58,7 @@ DISABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'disable\s+(condition
 SET_ACTION_PATTERN = create_command_pattern(r'(set\s+)?action\s+(?P<action>\S+)(?:\s+(?P<target>.+))?$')
 ADD_BUTTON_PATTERN = create_command_pattern(r'add\s+button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<spec>.+)')
 CLEAR_BUTTONS_PATTERN = create_command_pattern(r'clear\s+buttons?')
-SET_BUTTON_TIMEOUT_TARGET_PATTERN = create_command_pattern(r'(set\s+)?button[_ -]?timeout[_ -]?target\s+(?P<target>.+)')
-SET_BUTTON_TIMEOUT_PATTERN = create_command_pattern(r'(set\s+)?button[_ -]?timeout\s+(?P<minutes>.+)')
-CLEAR_DEFAULT_BUTTON_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+default[_ -]?button')
-SET_DEFAULT_BUTTON_PATTERN = create_command_pattern(r'(set\s+)?default[_ -]?button\s+(?P<label>.+)')
+# `<minutes> <kind> <target>`: the timeout and what it escalates to are one setting.
+# A bare `none`/`off`/`0` clears all three.
+SET_ESCALATION_PATTERN = create_command_pattern(r'(set\s+)?escalation\s+(?P<minutes>\S+)(?:\s+(?P<kind>\S+)(?:\s+(?P<target>.+))?)?$')
 RUN_PATTERN = re.compile(r'^(run|fire)$', re.IGNORECASE)

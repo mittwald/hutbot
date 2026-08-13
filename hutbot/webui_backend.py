@@ -26,6 +26,10 @@ from .constants import (
     ACTION_REPLY,
     ACTIONS,
     BUTTON_ACTION_CONFIG,
+    BUTTON_ACTION_ACK,
+    ESCALATION_BUTTON,
+    ESCALATION_CONFIG,
+    ESCALATION_NONE,
     BUTTON_ACTION_DELAY,
     BUTTON_ACTION_MESSAGE,
     BUTTON_ACTIONS,
@@ -87,7 +91,7 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     """Validate a config dict from the web UI, mirroring the slash-command setters.
 
     Returns ``(clean_config, {})`` on success or ``(None, {field: message})`` on failure.
-    Values use the persisted shape: ``wait_time`` and ``button_timeout`` are in seconds.
+    Values use the persisted shape: ``wait_time`` and ``escalation_timeout`` are in seconds.
     """
     if not isinstance(payload, dict):
         return None, {'_': "Expected a configuration object."}
@@ -113,16 +117,30 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
         else:
             cfg['wait_time'] = wait_time
 
-    # button_timeout (stored as seconds; 0..1440 minutes, 0 = disabled)
+    # escalation_timeout (stored as seconds; 1..1440 minutes, 0 = never escalate) and
+    # what it escalates to. Both halves are validated together.
     try:
-        button_timeout = int(get('button_timeout'))
+        escalation_timeout = int(get('escalation_timeout'))
     except (TypeError, ValueError):
-        errors['button_timeout'] = "Button timeout must be a number."
+        errors['escalation_timeout'] = "Escalation timeout must be a number."
     else:
-        if button_timeout < 0 or button_timeout > 86400:
-            errors['button_timeout'] = "Button timeout must be between 0 and 1440 minutes."
+        escalation_kind = str(get('escalation_kind') or ESCALATION_NONE).strip().lower() or ESCALATION_NONE
+        escalation_target = str(get('escalation_target') or "").strip()
+        if escalation_timeout < 0 or escalation_timeout > 86400:
+            errors['escalation_timeout'] = "Escalation timeout must be between 0 and 1440 minutes."
+        elif escalation_kind not in (ESCALATION_NONE, ESCALATION_BUTTON, ESCALATION_CONFIG):
+            errors['escalation_kind'] = "Escalation must be none, button or config."
+        elif escalation_kind == ESCALATION_NONE or not escalation_timeout:
+            # Half a setting escalates nothing, so store it as switched off.
+            cfg['escalation_timeout'] = 0
+            cfg['escalation_kind'] = ESCALATION_NONE
+            cfg['escalation_target'] = ""
+        elif not escalation_target:
+            errors['escalation_target'] = "Pick a button label or a rule to escalate to."
         else:
-            cfg['button_timeout'] = button_timeout
+            cfg['escalation_timeout'] = escalation_timeout
+            cfg['escalation_kind'] = escalation_kind
+            cfg['escalation_target'] = escalation_target
 
     # reply_message — resolve @mentions and validate template variables
     reply_message = get('reply_message')
@@ -292,6 +310,16 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
                 what = "a configuration name" if button_action == BUTTON_ACTION_CONFIG else "a message"
                 errors[f'buttons.{i}'] = f"`{button_action}` button needs {what}."
                 continue
+            if button_action in (BUTTON_ACTION_MESSAGE, BUTTON_ACTION_ACK) and value:
+                # Same treatment as reply_message: mentions resolved, variables checked.
+                ok, mention_error, value = await messaging.process_mentions(app, value)
+                if not ok:
+                    errors[f'buttons.{i}'] = f"Unknown user mention: {mention_error}."
+                    continue
+                template_error = templating.validate_template_expressions(value)
+                if template_error:
+                    errors[f'buttons.{i}'] = template_error
+                    continue
             if button_action == BUTTON_ACTION_DELAY:
                 try:
                     minutes = int(value)
@@ -306,8 +334,6 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     if not any(key == 'buttons' or key.startswith('buttons.') for key in errors):
         cfg['buttons'] = clean_buttons
 
-    cfg['button_timeout_target'] = str(get('button_timeout_target') or "").strip()
-    cfg['default_button'] = str(get('default_button') or "").strip()
 
     if errors:
         return None, errors

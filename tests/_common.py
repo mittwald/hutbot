@@ -25,6 +25,7 @@ from hutbot.constants import (
     ACTION_REPLY,
     DEFAULT_CONFIG,
     DISABLED_REASON_REMOVED,
+    ESCALATION_NONE,
     TRIGGER_CRON,
     bot_slug,
     normalize_slash_command,

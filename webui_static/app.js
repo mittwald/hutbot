@@ -55,6 +55,7 @@ const ACTION_LABEL = { reply: "Reply in thread", dm_user: "Direct message", grou
 const ACTION_SHORT = { reply: "reply", dm_user: "dm", group_dm: "group dm", post_channel: "post" };
 const CONDITION_LABEL = { "": "None (always)", outlook_calendar: "Outlook calendar" };
 const BTN_ACTION_LABEL = { config: "Run rule", ack: "Acknowledge", message: "Post message", delay: "Delay timer" };
+const ESCALATION_LABEL = { none: "Never escalate; buttons stay open", button: "Auto-press a button", config: "Run another rule" };
 const TARGET_HINT = { dm_user: "A @user (id, name, or email)", group_dm: "A @usergroup handle", post_channel: "A channel ID like C0123ABCD" };
 // Set by the bot itself when it is removed from a channel (see DISABLED_REASON_REMOVED).
 const DISABLED_REASON_LABEL = { removed_from_channel: "Disabled — the bot was removed from this channel" };
@@ -222,10 +223,10 @@ function renderCard(name) {
 function lampFor(cfg) {
   let cls = "lamp";
   if (!cfg.enabled) cls += " off";
-  else if (cfg.opsgenie || cfg.button_timeout > 0) cls += " escalating";
+  else if (cfg.opsgenie || cfg.escalation_timeout > 0) cls += " escalating";
   const title = !cfg.enabled
     ? (DISABLED_REASON_LABEL[cfg.disabled_reason] || "Disabled")
-    : (cfg.opsgenie || cfg.button_timeout > 0) ? "Active · can escalate" : "Active";
+    : (cfg.opsgenie || cfg.escalation_timeout > 0) ? "Active · can escalate" : "Active";
   return h("span", { class: cls, title, role: "img", "aria-label": title });
 }
 
@@ -521,11 +522,19 @@ function buttonsSection() {
 
   const add = h("button", { class: "add-row", type: "button", onclick: () => { cfg.buttons = buttons.concat([{ label: "", action: "message", value: "" }]); structuralRefresh(); } }, "+ Add button");
 
+  // Escalation is one setting: minutes + what to escalate to. Picking "Never" hides
+  // the rest, so the form cannot produce a timer with nothing to fire.
+  const escalationKinds = ["none", "button", "config"];
   const meta = grid(
-    field("Escalate if no button pressed (minutes)", minutesInput("button_timeout"), { hint: "0 = no timeout.", error: fieldErr("button_timeout") }),
-    field("On timeout, auto-press button", textInput("default_button"), { hint: "A button label above (optional)." }),
+    field("If nobody presses", selectInput("escalation_kind", escalationKinds, ESCALATION_LABEL, structuralRefresh),
+      { hint: ESCALATION_LABEL[cfg.escalation_kind || "none"], error: fieldErr("escalation_kind") }),
   );
-  meta.append(field("…or run this rule on timeout", textInput("button_timeout_target", { mono: true }), { hint: "Another rule's name (optional)." }));
+  if (cfg.escalation_kind === "button" || cfg.escalation_kind === "config") {
+    meta.append(field("After (minutes)", minutesInput("escalation_timeout"), { error: fieldErr("escalation_timeout") }));
+    meta.append(field(cfg.escalation_kind === "button" ? "Button to press" : "Rule to run",
+      textInput("escalation_target", { mono: cfg.escalation_kind === "config" }),
+      { hint: cfg.escalation_kind === "button" ? "A button label above." : "Another rule's name.", error: fieldErr("escalation_target") }));
+  }
 
   return section("Buttons", null, rows, add, meta);
 }

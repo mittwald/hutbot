@@ -24,7 +24,7 @@ from ..constants import (
     DEFAULT_TIME_FORMAT,
     DISABLED_REASON_REMOVED,
     ESCALATION_BUTTON,
-    ESCALATION_CONFIG,
+    ESCALATION_NONE,
     ID_PATTERN,
     TRIGGER_MESSAGE,
     TRIGGER_CRON,
@@ -209,18 +209,13 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
                 button_action, value = normalize_button(b)
                 return f"{b.get('label')} → {button_action}" + (f":{value}" if value else "")
             button_rows = [("Buttons", [_button_label(b) for b in config_buttons])]
-            button_timeout_minutes = (config.get('button_timeout') or 0) // 60
-            if button_timeout_minutes:
-                kind, target = buttons._escalation_kind(config)
-                if kind == ESCALATION_BUTTON:
-                    escalates_to = f"auto-press `{target}`"
-                elif kind == ESCALATION_CONFIG:
-                    escalates_to = f"run `{target}`"
-                else:
-                    escalates_to = "nothing"
-                button_rows.append(("Button timeout", f"{button_timeout_minutes} minutes → {escalates_to}"))
-            if config.get('default_button'):
-                button_rows.append(("Default button", config.get('default_button')))
+            escalation_minutes = (config.get('escalation_timeout') or 0) // 60
+            kind, target = buttons._escalation_kind(config)
+            if escalation_minutes and kind != ESCALATION_NONE:
+                escalates_to = f"auto-press `{target}`" if kind == ESCALATION_BUTTON else f"run `{target}`"
+                button_rows.append(("Escalation", f"after {escalation_minutes} minutes, {escalates_to}"))
+            else:
+                button_rows.append(("Escalation", "none, buttons stay open until pressed"))
             groups.append(button_rows)
 
         groups.append([

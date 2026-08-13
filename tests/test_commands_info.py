@@ -146,11 +146,13 @@ async def test_process_command_help_uses_compact_command_reference():
     assert "/hutbot [config] set work-hours all day" in sent_message
     assert "/hutbot [config] set trigger cron \"<expr>\"" in sent_message
     # Removed commands are gone from the reference.
-    for stale in ("set target", "set cron <", "set schedule-timezone", "forward-channel"):
+    for stale in ("set target", "set cron <", "set schedule-timezone", "forward-channel",
+                  "button-timeout", "default-button"):
         assert stale not in sent_message, stale
     # Every dispatched command is documented.
     assert "/hutbot [config] clear opsgenie-message" in sent_message
-    assert "/hutbot [config] clear default-button" in sent_message
+    assert '/hutbot [config] set escalation <minutes> button "<label>"' in sent_message
+    assert "/hutbot [config] set escalation none" in sent_message
     assert "/hutbot [config] clear pattern" in sent_message
     assert "@Hutbot [config] test <message>" in sent_message
     assert "Preview reply with <message> as {{message}}." in sent_message
@@ -265,8 +267,7 @@ async def test_need_help_yes_no_workflow_end_to_end():
         await process_command(app, 'set message Need help?', ch, u)
         await process_command(app, 'add button "Yes" message "Here is the help doc"', ch, u)
         await process_command(app, 'add button "No" ack', ch, u)
-        await process_command(app, 'set button-timeout 5', ch, u)
-        await process_command(app, 'set default-button "Yes"', ch, u)
+        await process_command(app, 'set escalation 5 button "Yes"', ch, u)
         cfg = ch.configs["default"]
 
         # Fire the reply; an auto-press-Yes escalation is registered (no inline message yet).

@@ -621,9 +621,7 @@ async def test_clear_pattern_does_not_shadow_setting_one():
     ("opsgenie-message Alert!", "opsgenie_message", "Alert!"),
     ("outlook-subject .*urlaub.*", "outlook_subject_pattern", ".*urlaub.*"),
     ("outlook-body .*ooo.*", "outlook_body_pattern", ".*ooo.*"),
-    ("button-timeout 5", "button_timeout", 300),
-    ("button-timeout-target alarm", "button_timeout_target", "alarm"),
-    ('default-button "Yes"', "default_button", "Yes"),
+    ("escalation 5 config alarm", "escalation_timeout", 300),
 ])
 async def test_every_setting_command_works_without_the_word_set(command, field, value):
     app = AsyncMock()

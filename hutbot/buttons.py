@@ -72,13 +72,15 @@ def build_button_blocks(config: dict, def_channel_id: str, config_name: str, tex
 
 
 def _escalation_kind(config: dict) -> tuple[str, str]:
-    """Decide what a buttoned message escalates to if no button is pressed in time."""
-    default_button = config.get('default_button') or ''
-    if default_button and _find_button_index(config, default_button) is not None:
-        return ESCALATION_BUTTON, default_button
-    target = config.get('button_timeout_target') or ''
-    if target:
-        return ESCALATION_CONFIG, target
+    """What a buttoned message escalates to if no button is pressed in time.
+
+    Stored as set: `set escalation` writes the kind and target together and
+    rejects a target it cannot resolve, so there is nothing to decide here.
+    """
+    kind = config.get('escalation_kind') or ESCALATION_NONE
+    target = config.get('escalation_target') or ''
+    if kind in (ESCALATION_BUTTON, ESCALATION_CONFIG) and target:
+        return kind, target
     return ESCALATION_NONE, ''
 
 
@@ -93,7 +95,7 @@ async def register_escalation(app: AsyncApp, opsgenie_token: str, posted_channel
         return
     context = context or {}
     user = context.get('user')
-    timeout = config.get('button_timeout') or 0
+    timeout = config.get('escalation_timeout') or 0
     kind, target = _escalation_kind(config)
     key = (posted_channel_id, message_ts)
     has_timer = timeout > 0 and kind != ESCALATION_NONE
@@ -145,7 +147,7 @@ async def _escalation_context(app: AsyncApp, entry: dict | None, posted_channel_
     }
 
 
-async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict) -> None:
+async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '') -> None:
     """Run a button's action. Shared by a real press and an auto-press on timeout.
 
     `delay` is handled by the caller (it is only meaningful for a live press).
@@ -159,8 +161,11 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, po
         await actions.run_action(app, opsgenie_token, channel, target_config, value, context=run_context)
     elif action in (BUTTON_ACTION_MESSAGE, BUTTON_ACTION_ACK):
         # message posts the configured text; ack just dismisses (optional text).
+        # The text is a template like a config's reply message, rendered against the
+        # original message with the defining config's date/time settings.
         if value:
-            await messaging._post_message(app, posted_channel_id, value, None, message_ts)
+            text = await actions.render_template_text(app, opsgenie_token, channel, src_config or {}, src_config_name, run_context, value)
+            await messaging._post_message(app, posted_channel_id, text, None, message_ts)
     else:
         log_warning(f"Unsupported button action '{action}' in #{channel.name}.")
 
@@ -182,7 +187,7 @@ async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> No
             return
         buttons = snapshot if snapshot is not None else (src_config or {}).get('buttons') or []
         log(f"No button pressed on message {message_ts}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
-        await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context)
+        await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''))
         await _strip_buttons(app, posted_channel_id, message_ts, entry)
     elif kind == ESCALATION_CONFIG:
         target = entry.get('escalation_target', '')
@@ -376,5 +381,5 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
     # run is attributed to the *original* author (presser=None ⇒ orig.user_id), matching
     # the timeout-escalation path; the presser is only used for the log line above.
     run_context = await _escalation_context(app, entry, posted_channel_id, message_ts)
-    await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context)
+    await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name)
     await _strip_buttons(app, posted_channel_id, message_ts, entry)

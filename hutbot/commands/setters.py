@@ -17,6 +17,10 @@ from .. import targets
 from ..buttonutil import _find_button_index
 from ..constants import (
     ACTION_POST_CHANNEL,
+    ESCALATION_BUTTON,
+    ESCALATION_CONFIG,
+    ESCALATION_NONE,
+    BUTTON_ACTION_ACK,
     ACTION_REPLY,
     ACTION_TARGET_HINTS,
     ACTIONS,
@@ -455,6 +459,17 @@ async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec:
         what = "a configuration name" if action == BUTTON_ACTION_CONFIG else "a message"
         await messaging.send_message(app, channel, user, f"Invalid *button*. `{action}` needs {what}.", thread_ts)
         return
+    if action in (BUTTON_ACTION_MESSAGE, BUTTON_ACTION_ACK) and value:
+        # A button's text is a template too, so it gets the same treatment as
+        # `set message`: @mentions resolved to ids, variables checked.
+        ok, mention_error, value = await messaging.process_mentions(app, value)
+        if not ok:
+            await messaging.send_message(app, channel, user, f"Invalid *button* message: {mention_error}.", thread_ts)
+            return
+        template_error = templating.validate_template_expressions(value)
+        if template_error:
+            await messaging.send_message(app, channel, user, f"Invalid *button* message: {template_error}", thread_ts)
+            return
     if action == BUTTON_ACTION_DELAY:
         try:
             minutes = int(value)
@@ -484,48 +499,64 @@ async def clear_buttons(app: AsyncApp, channel, config_name: str, user, thread_t
     await messaging.send_message(app, channel, user, f"Cleared *buttons* in configuration `{config_name}`.", thread_ts)
 
 
-async def set_default_button(app: AsyncApp, channel, config_name: str, label: str, user, thread_ts: str = "") -> None:
-    label = strip_quotes(label).strip()
-    if not label:
-        await messaging.send_message(app, channel, user, "Invalid *default button*. Must reference a button label.", thread_ts)
+async def set_escalation(app: AsyncApp, channel, config_name: str, minutes_str: str, kind: str | None, target: str | None, user, thread_ts: str = "") -> None:
+    """`set escalation <minutes> <button|config> <target>` — one setting, not three.
+
+    A timeout with nothing to escalate to silently does nothing, and a target with
+    no timeout never fires, so both halves are set together or not at all.
+    """
+    minutes_str = strip_quotes(minutes_str or "").strip().lower()
+    kind = strip_quotes(kind or "").strip().lower()
+    target = strip_quotes(target or "").strip()
+    usage = f'`{state.slash_command} {config_name} set escalation <minutes> <button "<label>"|config <name>>`, or `set escalation none`'
+
+    if minutes_str in ("none", "off", "no", "0"):
+        if kind or target:
+            await messaging.send_message(app, channel, user, f"`set escalation {minutes_str}` takes nothing else.", thread_ts)
+            return
+        config = _ensure_config(channel, config_name)
+        config['escalation_timeout'] = 0
+        config['escalation_kind'] = ESCALATION_NONE
+        config['escalation_target'] = ''
+        await persistence.save_configuration()
+        await messaging.send_message(app, channel, user, f"*Escalation* disabled in configuration `{config_name}`; buttons stay open until pressed.", thread_ts)
         return
-    config = _ensure_config(channel, config_name)
-    config['default_button'] = label
-    await persistence.save_configuration()
-    warning = "" if _find_button_index(config, label) is not None else f" :warning: (no button labelled `{label}` yet)"
-    await messaging.send_message(app, channel, user, f"*Default button* (auto-pressed on timeout) set to `{label}` in configuration `{config_name}`{warning}.", thread_ts)
 
-
-async def clear_default_button(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
-    _ensure_config(channel, config_name)['default_button'] = ''
-    await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"Cleared *default button* in configuration `{config_name}`.", thread_ts)
-
-
-async def set_button_timeout(app: AsyncApp, channel, config_name: str, minutes_str: str, user, thread_ts: str = "") -> None:
     try:
-        minutes = int(strip_quotes(minutes_str).strip())
+        minutes = int(minutes_str)
     except ValueError:
-        await messaging.send_message(app, channel, user, "Invalid *button timeout*. Must be a number of minutes between 0 and 1440.", thread_ts)
+        await messaging.send_message(app, channel, user, f"Invalid *escalation*. Use {usage}.", thread_ts)
         return
-    if minutes < 0 or minutes > 1440:
-        await messaging.send_message(app, channel, user, "Invalid *button timeout*. Must be between 0 and 1440 minutes.", thread_ts)
+    if minutes < 1 or minutes > 1440:
+        await messaging.send_message(app, channel, user, "Invalid *escalation*. Minutes must be between 1 and 1440, or `none`.", thread_ts)
         return
-    _ensure_config(channel, config_name)['button_timeout'] = minutes * 60
-    await persistence.save_configuration()
-    label = f"`{minutes}` minutes" if minutes else "disabled"
-    await messaging.send_message(app, channel, user, f"*Button timeout* set to {label} in configuration `{config_name}`.", thread_ts)
 
-
-async def set_button_timeout_target(app: AsyncApp, channel, config_name: str, target: str, user, thread_ts: str = "") -> None:
-    target = strip_quotes(target).strip()
+    if kind not in (ESCALATION_BUTTON, ESCALATION_CONFIG):
+        await messaging.send_message(app, channel, user, f"*Escalation* needs what to escalate to: {usage}.", thread_ts)
+        return
     if not target:
-        await messaging.send_message(app, channel, user, "Invalid *button timeout target*. Must reference a configuration name.", thread_ts)
+        what = "a button label" if kind == ESCALATION_BUTTON else "a configuration name"
+        await messaging.send_message(app, channel, user, f"*Escalation* `{kind}` needs {what}: {usage}.", thread_ts)
         return
-    _ensure_config(channel, config_name)['button_timeout_target'] = target
+
+    config = _ensure_config(channel, config_name)
+    warning = ""
+    if kind == ESCALATION_BUTTON:
+        # An unknown label would otherwise only surface as a warning at escalation time.
+        if _find_button_index(config, target) is None:
+            labels = ", ".join(f"`{b.get('label')}`" for b in (config.get('buttons') or [])) or "none yet"
+            await messaging.send_message(app, channel, user, f"No button labelled `{target}` in configuration `{config_name}` (buttons: {labels}).", thread_ts)
+            return
+    elif target not in channel.configs:
+        # A target config is often created afterwards, so this is only a warning.
+        warning = f" :warning: (configuration `{target}` does not exist yet)"
+
+    config['escalation_timeout'] = minutes * 60
+    config['escalation_kind'] = kind
+    config['escalation_target'] = target
     await persistence.save_configuration()
-    warning = "" if target in channel.configs else f" :warning: (configuration `{target}` does not exist yet)"
-    await messaging.send_message(app, channel, user, f"*Button timeout target* set to `{target}` in configuration `{config_name}`{warning}.", thread_ts)
+    does = f"auto-press `{target}`" if kind == ESCALATION_BUTTON else f"run `{target}`"
+    await messaging.send_message(app, channel, user, f"*Escalation* set: after `{minutes}` minutes without a press, {does} in configuration `{config_name}`{warning}.", thread_ts)
 
 
 async def run_config_now(app: AsyncApp, opsgenie_token: str, channel, config_name: str, user, thread_ts: str = "") -> None:

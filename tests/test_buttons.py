@@ -72,15 +72,46 @@ async def test_add_button_requires_an_action_keyword():
 
 
 @pytest.mark.asyncio
-async def test_set_button_timeout_minutes_to_seconds():
+async def test_set_escalation_stores_minutes_kind_and_target():
     app = AsyncMock()
     channel = _mk_channel()
     user = User("U1", "test", "Test User", "Testers")
-    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
-        await process_command(app, "set button-timeout 15", channel, user)
-        assert channel.configs["default"]["button_timeout"] == 900
-        await process_command(app, "set button-timeout-target escalate", channel, user)
-        assert channel.configs["default"]["button_timeout_target"] == "escalate"
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set escalation 15 config escalate", channel, user)
+        cfg = channel.configs["default"]
+        assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (900, "config", "escalate")
+        assert "after `15` minutes without a press, run `escalate`" in send.call_args.args[3]
+
+        await process_command(app, 'add button "Yes" ack', channel, user)
+        await process_command(app, 'escalation 5 button "Yes"', channel, user)
+        assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (300, "button", "Yes")
+
+        await process_command(app, "set escalation none", channel, user)
+        assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (0, "none", "")
+        assert "buttons stay open until pressed" in send.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_set_escalation_refuses_half_a_setting():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+    cfg = channel.configs["default"]
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        # A timeout with nothing to escalate to used to be accepted and do nothing.
+        await process_command(app, "set escalation 5", channel, user)
+        assert "needs what to escalate to" in send.call_args.args[3]
+        # A button that does not exist would only fail at escalation time.
+        await process_command(app, 'set escalation 5 button "Nope"', channel, user)
+        assert "No button labelled `Nope`" in send.call_args.args[3]
+        await process_command(app, "set escalation 5 button", channel, user)
+        assert "needs a button label" in send.call_args.args[3]
+        await process_command(app, "set escalation 0 config escalate", channel, user)
+        assert "takes nothing else" in send.call_args.args[3]
+        await process_command(app, "set escalation 5000 config escalate", channel, user)
+        assert "between 1 and 1440" in send.call_args.args[3]
+
+    assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (0, "none", "")
 
 
 
@@ -128,7 +159,7 @@ async def test_run_action_reply_posts_with_buttons():
     config["action"] = hutbot.constants.ACTION_REPLY
     config["reply_message"] = "Hi there"
     config["buttons"] = [{"label": "Ok", "action": "config", "value": "tgt"}]
-    config["button_timeout"] = 0  # no timeout watch
+    config["escalation_timeout"] = 0  # no timeout watch
     channel = _mk_channel({"src": config})
     with patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
         posted = await hutbot.actions.run_action(app, "token", channel, config, "src", context=None)
@@ -246,8 +277,9 @@ async def test_register_and_cancel_escalation():
     app = AsyncMock()
     config = DEFAULT_CONFIG.copy()
     config["buttons"] = [{"label": "Ok", "action": "config", "value": "tgt"}]
-    config["button_timeout"] = 3600
-    config["button_timeout_target"] = "escalate"
+    config["escalation_timeout"] = 3600
+    config["escalation_kind"] = "config"
+    config["escalation_target"] = "escalate"
     hutbot.state.pending_buttons.clear()
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
         await hutbot.buttons.register_escalation(app, "token", "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
@@ -264,8 +296,9 @@ async def test_cancelled_timer_keeps_persisted_record_for_restart():
     app = AsyncMock()
     config = DEFAULT_CONFIG.copy()
     config["buttons"] = [{"label": "Ok", "action": "config", "value": "tgt"}]
-    config["button_timeout"] = 3600
-    config["button_timeout_target"] = "escalate"
+    config["escalation_timeout"] = 3600
+    config["escalation_kind"] = "config"
+    config["escalation_target"] = "escalate"
     key = ("C12345", "10.1")
 
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()) as flush:
@@ -370,7 +403,7 @@ async def test_register_escalation_keeps_record_with_orig():
     # record is still kept so button presses get the original message context.
     app = AsyncMock()
     cfg = DEFAULT_CONFIG.copy()
-    cfg["button_timeout"] = 0
+    cfg["escalation_timeout"] = 0
     cfg["buttons"] = [{"label": "Yes", "action": "config", "value": "flow"}]
     hutbot.state.pending_buttons.clear()
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
@@ -386,27 +419,34 @@ async def test_register_escalation_keeps_record_with_orig():
 # ----- Default button: auto-press on timeout -----
 
 @pytest.mark.asyncio
-async def test_set_default_button_command():
+async def test_the_old_three_commands_are_gone():
     app = AsyncMock()
     channel = _mk_channel()
     user = User("U1", "test", "Test User", "Testers")
-    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
-        await process_command(app, 'set default-button "Yes"', channel, user)
-        assert channel.configs["default"]["default_button"] == "Yes"
-        await process_command(app, "clear default-button", channel, user)
-        assert channel.configs["default"]["default_button"] == ""
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        for gone in ('set default-button "Yes"', "clear default-button", "set button-timeout 5",
+                     "set button-timeout-target alarm"):
+            await process_command(app, gone, channel, user)
+            assert "Huh?" in send.call_args.args[3], gone
+    cfg = channel.configs["default"]
+    assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (0, "none", "")
 
 
 
-def test_escalation_kind_prefers_default_button():
+def test_escalation_kind_reads_what_was_stored():
+    import hutbot
     cfg = DEFAULT_CONFIG.copy()
-    cfg["buttons"] = [{"label": "Yes", "action": "message", "value": "Help text"}]
-    cfg["default_button"] = "Yes"
-    cfg["button_timeout_target"] = "some-config"  # default button still wins
-    assert hutbot.buttons._escalation_kind(cfg) == (hutbot.constants.ESCALATION_BUTTON, "Yes")
-    # Unknown default-button label falls back to the config target.
-    cfg["default_button"] = "Nope"
-    assert hutbot.buttons._escalation_kind(cfg) == (hutbot.constants.ESCALATION_CONFIG, "some-config")
+    assert hutbot.buttons._escalation_kind(cfg) == (ESCALATION_NONE, "")
+
+    cfg["escalation_kind"], cfg["escalation_target"] = "button", "Yes"
+    assert hutbot.buttons._escalation_kind(cfg) == ("button", "Yes")
+
+    cfg["escalation_kind"], cfg["escalation_target"] = "config", "some-config"
+    assert hutbot.buttons._escalation_kind(cfg) == ("config", "some-config")
+
+    # Half a setting escalates nothing.
+    cfg["escalation_target"] = ""
+    assert hutbot.buttons._escalation_kind(cfg) == (ESCALATION_NONE, "")
 
 
 
@@ -442,8 +482,9 @@ async def test_delay_press_does_not_clobber_rescheduled_escalation():
     app = AsyncMock()
     config = DEFAULT_CONFIG.copy()
     config["buttons"] = [{"label": "Wait", "action": "delay", "value": "3"}]
-    config["button_timeout"] = 3600
-    config["button_timeout_target"] = "escalate"
+    config["escalation_timeout"] = 3600
+    config["escalation_kind"] = "config"
+    config["escalation_target"] = "escalate"
     key = ("C12345", "10.1")
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
         await hutbot.buttons.register_escalation(
@@ -557,3 +598,71 @@ async def test_cancel_channel_pending_buttons_without_matches_does_not_flush():
         assert await hutbot.buttons.cancel_channel_pending_buttons("C12345") == 0
         assert await hutbot.buttons.cancel_channel_pending_buttons("") == 0
     mock_flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_button_message_is_a_template_rendered_against_the_original_message():
+    import hutbot
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "date_format": "%d.%m.%Y", "datetime_timezone": "Europe/Berlin"}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    author = User("UAUTH", "author", "Ada Author", "Platform")
+    entry = {
+        'posted_channel_id': "C1", 'message_ts': "R1", 'def_channel_id': "C1", 'config_name': "default",
+        'orig': {'user_id': author.id, 'text': "the server is down", 'ts': "1786453297.645799", 'permalink': "https://slack.test/p1"},
+    }
+    button = {'label': "help", 'action': "message",
+              'value': "Help <@UAUTH> with {{message}} from {{date}} ({{user_name}}) — {{message_link}}"}
+
+    with patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=author)), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C1", "ts": "R2"})) as post:
+        run_context = await hutbot.buttons._escalation_context(app, entry, "C1", "R1")
+        await hutbot.buttons.dispatch_button_action(app, "tok", channel, "C1", "R1", button, run_context, config, "default")
+
+    assert post.await_args.args[2] == (
+        "Help <@UAUTH> with the server is down from 11.08.2026 (Ada Author) — https://slack.test/p1"
+    )
+    # Posted in the thread of the buttoned message.
+    assert post.await_args.args[4] == "R1"
+
+
+@pytest.mark.asyncio
+async def test_add_button_resolves_mentions_and_rejects_unknown_variables():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+    author = User("UAUTH", "author", "Ada Author", "Platform")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_user_by_name', new=AsyncMock(return_value=author)), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'add button "help" message "Help @author with {{message}}"', channel, user)
+        assert config["buttons"] == [
+            {"label": "help", "action": "message", "value": "Help <@UAUTH> with {{message}}"}
+        ]
+
+        await process_command(app, 'add button "bad" message "{{nope}}"', channel, user)
+        assert "unsupported template variable(s) `{{nope}}`" in send.call_args.args[3]
+        # Nothing added for the rejected button.
+        assert len(config["buttons"]) == 1
+
+        # `ack` text gets the same treatment.
+        await process_command(app, 'add button "ok" ack "Thanks @author"', channel, user)
+        assert config["buttons"][1]["value"] == "Thanks <@UAUTH>"
+
+
+@pytest.mark.asyncio
+async def test_add_button_reports_an_unknown_mention():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_user_by_name', new=AsyncMock(return_value=User(None, "ghost", "", "T"))), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'add button "help" message "Help @ghost"', channel, user)
+
+    assert send.call_args.args[3] == "Invalid *button* message: ghost not found."
+    assert config["buttons"] == []
