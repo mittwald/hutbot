@@ -256,7 +256,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] add button \"<label>\" config <config>", "Button runs another config (e.g. an alert config)."),
             (f"{command} [config] add button \"<label>\" ack [text]", "Button dismisses; [text] may use {{variables}}."),
             (f"{command} [config] add button \"<label>\" message <text>", "Button posts <text>; may use {{variables}}."),
-            (f"{command} [config] add button \"<label>\" delay <minutes>", "Button delays the escalation."),
+            (f"{command} [config] add button \"<label>\" delay <minutes>", "Button postpones the escalation; buttons stay."),
             (f"{command} [config] clear buttons", "Remove all buttons."),
             (f"{command} [config] set escalation <minutes> button \"<label>\"", "Auto-press that button if nobody does in time."),
             (f"{command} [config] set escalation <minutes> config <config>", "Run that config if nobody presses in time."),

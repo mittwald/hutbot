@@ -90,8 +90,8 @@ existing configs keep working unchanged.
     buttoned message. Like a reply message, it may use `{{variables}}` and `@mentions` (both are
     resolved against the *original* message when pressed). The same applies to an `ack` text.
   - `/hutbot [config] add button "<label>" delay <minutes>` — push the escalation out by N minutes
-    and leave the buttons in place (the only button that does not consume the message). Pointless
-    without an escalation, and a press then says so.
+    and leave the buttons in place (the only button that does not consume the message). It needs an
+    escalation to postpone, so set one first; `clear escalation` warns if it strands such a button.
   - `/hutbot [config] clear buttons`
   - `/hutbot [config] set escalation <minutes> button "<label>"` — if nobody presses within
     `<minutes>`, auto-press that button (exactly as a human click would).

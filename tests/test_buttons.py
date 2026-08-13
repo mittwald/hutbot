@@ -26,6 +26,8 @@ async def test_add_button_typed_actions():
     with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
         await process_command(app, 'add button "Ack" ack "Got it"', channel, user)
         await process_command(app, 'add button "FAQ" message "See the wiki"', channel, user)
+        # A delay button needs something to postpone.
+        await process_command(app, "set escalation 5 config approve-flow", channel, user)
         await process_command(app, 'add button "Wait" delay 3', channel, user)
         await process_command(app, 'add button "Run" config approve-flow', channel, user)
     assert channel.configs["default"]["buttons"] == [
@@ -715,3 +717,42 @@ async def test_delay_press_without_an_escalation_keeps_the_buttons_and_starts_no
     # Record kept so the other buttons still resolve, but no timer was created.
     assert entry["task"] is None
     assert entry["escalation_kind"] == ESCALATION_NONE
+
+
+@pytest.mark.asyncio
+async def test_add_delay_button_requires_an_escalation():
+    app = AsyncMock()
+    channel = _mk_channel()
+    config = channel.configs["default"]
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'add button "Later" delay 10', channel, user)
+        assert send.call_args.args[3] == (
+            'A `delay` button needs an escalation to postpone. Set one first with '
+            '`/hutbot default set escalation <minutes> <button "<label>"|config <name>>`.'
+        )
+        assert config["buttons"] == []
+
+        await process_command(app, "set escalation 5 config alarm", channel, user)
+        await process_command(app, 'add button "Later" delay 10', channel, user)
+
+    assert config["buttons"] == [{"label": "Later", "action": "delay", "value": "10"}]
+
+
+@pytest.mark.asyncio
+async def test_clear_escalation_warns_about_a_stranded_delay_button():
+    app = AsyncMock()
+    channel = _mk_channel()
+    config = channel.configs["default"]
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set escalation 5 config alarm", channel, user)
+        await process_command(app, 'add button "Later" delay 10', channel, user)
+        await process_command(app, "clear escalation", channel, user)
+
+    assert send.call_args.args[3] == (
+        "*Escalation* cleared in configuration `default`; buttons stay open until pressed "
+        ":warning: (`Later` now has nothing to postpone)."
+    )

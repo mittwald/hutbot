@@ -14,7 +14,7 @@ from .. import datetimefmt
 from .. import slackcache
 from .. import actions
 from .. import targets
-from ..buttonutil import _find_button_index
+from ..buttonutil import _find_button_index, normalize_button
 from ..constants import (
     ACTION_POST_CHANNEL,
     ESCALATION_BUTTON,
@@ -471,6 +471,11 @@ async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec:
             await messaging.send_message(app, channel, user, f"Invalid *button* message: {template_error}", thread_ts)
             return
     if action == BUTTON_ACTION_DELAY:
+        # A delay button postpones the escalation, so there has to be one to postpone.
+        existing = channel.configs.get(config_name) or {}
+        if not (existing.get('escalation_timeout') and (existing.get('escalation_kind') or ESCALATION_NONE) != ESCALATION_NONE):
+            await messaging.send_message(app, channel, user, f"A `delay` button needs an escalation to postpone. Set one first with `{state.slash_command} {config_name} set escalation <minutes> <button \"<label>\"|config <name>>`.", thread_ts)
+            return
         try:
             minutes = int(value)
         except ValueError:
@@ -505,7 +510,12 @@ async def clear_escalation(app: AsyncApp, channel, config_name: str, user, threa
     config['escalation_kind'] = ESCALATION_NONE
     config['escalation_target'] = ''
     await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"*Escalation* cleared in configuration `{config_name}`; buttons stay open until pressed.", thread_ts)
+    delay_buttons = [b.get('label') for b in (config.get('buttons') or []) if normalize_button(b)[0] == BUTTON_ACTION_DELAY]
+    warning = ""
+    if delay_buttons:
+        labels = ", ".join(f"`{label}`" for label in delay_buttons)
+        warning = f" :warning: ({labels} now has nothing to postpone)"
+    await messaging.send_message(app, channel, user, f"*Escalation* cleared in configuration `{config_name}`; buttons stay open until pressed{warning}.", thread_ts)
 
 
 async def set_escalation(app: AsyncApp, channel, config_name: str, minutes_str: str, kind: str | None, target: str | None, user, thread_ts: str = "") -> None:
