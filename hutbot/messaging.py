@@ -260,7 +260,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] clear buttons", "Remove all buttons."),
             (f"{command} [config] set escalation <minutes> button \"<label>\"", "Auto-press that button if nobody does in time."),
             (f"{command} [config] set escalation <minutes> config <config>", "Run that config if nobody presses in time."),
-            (f"{command} [config] set escalation none", "Never escalate; buttons stay open."),
+            (f"{command} [config] clear escalation", "Never escalate; buttons stay open."),
         ]),
         ("OpsGenie", [
             (f"{command} [config] enable opsgenie", "Enable OpsGenie alerts."),

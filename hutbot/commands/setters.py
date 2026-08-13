@@ -499,6 +499,15 @@ async def clear_buttons(app: AsyncApp, channel, config_name: str, user, thread_t
     await messaging.send_message(app, channel, user, f"Cleared *buttons* in configuration `{config_name}`.", thread_ts)
 
 
+async def clear_escalation(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    config = _ensure_config(channel, config_name)
+    config['escalation_timeout'] = 0
+    config['escalation_kind'] = ESCALATION_NONE
+    config['escalation_target'] = ''
+    await persistence.save_configuration()
+    await messaging.send_message(app, channel, user, f"*Escalation* cleared in configuration `{config_name}`; buttons stay open until pressed.", thread_ts)
+
+
 async def set_escalation(app: AsyncApp, channel, config_name: str, minutes_str: str, kind: str | None, target: str | None, user, thread_ts: str = "") -> None:
     """`set escalation <minutes> <button|config> <target>` — one setting, not three.
 
@@ -511,15 +520,7 @@ async def set_escalation(app: AsyncApp, channel, config_name: str, minutes_str: 
     usage = f'`{state.slash_command} {config_name} set escalation <minutes> <button "<label>"|config <name>>`, or `set escalation none`'
 
     if minutes_str in ("none", "off", "no", "0"):
-        if kind or target:
-            await messaging.send_message(app, channel, user, f"`set escalation {minutes_str}` takes nothing else.", thread_ts)
-            return
-        config = _ensure_config(channel, config_name)
-        config['escalation_timeout'] = 0
-        config['escalation_kind'] = ESCALATION_NONE
-        config['escalation_target'] = ''
-        await persistence.save_configuration()
-        await messaging.send_message(app, channel, user, f"*Escalation* disabled in configuration `{config_name}`; buttons stay open until pressed.", thread_ts)
+        await messaging.send_message(app, channel, user, f"To switch escalation off, use `{state.slash_command} {config_name} clear escalation`.", thread_ts)
         return
 
     try:

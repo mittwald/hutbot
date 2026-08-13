@@ -103,6 +103,8 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.add_button(app, channel, config_name, match.group("label"), match.group("spec"), user, thread_ts)
     elif patterns.CLEAR_BUTTONS_PATTERN.match(command_text):
         await setters.clear_buttons(app, channel, config_name, user, thread_ts)
+    elif patterns.CLEAR_ESCALATION_PATTERN.match(command_text):
+        await setters.clear_escalation(app, channel, config_name, user, thread_ts)
     elif (match := patterns.SET_ESCALATION_PATTERN.match(command_text)):
         await setters.set_escalation(app, channel, config_name, match.group("minutes"), match.group("kind"), match.group("target"), user, thread_ts)
     elif patterns.RUN_PATTERN.match(command_text):

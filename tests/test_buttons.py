@@ -86,7 +86,12 @@ async def test_set_escalation_stores_minutes_kind_and_target():
         await process_command(app, 'escalation 5 button "Yes"', channel, user)
         assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (300, "button", "Yes")
 
+        # `none` points at the clear command instead of doing it silently.
         await process_command(app, "set escalation none", channel, user)
+        assert "use `/hutbot default clear escalation`" in send.call_args.args[3]
+        assert cfg["escalation_timeout"] == 300
+
+        await process_command(app, "clear escalation", channel, user)
         assert (cfg["escalation_timeout"], cfg["escalation_kind"], cfg["escalation_target"]) == (0, "none", "")
         assert "buttons stay open until pressed" in send.call_args.args[3]
 
@@ -107,7 +112,7 @@ async def test_set_escalation_refuses_half_a_setting():
         await process_command(app, "set escalation 5 button", channel, user)
         assert "needs a button label" in send.call_args.args[3]
         await process_command(app, "set escalation 0 config escalate", channel, user)
-        assert "takes nothing else" in send.call_args.args[3]
+        assert "clear escalation" in send.call_args.args[3]
         await process_command(app, "set escalation 5000 config escalate", channel, user)
         assert "between 1 and 1440" in send.call_args.args[3]
 
@@ -666,3 +671,47 @@ async def test_add_button_reports_an_unknown_mention():
 
     assert send.call_args.args[3] == "Invalid *button* message: ghost not found."
     assert config["buttons"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["clear escalation", "unset escalation", "remove escalation"])
+async def test_clear_escalation_switches_it_off(command):
+    app = AsyncMock()
+    channel = _mk_channel()
+    config = channel.configs["default"]
+    config.update({"escalation_timeout": 300, "escalation_kind": "config", "escalation_target": "alarm"})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, command, channel, user)
+
+    assert (config["escalation_timeout"], config["escalation_kind"], config["escalation_target"]) == (0, ESCALATION_NONE, "")
+    assert send.call_args.args[3] == (
+        "*Escalation* cleared in configuration `default`; buttons stay open until pressed."
+    )
+
+
+@pytest.mark.asyncio
+async def test_delay_press_without_an_escalation_keeps_the_buttons_and_starts_no_timer():
+    import hutbot
+    app = AsyncMock()
+    channel = _mk_channel()
+    key = ("C12345", "R1")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "posted_channel_id": "C12345", "message_ts": "R1",
+        "def_channel_id": "C12345", "config_name": "default",
+        "escalation_kind": ESCALATION_NONE, "escalation_target": "",
+        "buttons": [{"label": "Later", "action": "delay", "value": "10"}],
+        "orig": {"user_id": "U1", "text": "x", "ts": "9.9", "permalink": "p"},
+    }
+
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
+        delayed = await hutbot.buttons.reschedule_escalation(app, "tok", "C12345", "R1", 10)
+
+    assert delayed is False
+    entry = hutbot.state.pending_buttons[key]
+    # Record kept so the other buttons still resolve, but no timer was created.
+    assert entry["task"] is None
+    assert entry["escalation_kind"] == ESCALATION_NONE

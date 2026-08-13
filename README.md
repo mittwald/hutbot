@@ -89,12 +89,14 @@ existing configs keep working unchanged.
   - `/hutbot [config] add button "<label>" message <text>` — post `<text>` in the thread of the
     buttoned message. Like a reply message, it may use `{{variables}}` and `@mentions` (both are
     resolved against the *original* message when pressed). The same applies to an `ack` text.
-  - `/hutbot [config] add button "<label>" delay <minutes>` — delay the escalation by N minutes.
+  - `/hutbot [config] add button "<label>" delay <minutes>` — push the escalation out by N minutes
+    and leave the buttons in place (the only button that does not consume the message). Pointless
+    without an escalation, and a press then says so.
   - `/hutbot [config] clear buttons`
   - `/hutbot [config] set escalation <minutes> button "<label>"` — if nobody presses within
     `<minutes>`, auto-press that button (exactly as a human click would).
   - `/hutbot [config] set escalation <minutes> config <config>` — …or run that config instead.
-  - `/hutbot [config] set escalation none` — never escalate; the buttons stay open until pressed.
+  - `/hutbot [config] clear escalation` — never escalate; the buttons stay open until pressed.
     The timeout and its target are one setting, so a timer can never exist with nothing to fire.
     Pending escalations survive restarts.
   - A button/timeout that runs a config passes the **original message context** to it, so the target's

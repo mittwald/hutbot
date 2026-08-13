@@ -152,7 +152,7 @@ async def test_process_command_help_uses_compact_command_reference():
     # Every dispatched command is documented.
     assert "/hutbot [config] clear opsgenie-message" in sent_message
     assert '/hutbot [config] set escalation <minutes> button "<label>"' in sent_message
-    assert "/hutbot [config] set escalation none" in sent_message
+    assert "/hutbot [config] clear escalation" in sent_message
     assert "/hutbot [config] clear pattern" in sent_message
     assert "@Hutbot [config] test <message>" in sent_message
     assert "Preview reply with <message> as {{message}}." in sent_message

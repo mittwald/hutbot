@@ -271,8 +271,16 @@ async def reschedule_escalation(app: AsyncApp, opsgenie_token: str, posted_chann
     if not entry:
         log_warning(f"No pending escalation to delay for message {message_ts}.")
         return False
-    extra = minutes * 60
     record = {k: v for k, v in entry.items() if k != 'task'}
+    if record.get('escalation_kind', ESCALATION_NONE) == ESCALATION_NONE:
+        # Nothing to postpone. Put the record back (unchanged, no timer) so the
+        # other buttons on the message keep working.
+        log_warning(f"Nothing to delay for message {message_ts}: this config has no escalation.")
+        state.pending_buttons[key] = {'task': None, **record}
+        state._button_states_cache[key] = record
+        await persistence.flush_button_cache()
+        return False
+    extra = minutes * 60
     record['timeout'] = extra
     record['run_at'] = (datetime.datetime.now() + datetime.timedelta(seconds=extra)).isoformat()
     task = asyncio.create_task(_escalation_task(app, opsgenie_token, key, extra))

@@ -59,6 +59,6 @@ SET_ACTION_PATTERN = create_command_pattern(r'(set\s+)?action\s+(?P<action>\S+)(
 ADD_BUTTON_PATTERN = create_command_pattern(r'add\s+button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<spec>.+)')
 CLEAR_BUTTONS_PATTERN = create_command_pattern(r'clear\s+buttons?')
 # `<minutes> <kind> <target>`: the timeout and what it escalates to are one setting.
-# A bare `none`/`off`/`0` clears all three.
+CLEAR_ESCALATION_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+escalation')
 SET_ESCALATION_PATTERN = create_command_pattern(r'(set\s+)?escalation\s+(?P<minutes>\S+)(?:\s+(?P<kind>\S+)(?:\s+(?P<target>.+))?)?$')
 RUN_PATTERN = re.compile(r'^(run|fire)$', re.IGNORECASE)
