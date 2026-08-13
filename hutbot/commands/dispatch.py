@@ -1,5 +1,6 @@
 """Command dispatch: match a slash-command string and run the matching handler."""
 
+import re
 import traceback
 
 from slack_bolt.async_app import AsyncApp
@@ -9,7 +10,7 @@ from employee_list import log_error
 from .. import state
 from .. import messaging
 from .. import opsgenie
-from ..constants import CONFIG_NAME_PATTERN, DEFAULT_CONFIG_NAME
+from ..constants import CONFIG_NAME_PATTERN, DEFAULT_CONFIG_NAME, RESERVED_CONFIG_NAMES
 from ..textutil import log_debug, strip_quotes
 
 from . import patterns
@@ -130,6 +131,23 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     return True
 
 
+def matches_a_command(command_text: str, allow_test_message: bool = False) -> bool:
+    """Whether `command_text` is a command in its own right.
+
+    Used to tell `<config> <command>` from a `<command>` whose first word happens
+    to look like a config name. Every regex in `patterns` is tried, so this cannot
+    drift out of step with what `parse_and_execute_command` accepts.
+    """
+    for name, pattern in vars(patterns).items():
+        if not name.endswith("_PATTERN") or not isinstance(pattern, re.Pattern):
+            continue
+        if name == "TEST_WITH_MESSAGE_PATTERN" and not allow_test_message:
+            continue
+        if pattern.match(command_text):
+            return True
+    return False
+
+
 async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> None:
     try:
         await _process_command(app, text, channel, user, thread_ts, opsgenie_token, allow_test_message, command_ts)
@@ -148,21 +166,33 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
     log_debug(channel, f"Received command for channel #{channel.name}: {text}")
     command_ts = command_ts or thread_ts
 
-    # First, try to parse the command with the default config.
-    if await parse_and_execute_command(app, text, channel, DEFAULT_CONFIG_NAME, user, thread_ts, opsgenie_token, allow_test_message, command_ts):
-        return
+    async def run(command_text: str, config_name: str) -> bool:
+        return await parse_and_execute_command(app, command_text, channel, config_name, user, thread_ts, opsgenie_token, allow_test_message, command_ts)
 
-    # If that fails, assume the first part is a config name.
-    parts = text.split()
-    if len(parts) > 1:
-        config_name = parts[0]
-        command_text = " ".join(parts[1:])
+    parts = text.split(None, 1)
+    leading_word, remainder = (parts[0], parts[1]) if len(parts) > 1 else ("", "")
 
-        if not CONFIG_NAME_PATTERN.match(config_name):
-            await messaging.send_message(app, channel, user, f"Invalid config name: `{config_name}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.", thread_ts)
+    # `<config> <command>` and `<command>` can both fit the same text — say a config
+    # named `trigger` and the command `trigger cron "…"`. An existing config wins
+    # that tie, because naming one is deliberate; otherwise the text is a command
+    # for the default config.
+    if remainder and leading_word in channel.configs and matches_a_command(remainder, allow_test_message):
+        if await run(remainder, leading_word):
             return
 
-        if await parse_and_execute_command(app, command_text, channel, config_name, user, thread_ts, opsgenie_token, allow_test_message, command_ts):
+    if await run(text, DEFAULT_CONFIG_NAME):
+        return
+
+    # Nothing matched as a command, so a leading word can only be a config name —
+    # including one that does not exist yet, which is how configs are created.
+    if remainder and matches_a_command(remainder, allow_test_message):
+        if leading_word.lower() in RESERVED_CONFIG_NAMES:
+            await messaging.send_message(app, channel, user, f"`{leading_word}` cannot be a configuration name; it starts a command. Check the syntax with `{state.slash_command} help`.", thread_ts)
+            return
+        if not CONFIG_NAME_PATTERN.match(leading_word):
+            await messaging.send_message(app, channel, user, f"Invalid config name: `{leading_word}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.", thread_ts)
+            return
+        if await run(remainder, leading_word):
             return
 
     await messaging.send_message(app, channel, user, f"Huh? :thinking_face: Maybe type `{state.slash_command} help` for a list of commands.", thread_ts)

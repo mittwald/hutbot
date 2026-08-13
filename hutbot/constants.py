@@ -156,6 +156,12 @@ MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
 ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 TIME_HOUR_PATTERN = re.compile(r"^[0-9]{1,2}$")
 CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-_\.:/]+$")
+# Words that start a command. A config may not be named after one, or
+# `set enable` would create a config called "set" instead of failing.
+RESERVED_CONFIG_NAMES = {
+    "set", "clear", "unset", "remove", "add", "enable", "disable",
+    "show", "delete", "list", "run", "fire", "test", "help", "news",
+}
 TEMPLATE_VARIABLE_NAME_PATTERN = re.compile(r'[a-z_][a-z0-9_]*')
 TEMPLATE_ARGUMENT_NAME_PATTERN = re.compile(r'[a-z_][a-z0-9_]*')
 TEMPLATE_ARGUMENT_ALIASES = {

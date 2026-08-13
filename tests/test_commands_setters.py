@@ -609,3 +609,88 @@ async def test_clear_pattern_does_not_shadow_setting_one():
 
     assert config["pattern"] == ".*alarm.*"
     assert config["pattern_case_sensitive"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command,field,value", [
+    ('trigger cron "0 9 * * 1-5"', "cron", "0 9 * * 1-5"),
+    ("condition outlook", "condition", "outlook_calendar"),
+    ('pattern ".*alarm.*"', "pattern", ".*alarm.*"),
+    ("opsgenie-schedule SRE", "opsgenie_schedule_name", "SRE"),
+    ("opsgenie-priority P2", "opsgenie_priority", "P2"),
+    ("opsgenie-message Alert!", "opsgenie_message", "Alert!"),
+    ("outlook-subject .*urlaub.*", "outlook_subject_pattern", ".*urlaub.*"),
+    ("outlook-body .*ooo.*", "outlook_body_pattern", ".*ooo.*"),
+    ("button-timeout 5", "button_timeout", 300),
+    ("button-timeout-target alarm", "button_timeout_target", "alarm"),
+    ('default-button "Yes"', "default_button", "Yes"),
+])
+async def test_every_setting_command_works_without_the_word_set(command, field, value):
+    app = AsyncMock()
+    user = User("U1", "dave", "Dave", "T")
+
+    for text in (command, f"set {command}"):
+        config = DEFAULT_CONFIG.copy()
+        channel = Channel(id="C1", name="davetest", configs={"default": config})
+        with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+             patch('hutbot.messaging.send_message'):
+            await process_command(app, text, channel, user)
+        assert config[field] == value, text
+
+
+@pytest.mark.asyncio
+async def test_an_existing_config_wins_an_ambiguous_first_word():
+    app = AsyncMock()
+    configs = {"default": DEFAULT_CONFIG.copy(), "trigger": DEFAULT_CONFIG.copy()}
+    channel = Channel(id="C1", name="davetest", configs=configs)
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        # Both readings fit: the `trigger` config's message, or the default config's
+        # trigger. The named config wins.
+        await process_command(app, "trigger message hello", channel, user)
+        assert configs["trigger"]["reply_message"] == "hello"
+        assert configs["default"]["reply_message"] == DEFAULT_CONFIG["reply_message"]
+
+        # `cron "…"` is not a command on its own, so this can only be the command.
+        await process_command(app, 'trigger cron "0 9 * * 1-5"', channel, user)
+
+    assert configs["default"]["trigger"] == TRIGGER_CRON
+    assert configs["trigger"]["trigger"] == "message"
+    assert "in configuration `default`" in mock_send_message.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_a_command_word_is_not_taken_as_a_config_name():
+    app = AsyncMock()
+    configs = {"default": DEFAULT_CONFIG.copy()}
+    channel = Channel(id="C1", name="davetest", configs=configs)
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "set enable", channel, user)
+
+    assert mock_send_message.call_args.args[3] == (
+        "`set` cannot be a configuration name; it starts a command. Check the syntax with `/hutbot help`."
+    )
+    assert sorted(configs) == ["default"]
+
+
+@pytest.mark.asyncio
+async def test_a_typo_does_not_create_a_config():
+    app = AsyncMock()
+    configs = {"default": DEFAULT_CONFIG.copy()}
+    channel = Channel(id="C1", name="davetest", configs=configs)
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "wiat-time 5", channel, user)
+        assert "Huh?" in mock_send_message.call_args.args[3]
+        # A real command behind a new name still creates it.
+        await process_command(app, "alarms wait-time 5", channel, user)
+
+    assert configs["alarms"]["wait_time"] == 300
+    assert sorted(configs) == ["alarms", "default"]

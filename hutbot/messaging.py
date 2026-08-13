@@ -302,7 +302,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"Displays all configurations for `#{channel.name}`."
     )
     outro = (
-        "`[config]` is optional; omitted commands use `default`.\n\n"
+        "`[config]` is optional; omitted commands use `default`. The word `set` is optional too.\n\n"
         f"Supported reply variables: {supported_template_variables}."
     )
     # The command table alone is well past Slack's per-message limit, and Slack

@@ -7,19 +7,23 @@ def create_command_pattern(command_regex: str) -> re.Pattern:
     return re.compile(f'^{command_regex}', re.IGNORECASE)
 
 
+# Every command that sets something takes an optional leading `set`, so
+# `set wait-time 5` and `wait-time 5` are the same command.
+
+
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 WHATSNEW_PATTERN = re.compile(r'news', re.IGNORECASE)
 TEST_PATTERN = re.compile(r'^test$', re.IGNORECASE)
 TEST_WITH_MESSAGE_PATTERN = re.compile(r'^test(?:\s+(?P<message>.*))?$', re.IGNORECASE)
 SET_WAIT_TIME_PATTERN = create_command_pattern(r'(set\s+)?wait([_ -]?time)?\s+(?P<wait_time>.+)')
 SET_REPLY_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?(message|reply)\s+(?P<message>.+)')
-SET_OPSGENIE_SCHEDULE_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?schedule\s+(?P<schedule>.+)')
-SET_OPSGENIE_PRIORITY_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?priority\s+(?P<priority>.+)')
+SET_OPSGENIE_SCHEDULE_PATTERN = create_command_pattern(r'(set\s+)?opsgenie[_ -]?schedule\s+(?P<schedule>.+)')
+SET_OPSGENIE_PRIORITY_PATTERN = create_command_pattern(r'(set\s+)?opsgenie[_ -]?priority\s+(?P<priority>.+)')
 CLEAR_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+opsgenie[_ -]?message')
-SET_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'set\s+opsgenie[_ -]?message\s+(?P<message>.+)')
+SET_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?opsgenie[_ -]?message\s+(?P<message>.+)')
 SET_DATETIME_FORMAT_PATTERN = create_command_pattern(r'(set\s+)?(datetime[_ -]?format|date[_ -]?format|datefmt)\s+(?P<values>.+)')
 CLEAR_PATTERN_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+pattern')
-SET_PATTERN_PATTERN = create_command_pattern(r'set\s+pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|[^\r\n\t\f\v\s"\']+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
+SET_PATTERN_PATTERN = create_command_pattern(r'(set\s+)?pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|[^\r\n\t\f\v\s"\']+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
 ADD_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)')
 CLEAR_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+excluded?([_ -]?teams?)?')
 ADD_INCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?included?([_ -]?teams?)?\s+(?P<team>.+)')
@@ -43,10 +47,10 @@ DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)'
 ENABLE_REPLIES_PATTERN = create_command_pattern(r'enable$')
 DISABLE_REPLIES_PATTERN = create_command_pattern(r'disable$')
 # The cron expression belongs to the `cron` trigger, so both arrive together.
-SET_TRIGGER_PATTERN = create_command_pattern(r'set\s+trigger\s+(?P<trigger>\S+)(?:\s+(?P<expression>.+))?$')
-SET_CONDITION_PATTERN = create_command_pattern(r'set\s+condition\s+(?P<condition>.+)')
-SET_OUTLOOK_SUBJECT_PATTERN = create_command_pattern(r'set\s+outlook[_ -]?subject\s+(?P<pattern>.+)')
-SET_OUTLOOK_BODY_PATTERN = create_command_pattern(r'set\s+outlook[_ -]?body\s+(?P<pattern>.+)')
+SET_TRIGGER_PATTERN = create_command_pattern(r'(set\s+)?trigger\s+(?P<trigger>\S+)(?:\s+(?P<expression>.+))?$')
+SET_CONDITION_PATTERN = create_command_pattern(r'(set\s+)?condition\s+(?P<condition>.+)')
+SET_OUTLOOK_SUBJECT_PATTERN = create_command_pattern(r'(set\s+)?outlook[_ -]?subject\s+(?P<pattern>.+)')
+SET_OUTLOOK_BODY_PATTERN = create_command_pattern(r'(set\s+)?outlook[_ -]?body\s+(?P<pattern>.+)')
 ENABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'enable\s+(condition[_ -]?)?negate')
 DISABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'disable\s+(condition[_ -]?)?negate')
 # The target belongs to the action, so both arrive in one command. `set` is
@@ -54,8 +58,8 @@ DISABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'disable\s+(condition
 SET_ACTION_PATTERN = create_command_pattern(r'(set\s+)?action\s+(?P<action>\S+)(?:\s+(?P<target>.+))?$')
 ADD_BUTTON_PATTERN = create_command_pattern(r'add\s+button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<spec>.+)')
 CLEAR_BUTTONS_PATTERN = create_command_pattern(r'clear\s+buttons?')
-SET_BUTTON_TIMEOUT_TARGET_PATTERN = create_command_pattern(r'set\s+button[_ -]?timeout[_ -]?target\s+(?P<target>.+)')
-SET_BUTTON_TIMEOUT_PATTERN = create_command_pattern(r'set\s+button[_ -]?timeout\s+(?P<minutes>.+)')
+SET_BUTTON_TIMEOUT_TARGET_PATTERN = create_command_pattern(r'(set\s+)?button[_ -]?timeout[_ -]?target\s+(?P<target>.+)')
+SET_BUTTON_TIMEOUT_PATTERN = create_command_pattern(r'(set\s+)?button[_ -]?timeout\s+(?P<minutes>.+)')
 CLEAR_DEFAULT_BUTTON_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+default[_ -]?button')
-SET_DEFAULT_BUTTON_PATTERN = create_command_pattern(r'set\s+default[_ -]?button\s+(?P<label>.+)')
+SET_DEFAULT_BUTTON_PATTERN = create_command_pattern(r'(set\s+)?default[_ -]?button\s+(?P<label>.+)')
 RUN_PATTERN = re.compile(r'^(run|fire)$', re.IGNORECASE)
