@@ -6,7 +6,7 @@ from tests._common import *  # noqa: F401,F403
 async def test_show_config():
     app = AsyncMock()
     configs = {
-        "alarms": {"pattern": ".*alarm.*", "wait_time": 300, "reply_message": "Alarm message"},
+        "alarms": {"pattern": ".*alarm.*", "wait_time": 300, "reply_message": "Alarm message", "opsgenie": True},
         "default": {"wait_time": 600, "reply_message": "Default message"}
     }
     for name, cfg in configs.items():
@@ -23,23 +23,21 @@ async def test_show_config():
         assert "\n\n*Configuration*: `default` (enabled)" in sent_message
         assert "> *Trigger*: `message`\n>\n> *Reply message*:\n> Default message\n>\n> *Replied in* <#C123> (in thread)\n>\n> *Settings*:\n```" in sent_message
         assert "\nTrigger" not in sent_message
+        # Details only where OpsGenie is on; the disabled config shows just the one row.
         assert "OpsGenie schedule" in sent_message
-        assert "OpsGenie priority   P4" in sent_message
+        assert "OpsGenie priority" in sent_message
+        assert any(line.startswith("OpsGenie ") and line.endswith("disabled (not configured)") for line in sent_message.splitlines())
         # Settings are grouped, each group separated by a blank line.
         assert (
-            "Wait time           10 minutes\n"
-            "Only work days      disabled\n"
-            "Work hours          all day\n"
-            "\n"
-            "OpsGenie            disabled"
+            "Wait time       10 minutes\n"
+            "Only work days  disabled\n"
+            "Work hours      any hour"
         ) in sent_message
-        assert "Date format         %a, %d %b %Y" in sent_message
-        assert "Time format         %H:%M" in sent_message
-        assert "Wait time           10 minutes" in sent_message
+        assert "Wait time       10 minutes" in sent_message
         assert "Default message" in sent_message
         assert "\n\n*Configuration*: `alarms` (enabled)" in sent_message
-        assert "Wait time           5 minutes" in sent_message
-        assert "Pattern             .*alarm.* (case-insensitive)" in sent_message
+        assert "Wait time          5 minutes" in sent_message  # wider column: the OpsGenie rows
+        assert "Pattern            .*alarm.* (case-insensitive)" in sent_message
         assert "Alarm message" in sent_message
 
 
@@ -48,8 +46,9 @@ async def test_show_config():
 async def test_show_config_resolves_the_server_timezone_and_locale():
     app = AsyncMock()
     configs = {
-        "default": DEFAULT_CONFIG.copy(),
-        "tokyo": {**DEFAULT_CONFIG.copy(), "datetime_timezone": "Asia/Tokyo", "datetime_locale": "de-DE"},
+        "default": {**DEFAULT_CONFIG.copy(), "reply_message": "at {{time}}"},
+        "tokyo": {**DEFAULT_CONFIG.copy(), "reply_message": "at {{time}}",
+                  "datetime_timezone": "Asia/Tokyo", "datetime_locale": "de-DE"},
     }
     channel = Channel(id="C123", name="general", configs=configs)
     user = User(id="U123", name="test", real_name="Test User", team="A")
@@ -87,11 +86,13 @@ async def test_show_config_displays_multiline_team_values():
         await show_config(app, channel, user, "")
 
     sent_message = sent_messages(mock_send_message)
+    first = next(line for line in sent_message.splitlines() if line.startswith("Excluded teams"))
+    indent = " " * (len(first) - len("Cloud Hosting"))
     assert (
-        "Excluded teams      Cloud Hosting\n"
-        "                    m-kubed (m³)\n"
-        "                    Systemarchitektur Infrastruktur/Technik\n"
-        "                    Site Reliability"
+        f"{first}\n"
+        f"{indent}m-kubed (m³)\n"
+        f"{indent}Systemarchitektur Infrastruktur/Technik\n"
+        f"{indent}Site Reliability"
     ) in sent_message
 
 
@@ -143,7 +144,7 @@ async def test_process_command_help_uses_compact_command_reference():
     assert "\n\n# OpsGenie\n" in sent_message
     assert "\n\n# Help\n/hutbot news" in sent_message
     assert sent_message.index("# Trigger") < sent_message.index("# When to react") < sent_message.index("# Buttons")
-    assert "/hutbot [config] set work-hours all day" in sent_message
+    assert "/hutbot [config] clear work-hours" in sent_message
     assert "/hutbot [config] set trigger cron \"<expr>\"" in sent_message
     # Removed commands are gone from the reference.
     for stale in ("set target", "set cron <", "set schedule-timezone", "forward-channel",
@@ -313,6 +314,7 @@ async def test_show_config_marks_the_instance_default_locale():
     channel = Channel(id="C123", name="general", configs={"default": DEFAULT_CONFIG.copy()})
     user = User(id="U123", name="test", real_name="Test User", team="A")
 
+    channel.configs["default"]["reply_message"] = "at {{time}}"
     with patch('hutbot.state.default_datetime_locale', "de_DE"), \
          patch('hutbot.messaging.send_message') as mock_send_message:
         await show_config(app, channel, user, "")
@@ -358,7 +360,7 @@ async def test_help_is_split_into_messages_slack_will_not_cut_apart():
 async def test_show_config_splits_many_configs_into_several_messages():
     import hutbot
     app = AsyncMock()
-    configs = {f"config-{index}": DEFAULT_CONFIG.copy() for index in range(8)}
+    configs = {f"config-{index}": {**DEFAULT_CONFIG.copy(), "reply_message": "at {{time}}"} for index in range(8)}
     channel = Channel(id="C1", name="general", configs=configs)
     user = User("U1", "test", "Test User", "Testers")
 
@@ -385,3 +387,61 @@ def test_pack_message_chunks_keeps_an_oversized_part_whole():
     assert chunks == ["a" * 3000, "b" * 3000, "c" * 5000]
     assert hutbot.messaging.pack_message_chunks(["x", "y"]) == ["x\n\ny"]
     assert hutbot.messaging.pack_message_chunks([]) == []
+
+
+@pytest.mark.asyncio
+async def test_show_config_hides_settings_that_do_not_apply():
+    app = AsyncMock()
+    configs = {
+        # manual: no matching, no reminder delay, no work hours, nothing renders a date
+        "post": {**DEFAULT_CONFIG.copy(), "trigger": "manual", "reply_message": ":x: pressed"},
+        # cron with a date in its message: condition + full date/time block
+        "standup": {**DEFAULT_CONFIG.copy(), "trigger": TRIGGER_CRON, "cron": "0 9 * * 1-5",
+                    "reply_message": "Standup at {{time}}", "condition": "outlook_calendar"},
+        # message trigger with work hours: timezone only, no formats
+        "watch": {**DEFAULT_CONFIG.copy(), "hours": ["9:00", "17:00"]},
+    }
+    channel = Channel(id="C1", name="davetest", configs=configs)
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sections = {name: part for name, part in
+                ((p.split("`")[1], p) for p in sent_messages(mock_send_message).split("*Configuration*: ")[1:])}
+
+    manual = sections["post"]
+    for mute in ("Pattern", "Included teams", "Include bots", "Wait time", "Only work days",
+                 "Work hours", "Date format", "Date/time timezone", "Condition"):
+        assert mute not in manual, mute
+    assert "OpsGenie" in manual
+
+    cron = sections["standup"]
+    assert "Condition           outlook_calendar" in cron
+    assert "Date format" in cron and "Date/time locale" in cron
+    for mute in ("Pattern", "Wait time", "Work hours", "Include bots"):
+        assert mute not in cron, mute
+
+    watch = sections["watch"]
+    assert "Work hours          9:00 - 17:00" in watch
+    # Work hours are counted in that timezone, but nothing renders a date.
+    assert "Date/time timezone" in watch
+    assert "Date format" not in watch and "Date/time locale" not in watch
+
+    assert "_Only the settings that apply to each configuration are shown._" in sent_messages(mock_send_message)
+
+
+@pytest.mark.asyncio
+async def test_show_config_hides_a_condition_on_a_non_cron_trigger():
+    app = AsyncMock()
+    # A condition is only evaluated when a cron fires, so it is noise elsewhere.
+    config = {**DEFAULT_CONFIG.copy(), "condition": "outlook_calendar", "outlook_subject_pattern": ".*x.*"}
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sent_message = sent_messages(mock_send_message)
+    assert "Condition" not in sent_message
+    assert "Outlook subject" not in sent_message

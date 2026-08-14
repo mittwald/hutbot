@@ -243,7 +243,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] enable only-work-days", "Respond only on work days."),
             (f"{command} [config] disable only-work-days", "Respond on all days."),
             (f"{command} [config] set work-hours <start> <end>", "Set active hours, e.g. 9:00 17:00."),
-            (f"{command} [config] set work-hours all day", "React at any hour (same as 0:00 0:00)."),
+            (f"{command} [config] clear work-hours", "React at any hour."),
         ]),
         ("Message and action", [
             (f"{command} [config] set message \"<reply message>\"", "Set reminder message."),

@@ -87,9 +87,18 @@ async def set_replies_enabled(app: AsyncApp, channel, config_name: str, enabled:
     await messaging.send_message(app, channel, user, f"Replies are now *{'enabled' if enabled else 'disabled'}* in configuration `{config_name}`.", thread_ts)
 
 
+async def clear_work_hours(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    _ensure_config(channel, config_name)['hours'] = []
+    await persistence.save_configuration()
+    await messaging.send_message(app, channel, user, f"*Work hours* cleared in configuration `{config_name}`; messages are handled at any hour.", thread_ts)
+
+
 async def set_work_hours(app: AsyncApp, channel, config_name: str, start: str, end: str, user, thread_ts: str = "") -> None:
     if config_name not in channel.configs:
         channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    if f"{start} {end}".strip().lower().replace('-', ' ') == "all day":
+        await messaging.send_message(app, channel, user, f"To handle messages at any hour, use `{state.slash_command} {config_name} clear work-hours`.", thread_ts)
+        return
     start_time = datetimefmt.parse_time(start)
     end_time = datetimefmt.parse_time(end)
     if not start_time:

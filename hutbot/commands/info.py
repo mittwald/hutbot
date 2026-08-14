@@ -13,10 +13,13 @@ from .. import slackcache
 from .. import opsgenie
 from .. import buttons
 from .. import datetimefmt
+from .. import templating
 from ..buttonutil import normalize_button
 from .. import targets
 from ..constants import (
     ACTION_DM_USER,
+    DATETIME_TEMPLATE_VARIABLES,
+    OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
     ACTION_GROUP_DM,
     ACTION_POST_CHANNEL,
     ACTION_REPLY,
@@ -178,10 +181,19 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         # Settings are grouped by topic, in the order a rule runs: when it fires,
         # what gates it, what it matches, timing, buttons, alerting, formatting.
         # Each group becomes a blank-line-separated block in the code block.
+        #
+        # A group is printed only where it has an effect: message matching and the
+        # reminder delay mean nothing to a `cron`/`manual` rule, a condition gates
+        # only a cron, and the date/time settings matter only to something that
+        # renders a date. Printing them anyway invites configuring a field that is
+        # never read.
         groups: list[list[tuple]] = []
+        reacts_to_messages = trigger == TRIGGER_MESSAGE
+        template_variables = templating.find_template_variables(reply_message or '') | templating.find_template_variables(config.get('opsgenie_message') or '')
+        renders_datetime = bool(template_variables & (DATETIME_TEMPLATE_VARIABLES | OPSGENIE_DATETIME_TEMPLATE_VARIABLES))
 
         condition = config.get('condition') or ''
-        if condition:
+        if condition and trigger == TRIGGER_CRON:
             negate = ' (negated)' if config.get('condition_negate') else ''
             condition_rows = [("Condition", f"{condition}{negate}")]
             if config.get('outlook_subject_pattern'):
@@ -190,18 +202,19 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
                 condition_rows.append(("Outlook body", config.get('outlook_body_pattern')))
             groups.append(condition_rows)
 
-        groups.append([
-            ("Pattern",        f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<none>'),
-            ("Included teams", included_teams),
-            ("Excluded teams", excluded_teams),
-            ("Include bots",   'enabled' if include_bots else 'disabled'),
-        ])
+        if reacts_to_messages:
+            groups.append([
+                ("Pattern",        f"{pattern} ({'case-sensitive' if pattern_case_sensitive else 'case-insensitive'})" if pattern else '<none>'),
+                ("Included teams", included_teams),
+                ("Excluded teams", excluded_teams),
+                ("Include bots",   'enabled' if include_bots else 'disabled'),
+            ])
 
-        groups.append([
-            ("Wait time",      f"{wait_time_minutes} minutes"),
-            ("Only work days", 'enabled' if only_work_days else 'disabled'),
-            ("Work hours",     f"{hours[0]} - {hours[1]}" if len(hours) == 2 else 'all day'),
-        ])
+            groups.append([
+                ("Wait time",      f"{wait_time_minutes} minutes"),
+                ("Only work days", 'enabled' if only_work_days else 'disabled'),
+                ("Work hours",     f"{hours[0]} - {hours[1]}" if len(hours) == 2 else 'any hour'),
+            ])
 
         config_buttons = config.get('buttons') or []
         if config_buttons:
@@ -218,19 +231,27 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
                 button_rows.append(("Escalation", "none, buttons stay open until pressed"))
             groups.append(button_rows)
 
-        groups.append([
-            ("OpsGenie",          ('enabled' if opsgenie_enabled else 'disabled') + ('' if state.opsgenie_configured else ' (not configured)')),
-            ("OpsGenie schedule", opsgenie_schedule_name or '<none>'),
-            ("OpsGenie priority", opsgenie_priority),
-            ("OpsGenie message",  config.get('opsgenie_message') or '<original message>'),
-        ])
+        opsgenie_rows = [("OpsGenie", ('enabled' if opsgenie_enabled else 'disabled') + ('' if state.opsgenie_configured else ' (not configured)'))]
+        if opsgenie_enabled:
+            opsgenie_rows += [
+                ("OpsGenie schedule", opsgenie_schedule_name or '<none>'),
+                ("OpsGenie priority", opsgenie_priority),
+                ("OpsGenie message",  config.get('opsgenie_message') or '<original message>'),
+            ]
+        groups.append(opsgenie_rows)
 
-        groups.append([
-            ("Date format",        date_format),
-            ("Time format",        time_format),
-            ("Date/time timezone", datetime_timezone),
-            ("Date/time locale",   datetime_locale),
-        ])
+        # The timezone also decides when a cron fires and when work hours are, so it
+        # is shown for those even when nothing renders a date.
+        timezone_matters = trigger == TRIGGER_CRON or (reacts_to_messages and (only_work_days or len(hours) == 2))
+        if renders_datetime:
+            groups.append([
+                ("Date format",        date_format),
+                ("Time format",        time_format),
+                ("Date/time timezone", datetime_timezone),
+                ("Date/time locale",   datetime_locale),
+            ])
+        elif timezone_matters:
+            groups.append([("Date/time timezone", datetime_timezone)])
 
         key_width = max(len(label) for group in groups for label, _ in group)
         config_block = "\n\n".join(
@@ -265,7 +286,9 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             f"{quoted_block}"
             f"```\n{config_block}\n```"
         )
+    # Say that the print is filtered, so a missing row does not read as a lost setting.
+    footer = "_Only the settings that apply to each configuration are shown._"
     # Slack splits an oversized message wherever the break lands, cutting the code
     # fence in half, so a channel with several configs is sent as several messages.
-    for chunk in messaging.pack_message_chunks([message, *config_sections]):
+    for chunk in messaging.pack_message_chunks([message, *config_sections, footer]):
         await messaging.send_message(app, channel, user, chunk, thread_ts)

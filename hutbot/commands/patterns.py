@@ -36,10 +36,8 @@ ENABLE_OPSGENIE_PATTERN = create_command_pattern(r'enable\s+(opsgenie|alerts?)')
 DISABLE_OPSGENIE_PATTERN = create_command_pattern(r'disable\s+(opsgenie|alerts?)')
 ENABLE_BOTS_PATTERN = create_command_pattern(r'(enable|include|set)?\s+bots?')
 DISABLE_BOTS_PATTERN = create_command_pattern(r'(disable|exclude)\s+bots?')
-# `all day` is the spelled-out form of `0:00 0:00`, which is how "no restriction"
-# is stored. It has to come first in the alternation or `<start> <end>` would
-# swallow it as the two times "all" and "day".
-SET_WORK_HOURS_PATTERN = create_command_pattern(r'(set\s+)?(work[_ -]?)?hours\s+(?:(?P<all_day>all[_ -]?day)\s*$|(?P<start>.+)\s+(?P<end>.+))')
+CLEAR_WORK_HOURS_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+(work[_ -]?)?hours')
+SET_WORK_HOURS_PATTERN = create_command_pattern(r'(set\s+)?(work[_ -]?)?hours\s+(?P<start>.+)\s+(?P<end>.+)')
 ENABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'enable\s+(only[_ -]?)?work[_ -]?days')
 DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)?work[_ -]?days')
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)

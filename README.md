@@ -23,7 +23,9 @@ Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`
 ```
 
 The `<timezone>` is also the timezone the config's work days and work hours are
-counted in. Without one, both fall back to the server's local time.
+counted in — `/hutbot [config] set work-hours 9:00 17:00`, `/hutbot [config] clear work-hours` to
+react at any hour, and `/hutbot [config] enable only-work-days` for Mon–Fri only. Without a
+timezone, all of them fall back to the server's local time.
 
 Instance-wide defaults for configs that set neither come from the deployment
 (`time.timezone` / `time.locale` in the Helm chart, `HUTBOT_TIMEZONE` /
