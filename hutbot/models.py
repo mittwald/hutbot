@@ -4,7 +4,8 @@ import collections
 from dataclasses import dataclass
 
 ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
-User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team'])
+# `is_bot` defaults to False so the many four-field constructions stay valid.
+User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team', 'is_bot'], defaults=(False,))
 Usergroup = collections.namedtuple('Usergroup', ['id', 'handle', 'name'])
 Channel = collections.namedtuple('Channel', ['id', 'name', 'configs'])
 OpsGeniePeriod = collections.namedtuple('OpsGeniePeriod', ['recipient_email', 'slack_user', 'start', 'end'])

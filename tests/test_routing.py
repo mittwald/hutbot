@@ -404,3 +404,81 @@ async def test_membership_handlers_only_react_to_the_bot():
         await handlers["member_joined_channel"]({"event": {"user": "UBOT", "channel": "C2"}}, None)
         mock_removed.assert_called_once_with(app, "C1")
         mock_added.assert_called_once_with(app, "C2")
+
+
+@pytest.mark.asyncio
+async def test_route_message_treats_an_app_bot_user_as_a_bot():
+    import hutbot
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="davetest", configs={"default": DEFAULT_CONFIG.copy()})
+    # An app posting through its bot user sends `user` *and* `bot_id`, and users.info
+    # reports is_bot — none of which used to count as "a bot wrote this".
+    bot_user = User(id="U0A9NGY2U5B", name="mping", real_name="mPing", team=TEAM_UNKNOWN, is_bot=True)
+    event = {
+        "type": "message", "text": "mr-merged m3-helmfile", "ts": "1786709950.634419",
+        "user": bot_user.id, "bot_id": "B0A9NGY2U5B", "app_id": "A0A9",
+        "channel": channel.id, "channel_type": "channel",
+    }
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=bot_user)), \
+         patch('hutbot.datetimefmt.is_work_day', return_value=True), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
+        hutbot.state.scheduled_messages.clear()
+        hutbot.state._scheduled_replies_cache.clear()
+        await route_message(app, "token", event)
+
+    mock_schedule_reply.assert_not_called()
+
+    # With include_bots the same message is handled.
+    channel.configs["default"]["include_bots"] = True
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=bot_user)), \
+         patch('hutbot.datetimefmt.is_work_day', return_value=True), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
+        await route_message(app, "token", event)
+
+    mock_schedule_reply.assert_called_once()
+    for scheduled in list(hutbot.state.scheduled_messages.values()):
+        scheduled.task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_route_message_treats_a_bot_user_without_bot_id_as_a_bot():
+    import hutbot
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="davetest", configs={"default": DEFAULT_CONFIG.copy()})
+    bot_user = User(id="UBOTUSER", name="somebot", real_name="Some Bot", team=TEAM_UNKNOWN, is_bot=True)
+    event = {"type": "message", "text": "beep", "ts": "1234.1", "user": bot_user.id,
+             "channel": channel.id, "channel_type": "channel"}
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=bot_user)), \
+         patch('hutbot.datetimefmt.is_work_day', return_value=True), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
+        hutbot.state.scheduled_messages.clear()
+        await route_message(app, "token", event)
+
+    mock_schedule_reply.assert_not_called()
+
+
+def test_build_user_marks_bots_and_skips_employee_mapping():
+    import hutbot
+    employees = {"d.grieser": {"fullname": "David Grieser", "group": "Platform"}}
+
+    with patch('hutbot.slackcache.log_warning') as mock_log_warning:
+        _, bot = hutbot.slackcache.build_user(
+            {"id": "U0A9NGY2U5B", "name": "mping", "is_bot": True, "real_name": "mPing"}, employees, {})
+        _, slackbot = hutbot.slackcache.build_user({"id": "USLACKBOT", "name": "slackbot"}, employees, {})
+        _, human = hutbot.slackcache.build_user(
+            {"id": "U1", "name": "nobody", "real_name": "No Body"}, employees, {})
+
+    assert bot.is_bot is True and bot.team == TEAM_UNKNOWN
+    assert slackbot.is_bot is True
+    assert human.is_bot is False
+    # Only the human is worth an employee-mapping warning.
+    assert mock_log_warning.call_count == 1
+    assert "@nobody" in mock_log_warning.call_args.args[0]

@@ -93,9 +93,10 @@ def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
     user_email_alias_normalized = normalize_user_name(user_email_alias)
     user_real_name = user.get('real_name', '').strip()
     user_real_name_normalized = normalize_real_name(user_real_name)
+    user_is_bot = bool(user.get('is_bot')) or user_id == 'USLACKBOT'
     user_team = TEAM_UNKNOWN
 
-    if len(employees) > 0:
+    if len(employees) > 0 and not user_is_bot:
         # Try different variations of the username to find a match in employees
         user_key_candidates = [
             user_name,
@@ -127,7 +128,7 @@ def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
         if user_key:
             user_team = employees[user_key].get('group', '').strip()
 
-    return user_email, User(id=user_id, name=user_name, team=user_team, real_name=user_real_name)
+    return user_email, User(id=user_id, name=user_name, team=user_team, real_name=user_real_name, is_bot=user_is_bot)
 
 
 def cache_user(user_email: str, u: User) -> None:

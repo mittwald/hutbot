@@ -53,13 +53,14 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
         log(f"Ignoring message with subtype '{subtype}' for channel #{channel.name}.")
         return
 
-    actor_is_bot = False
+    # An app posting through its bot user sends both `user` and `bot_id`, so the
+    # presence of `user` says nothing about whether a human wrote this.
+    actor_is_bot = bool(bot_id) or subtype == 'bot_message'
     user = None
     if user_id:
         user = await slackcache.get_user_by_id(app, user_id)
-        actor_is_bot = user_id == 'USLACKBOT'
+        actor_is_bot = actor_is_bot or user_id == 'USLACKBOT' or bool(getattr(user, 'is_bot', False))
     elif bot_id and (thread_ts or any(c.get('include_bots', False) for c in channel.configs.values())):
-        actor_is_bot = True
         user = await slackcache.get_user_by_id(app, bot_id)
 
     if subtype == 'message_deleted' and previous_message:
