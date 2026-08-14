@@ -54,7 +54,7 @@ DISABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'disable\s+(condition
 # The target belongs to the action, so both arrive in one command. `set` is
 # optional, like it is for `wait-time` and `message`.
 SET_ACTION_PATTERN = create_command_pattern(r'(set\s+)?action\s+(?P<action>\S+)(?:\s+(?P<target>.+))?$')
-ADD_BUTTON_PATTERN = create_command_pattern(r'add\s+button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<spec>.+)')
+ADD_BUTTON_PATTERN = create_command_pattern(r'(add\s+)?button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<spec>.+)')
 CLEAR_BUTTONS_PATTERN = create_command_pattern(r'clear\s+buttons?')
 # `<minutes> <kind> <target>`: the timeout and what it escalates to are one setting.
 CLEAR_ESCALATION_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+escalation')

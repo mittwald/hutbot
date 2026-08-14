@@ -31,7 +31,6 @@ from .constants import (
     ESCALATION_CONFIG,
     ESCALATION_NONE,
     BUTTON_ACTION_DELAY,
-    BUTTON_ACTION_MESSAGE,
     BUTTON_ACTIONS,
     CONDITION_NONE,
     CONDITION_OUTLOOK,
@@ -306,11 +305,10 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
             if button_action not in BUTTON_ACTIONS:
                 errors[f'buttons.{i}'] = "Button action must be one of " + ", ".join(sorted(BUTTON_ACTIONS)) + "."
                 continue
-            if button_action in (BUTTON_ACTION_CONFIG, BUTTON_ACTION_MESSAGE) and not value:
-                what = "a configuration name" if button_action == BUTTON_ACTION_CONFIG else "a message"
-                errors[f'buttons.{i}'] = f"`{button_action}` button needs {what}."
+            if button_action == BUTTON_ACTION_CONFIG and not value:
+                errors[f'buttons.{i}'] = "`config` button needs a configuration name."
                 continue
-            if button_action in (BUTTON_ACTION_MESSAGE, BUTTON_ACTION_ACK) and value:
+            if button_action == BUTTON_ACTION_ACK and value:
                 # Same treatment as reply_message: mentions resolved, variables checked.
                 ok, mention_error, value = await messaging.process_mentions(app, value)
                 if not ok:

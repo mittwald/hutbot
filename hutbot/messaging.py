@@ -254,8 +254,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ]),
         ("Buttons", [
             (f"{command} [config] add button \"<label>\" config <config>", "Button runs another config (e.g. an alert config)."),
-            (f"{command} [config] add button \"<label>\" ack [text]", "Button dismisses; [text] may use {{variables}}."),
-            (f"{command} [config] add button \"<label>\" message <text>", "Button posts <text>; may use {{variables}}."),
+            (f"{command} [config] add button \"<label>\" ack [text]", "Button marks it handled, posting [text] if given."),
             (f"{command} [config] add button \"<label>\" delay <minutes>", "Button postpones the escalation; buttons stay."),
             (f"{command} [config] clear buttons", "Remove all buttons."),
             (f"{command} [config] set escalation <minutes> button \"<label>\"", "Auto-press that button if nobody does in time."),
@@ -301,7 +300,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"Displays all configurations for `#{channel.name}`."
     )
     outro = (
-        "`[config]` is optional; omitted commands use `default`. The word `set` is optional too.\n\n"
+        "`[config]` is optional; omitted commands use `default`. The leading `set`/`add` is optional too.\n\n"
         f"Supported reply variables: {supported_template_variables}."
     )
     # The command table alone is well past Slack's per-message limit, and Slack

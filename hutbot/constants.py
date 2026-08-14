@@ -56,10 +56,11 @@ DISABLED_REASON_REMOVED = "removed_from_channel"
 
 # What a button does when pressed.
 BUTTON_ACTION_CONFIG = "config"    # run another named config (an OpsGenie alert is just such a config)
-BUTTON_ACTION_ACK = "ack"          # acknowledge/dismiss (cancel escalation), optional ack text
-BUTTON_ACTION_MESSAGE = "message"  # post a fixed inline message
+# Acknowledge/dismiss: cancels a pending escalation, and posts its text if it has
+# one. Posting and dismissing were two keywords for one behavior; this is it.
+BUTTON_ACTION_ACK = "ack"
 BUTTON_ACTION_DELAY = "delay"      # delay the pending escalation by N minutes
-BUTTON_ACTIONS = {BUTTON_ACTION_CONFIG, BUTTON_ACTION_ACK, BUTTON_ACTION_MESSAGE, BUTTON_ACTION_DELAY}
+BUTTON_ACTIONS = {BUTTON_ACTION_CONFIG, BUTTON_ACTION_ACK, BUTTON_ACTION_DELAY}
 
 # What a buttoned message escalates to if no button is pressed within the timeout.
 ESCALATION_NONE = "none"

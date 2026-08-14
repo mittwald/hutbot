@@ -26,7 +26,6 @@ from ..constants import (
     ACTIONS,
     BUTTON_ACTION_CONFIG,
     BUTTON_ACTION_DELAY,
-    BUTTON_ACTION_MESSAGE,
     BUTTON_ACTIONS,
     CONDITION_NONE,
     CONDITION_OUTLOOK,
@@ -464,11 +463,10 @@ async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec:
         return
     value = strip_quotes(parts[1]).strip() if len(parts) > 1 else ""
 
-    if action in (BUTTON_ACTION_CONFIG, BUTTON_ACTION_MESSAGE) and not value:
-        what = "a configuration name" if action == BUTTON_ACTION_CONFIG else "a message"
-        await messaging.send_message(app, channel, user, f"Invalid *button*. `{action}` needs {what}.", thread_ts)
+    if action == BUTTON_ACTION_CONFIG and not value:
+        await messaging.send_message(app, channel, user, f"Invalid *button*. `{action}` needs a configuration name.", thread_ts)
         return
-    if action in (BUTTON_ACTION_MESSAGE, BUTTON_ACTION_ACK) and value:
+    if action == BUTTON_ACTION_ACK and value:
         # A button's text is a template too, so it gets the same treatment as
         # `set message`: @mentions resolved to ids, variables checked.
         ok, mention_error, value = await messaging.process_mentions(app, value)

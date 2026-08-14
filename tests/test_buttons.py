@@ -25,14 +25,14 @@ async def test_add_button_typed_actions():
     user = User("U1", "test", "Test User", "Testers")
     with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
         await process_command(app, 'add button "Ack" ack "Got it"', channel, user)
-        await process_command(app, 'add button "FAQ" message "See the wiki"', channel, user)
+        await process_command(app, 'add button "FAQ" ack "See the wiki"', channel, user)
         # A delay button needs something to postpone.
         await process_command(app, "set escalation 5 config approve-flow", channel, user)
         await process_command(app, 'add button "Wait" delay 3', channel, user)
         await process_command(app, 'add button "Run" config approve-flow', channel, user)
     assert channel.configs["default"]["buttons"] == [
         {"label": "Ack", "action": "ack", "value": "Got it"},
-        {"label": "FAQ", "action": "message", "value": "See the wiki"},
+        {"label": "FAQ", "action": "ack", "value": "See the wiki"},
         {"label": "Wait", "action": "delay", "value": "3"},
         {"label": "Run", "action": "config", "value": "approve-flow"},
     ]
@@ -68,7 +68,7 @@ async def test_add_button_requires_an_action_keyword():
 
     assert channel.configs["default"]["buttons"] == []
     assert send.call_args.args[3] == (
-        "Invalid *button action* `approve-flow`. Must be one of `ack`, `config`, `delay`, `message`."
+        "Invalid *button action* `approve-flow`. Must be one of `ack`, `config`, `delay`."
     )
 
 
@@ -462,7 +462,7 @@ async def test_escalation_task_auto_presses_default_button():
     app = AsyncMock()
     src = DEFAULT_CONFIG.copy()
     src["buttons"] = [
-        {"label": "Yes", "action": "message", "value": "Here is the help"},
+        {"label": "Yes", "action": "ack", "value": "Here is the help"},
         {"label": "No", "action": "ack", "value": ""},
     ]
     channel = _mk_channel({"src": src})
@@ -561,7 +561,8 @@ async def test_button_resolves_from_snapshot_and_strips_after_press():
     post.assert_awaited_once_with(app, "C12345", "ok", None, "10.1")
     app.client.chat_update.assert_awaited_once()               # buttons stripped
     kw = app.client.chat_update.await_args.kwargs
-    assert kw["ts"] == "10.1" and kw["text"] == "Approve?"
+    # The buttons are replaced by a note saying who took the message.
+    assert kw["ts"] == "10.1" and kw["text"] == "Approve?\n\n🔘 _`Ack` Bob_"
 
 
 @pytest.mark.asyncio
@@ -618,7 +619,7 @@ async def test_button_message_is_a_template_rendered_against_the_original_messag
         'posted_channel_id': "C1", 'message_ts': "R1", 'def_channel_id': "C1", 'config_name': "default",
         'orig': {'user_id': author.id, 'text': "the server is down", 'ts': "1786453297.645799", 'permalink': "https://slack.test/p1"},
     }
-    button = {'label': "help", 'action': "message",
+    button = {'label': "help", 'action': "ack",
               'value': "Help <@UAUTH> with {{message}} from {{date}} ({{user_name}}) — {{message_link}}"}
 
     with patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=author)), \
@@ -644,12 +645,12 @@ async def test_add_button_resolves_mentions_and_rejects_unknown_variables():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.slackcache.get_user_by_name', new=AsyncMock(return_value=author)), \
          patch('hutbot.messaging.send_message') as send:
-        await process_command(app, 'add button "help" message "Help @author with {{message}}"', channel, user)
+        await process_command(app, 'add button "help" ack "Help @author with {{message}}"', channel, user)
         assert config["buttons"] == [
-            {"label": "help", "action": "message", "value": "Help <@UAUTH> with {{message}}"}
+            {"label": "help", "action": "ack", "value": "Help <@UAUTH> with {{message}}"}
         ]
 
-        await process_command(app, 'add button "bad" message "{{nope}}"', channel, user)
+        await process_command(app, 'add button "bad" ack "{{nope}}"', channel, user)
         assert "unsupported template variable(s) `{{nope}}`" in send.call_args.args[3]
         # Nothing added for the rejected button.
         assert len(config["buttons"]) == 1
@@ -669,7 +670,7 @@ async def test_add_button_reports_an_unknown_mention():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.slackcache.get_user_by_name', new=AsyncMock(return_value=User(None, "ghost", "", "T"))), \
          patch('hutbot.messaging.send_message') as send:
-        await process_command(app, 'add button "help" message "Help @ghost"', channel, user)
+        await process_command(app, 'add button "help" ack "Help @ghost"', channel, user)
 
     assert send.call_args.args[3] == "Invalid *button* message: ghost not found."
     assert config["buttons"] == []
@@ -756,3 +757,100 @@ async def test_clear_escalation_warns_about_a_stranded_delay_button():
         "*Escalation* cleared in configuration `default`; buttons stay open until pressed "
         ":warning: (`Later` now has nothing to postpone)."
     )
+
+
+@pytest.mark.asyncio
+async def test_add_is_optional_for_button_commands():
+    app = AsyncMock()
+    channel = _mk_channel()
+    config = channel.configs["default"]
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'button "Yes" ack "Got it"', channel, user)
+        await process_command(app, 'add button "FAQ" ack "See the wiki"', channel, user)
+        # A label alone is not a command.
+        await process_command(app, "button", channel, user)
+        assert "Huh?" in send.call_args.args[3]
+
+    assert config["buttons"] == [
+        {"label": "Yes", "action": "ack", "value": "Got it"},
+        {"label": "FAQ", "action": "ack", "value": "See the wiki"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_config_named_button_still_gets_its_own_commands():
+    app = AsyncMock()
+    configs = {"default": DEFAULT_CONFIG.copy(), "button": DEFAULT_CONFIG.copy()}
+    channel = Channel(id="C1", name="davetest", configs=configs)
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
+        # `wait-time 5` is a command, so the leading word is the config.
+        await process_command(app, "button wait-time 5", channel, user)
+        # `"Yes" ack` is not, so this adds a button to `default`.
+        await process_command(app, 'button "Yes" ack', channel, user)
+
+    assert configs["button"]["wait_time"] == 300
+    assert configs["button"]["buttons"] == []
+    assert [b["label"] for b in configs["default"]["buttons"]] == ["Yes"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("button,expected", [
+    ({"label": "I've got it", "action": "ack", "value": "On it"}, "🔘 _`I've got it` Dave Grieser_"),
+    ({"label": "No", "action": "ack", "value": ""}, "🔘 _`No` Dave Grieser_"),
+    ({"label": "Page", "action": "config", "value": "alarm"}, "🔘 _`Page` Dave Grieser_ ▶️ _`alarm`_"),
+])
+async def test_a_press_leaves_a_note_in_place_of_the_buttons(button, expected):
+    import hutbot
+    app = AsyncMock()
+    channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy()})
+    dave = User("U1", "dave", "Dave Grieser", "T")
+    key = ("C12345", "R1")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "orig": {}, "posted_text": "Incident — on it?",
+        "posted_channel_id": "C12345", "message_ts": "R1", "def_channel_id": "C12345",
+        "config_name": "default", "buttons": [button],
+    }
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "R1"}, "user": {"id": "U1"}}
+    action = {"value": json.dumps({"channel": "C12345", "config": "default", "index": 0})}
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=dave)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})), \
+         patch('hutbot.actions.run_action', new=AsyncMock()):
+        await hutbot.buttons.handle_button_press(app, "token", body, action)
+
+    assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n{expected}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escalation,expected", [
+    ({"escalation_kind": "button", "escalation_target": "I've got it", "timeout": 60}, "⏰ _`1m`_"),
+    ({"escalation_kind": "config", "escalation_target": "alarm", "timeout": 300}, "⏰ _`5m`_ ▶️ _`alarm`_"),
+])
+async def test_an_escalation_leaves_a_note_in_place_of_the_buttons(escalation, expected):
+    import hutbot
+    app = AsyncMock()
+    channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy()})
+    key = ("C12345", "R1")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "orig": {}, "posted_text": "Incident — on it?",
+        "posted_channel_id": "C12345", "message_ts": "R1", "def_channel_id": "C12345",
+        "config_name": "default", "buttons": [{"label": "I've got it", "action": "ack", "value": "On it"}],
+        **escalation,
+    }
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U1", "dave", "Dave", "T"))), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})), \
+         patch('hutbot.actions.run_action', new=AsyncMock()):
+        await hutbot.buttons._escalation_task(app, "token", key, 0)
+
+    assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n{expected}"

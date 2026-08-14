@@ -54,7 +54,7 @@ const TRIGGER_SHORT = { message: "message", cron: "cron", manual: "manual" };
 const ACTION_LABEL = { reply: "Reply in thread", dm_user: "Direct message", group_dm: "Group DM", post_channel: "Post to channel" };
 const ACTION_SHORT = { reply: "reply", dm_user: "dm", group_dm: "group dm", post_channel: "post" };
 const CONDITION_LABEL = { "": "None (always)", outlook_calendar: "Outlook calendar" };
-const BTN_ACTION_LABEL = { config: "Run rule", ack: "Acknowledge", message: "Post message", delay: "Delay timer" };
+const BTN_ACTION_LABEL = { config: "Run rule", ack: "Acknowledge / post text", delay: "Delay timer" };
 const ESCALATION_LABEL = { none: "Never escalate; buttons stay open", button: "Auto-press a button", config: "Run another rule" };
 const TARGET_HINT = { dm_user: "A @user (id, name, or email)", group_dm: "A @usergroup handle", post_channel: "A channel ID like C0123ABCD" };
 // Set by the bot itself when it is removed from a channel (see DISABLED_REASON_REMOVED).
@@ -520,7 +520,7 @@ function buttonsSection() {
   if (!buttons.length) rows.append(h("div", { class: "btn-empty", text: "No buttons. Add one to make this message interactive." }));
   buttons.forEach((btn, i) => rows.append(buttonRow(btn, i)));
 
-  const add = h("button", { class: "add-row", type: "button", onclick: () => { cfg.buttons = buttons.concat([{ label: "", action: "message", value: "" }]); structuralRefresh(); } }, "+ Add button");
+  const add = h("button", { class: "add-row", type: "button", onclick: () => { cfg.buttons = buttons.concat([{ label: "", action: "ack", value: "" }]); structuralRefresh(); } }, "+ Add button");
 
   // Escalation is one setting: minutes + what to escalate to. Picking "Never" hides
   // the rest, so the form cannot produce a timer with nothing to fire.
@@ -545,10 +545,9 @@ function buttonRow(btn, i) {
   for (const a of state.meta.button_actions) actionSel.append(h("option", { value: a, selected: btn.action === a }, BTN_ACTION_LABEL[a] || a));
   const onValue = (e) => { btn.value = e.target.value; liveRefresh(); };
   let valueControl;
-  if (btn.action === "ack") valueControl = h("input", { type: "text", value: btn.value || "", placeholder: "Optional message on dismiss", oninput: onValue });
-  else if (btn.action === "delay") valueControl = h("input", { type: "number", min: "1", max: "1440", value: btn.value || "", placeholder: "Minutes", oninput: onValue });
+  if (btn.action === "delay") valueControl = h("input", { type: "number", min: "1", max: "1440", value: btn.value || "", placeholder: "Minutes", oninput: onValue });
   else if (btn.action === "config") valueControl = h("input", { type: "text", class: "mono", value: btn.value || "", placeholder: "Rule name", oninput: onValue });
-  else valueControl = h("input", { type: "text", value: btn.value || "", placeholder: "Message to post", oninput: onValue });
+  else valueControl = h("input", { type: "text", value: btn.value || "", placeholder: "Optional message to post", oninput: onValue });
   const remove = h("div", { class: "drop" }, h("button", { class: "icon-btn", type: "button", title: "Remove button", "aria-label": "Remove button", onclick: () => { draft().buttons.splice(i, 1); structuralRefresh(); } }, "×"));
   const row = h("div", { class: "btn-row" }, labelI, actionSel, valueControl, remove);
   if (fieldErr(`buttons.${i}`)) { row.classList.add("has-error"); row.append(h("div", { class: "err row-err", text: fieldErr(`buttons.${i}`) })); }

@@ -266,7 +266,7 @@ async def test_need_help_yes_no_workflow_end_to_end():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), patch('hutbot.messaging.send_message', new=AsyncMock()), \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
         await process_command(app, 'set message Need help?', ch, u)
-        await process_command(app, 'add button "Yes" message "Here is the help doc"', ch, u)
+        await process_command(app, 'add button "Yes" ack "Here is the help doc"', ch, u)
         await process_command(app, 'add button "No" ack', ch, u)
         await process_command(app, 'set escalation 5 button "Yes"', ch, u)
         cfg = ch.configs["default"]

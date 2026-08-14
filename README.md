@@ -84,13 +84,13 @@ existing configs keep working unchanged.
     autocomplete so it arrives as a link, or pass its `C…` id.
 
 - **Buttons** attach interactive buttons to the message a rule sends (including the classic
-  unanswered-message reply). Each button is added incrementally with a typed action:
+  unanswered-message reply). Each button is added incrementally with a typed action (the leading
+  `add`, like `set` elsewhere, is optional):
   - `/hutbot [config] add button "<label>" config <config>` — run another config (a `manual` rule).
-  - `/hutbot [config] add button "<label>" ack [text]` — acknowledge/dismiss: stop the escalation and
-    optionally post `text`.
-  - `/hutbot [config] add button "<label>" message <text>` — post `<text>` in the thread of the
-    buttoned message. Like a reply message, it may use `{{variables}}` and `@mentions` (both are
-    resolved against the *original* message when pressed). The same applies to an `ack` text.
+  - `/hutbot [config] add button "<label>" ack [text]` — mark the message handled: stop any
+    escalation, remove the buttons, and post `[text]` in the thread when given. Like a reply message,
+    the text may use `{{variables}}` and `@mentions`, both resolved against the *original* message
+    when pressed.
   - `/hutbot [config] add button "<label>" delay <minutes>` — push the escalation out by N minutes
     and leave the buttons in place (the only button that does not consume the message). It needs an
     escalation to postpone, so set one first; `clear escalation` warns if it strands such a button.
@@ -103,11 +103,14 @@ existing configs keep working unchanged.
     Pending escalations survive restarts.
   - A button/timeout that runs a config passes the **original message context** to it, so the target's
     templates and any OpsGenie alert reference the original message.
+  - Once a message is handled, its buttons are removed and replaced by a one-line note of what
+    happened: 🔘 *`I've got it` Dave Grieser*, 🔘 *`Page` Dave Grieser* ▶️ *`alarm`* for a press, and
+    ⏰ *`1m`* or ⏰ *`5m`* ▶️ *`alarm`* when the escalation acted instead.
 
 - **"Need help?" example** — a question that defaults to "Yes" if ignored:
   ```bash
   /hutbot helpcheck set message Need help?
-  /hutbot helpcheck add button "Yes" message "Here's the help doc: …"
+  /hutbot helpcheck add button "Yes" ack "Here's the help doc: …"
   /hutbot helpcheck add button "No" ack
   /hutbot helpcheck set escalation 5 button "Yes"
   ```

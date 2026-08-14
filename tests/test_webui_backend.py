@@ -22,7 +22,7 @@ async def test_validate_config_payload_accepts_good_config():
         "escalation_target": "alarm",
         "buttons": [
             {"label": "Snooze", "action": "delay", "value": "10"},
-            {"label": "Note", "action": "message", "value": "Some message"},
+            {"label": "Note", "action": "ack", "value": "Some message"},
         ],
     }
 
@@ -49,7 +49,7 @@ async def test_validate_config_payload_accepts_good_config():
     assert cfg["escalation_target"] == "alarm"
     assert cfg["buttons"] == [
         {"label": "Snooze", "action": "delay", "value": "10"},
-        {"label": "Note", "action": "message", "value": "Some message"},
+        {"label": "Note", "action": "ack", "value": "Some message"},
     ]
     # the Slack client is never touched when caches are seeded and there are no @mentions.
     app.client.users_list.assert_not_called()

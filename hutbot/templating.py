@@ -221,7 +221,7 @@ def render_reply_message_template(message: str, variables: dict[str, str], confi
 
 
 async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False) -> dict[str, str]:
-    wait_time = config.get('wait_time')
+    wait_time = config.get('wait_time') or 0
     opsgenie_template_variables = {}
     if include_opsgenie:
         opsgenie_template_variables = await opsgenie.get_opsgenie_template_variables(app, opsgenie_token, config)

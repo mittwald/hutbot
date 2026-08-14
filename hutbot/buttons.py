@@ -19,7 +19,6 @@ from .constants import (
     BUTTON_ACTION_ACK,
     BUTTON_ACTION_CONFIG,
     BUTTON_ACTION_DELAY,
-    BUTTON_ACTION_MESSAGE,
     BUTTON_ACTION_PREFIX,
     ESCALATION_BUTTON,
     ESCALATION_CONFIG,
@@ -159,10 +158,10 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, po
             log_warning(f"Button target config '{value}' not found in #{channel.name}.")
             return
         await actions.run_action(app, opsgenie_token, channel, target_config, value, context=run_context)
-    elif action in (BUTTON_ACTION_MESSAGE, BUTTON_ACTION_ACK):
-        # message posts the configured text; ack just dismisses (optional text).
-        # The text is a template like a config's reply message, rendered against the
-        # original message with the defining config's date/time settings.
+    elif action == BUTTON_ACTION_ACK:
+        # Dismissing posts the ack text when there is one. The text is a template
+        # like a config's reply message, rendered against the original message with
+        # the defining config's date/time settings.
         if value:
             text = await actions.render_template_text(app, opsgenie_token, channel, src_config or {}, src_config_name, run_context, value)
             await messaging._post_message(app, posted_channel_id, text, None, message_ts)
@@ -188,14 +187,14 @@ async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> No
         buttons = snapshot if snapshot is not None else (src_config or {}).get('buttons') or []
         log(f"No button pressed on message {message_ts}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
         await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''))
-        await _strip_buttons(app, posted_channel_id, message_ts, entry)
+        await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), _ran_config(buttons[idx])))
     elif kind == ESCALATION_CONFIG:
         target = entry.get('escalation_target', '')
         target_config = channel.configs.get(target)
         if target_config:
             log(f"Escalating message {message_ts}: running '{target}' in #{channel.name}.")
             await actions.run_action(app, opsgenie_token, channel, target_config, target, context=run_context)
-            await _strip_buttons(app, posted_channel_id, message_ts, entry)
+            await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), target))
         else:
             log_warning(f"Escalation target '{target}' not found in #{channel.name}.")
 
@@ -316,18 +315,43 @@ async def restore_pending_buttons(app: AsyncApp, opsgenie_token: str) -> None:
     log(f"Restored {restored} pending button escalations.")
 
 
-async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str, entry: dict | None) -> None:
+def _ran_config(button: dict) -> str:
+    """The config a button runs, if it runs one."""
+    action, value = normalize_button(button)
+    return value if action == BUTTON_ACTION_CONFIG and value else ""
+
+
+def _ran_suffix(ran: str) -> str:
+    """`▶️ \u0060config\u0060`, with the emoji outside the italics."""
+    return f" ▶️ _`{ran}`_" if ran else ""
+
+
+def _press_note(button: dict, presser: User | None) -> str:
+    """What the message says in place of its buttons after somebody pressed one."""
+    who = (presser.real_name or presser.name or '?') if presser else 'Someone'
+    return f"🔘 _`{button.get('label') or '?'}` {who}_{_ran_suffix(_ran_config(button))}"
+
+
+def _timeout_note(timeout: float, ran: str = "") -> str:
+    """…and what it says when the escalation acted instead of a person."""
+    return f"⏰ _`{int((timeout or 0) // 60)}m`_{_ran_suffix(ran)}"
+
+
+async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str, entry: dict | None, note: str = "") -> None:
     """Remove the interactive buttons from a handled message so a stale later click
-    can't fire an action against a since-edited config. Best-effort."""
+    can't fire an action against a since-edited config, leaving a note of what was
+    done in their place (already formatted by `_press_note`/`_timeout_note`).
+    Best-effort."""
     posted_text = (entry or {}).get('posted_text')
     if not posted_text or not posted_channel_id or not message_ts:
         return
+    text = f"{posted_text}\n\n{note}" if note else posted_text
     try:
         await app.client.chat_update(
             channel=posted_channel_id,
             ts=message_ts,
-            text=posted_text,
-            blocks=_section_blocks(posted_text),
+            text=text,
+            blocks=_section_blocks(text),
         )
     except SlackApiError as e:
         log_warning(f"Failed to remove buttons from message {message_ts} in {posted_channel_id}:", e)
@@ -390,4 +414,4 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
     # the timeout-escalation path; the presser is only used for the log line above.
     run_context = await _escalation_context(app, entry, posted_channel_id, message_ts)
     await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name)
-    await _strip_buttons(app, posted_channel_id, message_ts, entry)
+    await _strip_buttons(app, posted_channel_id, message_ts, entry, _press_note(buttons[index], presser))
