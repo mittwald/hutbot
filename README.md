@@ -104,8 +104,8 @@ existing configs keep working unchanged.
   - A button/timeout that runs a config passes the **original message context** to it, so the target's
     templates and any OpsGenie alert reference the original message.
   - Once a message is handled, its buttons are removed and replaced by a one-line note of what
-    happened: 🔘 *`I've got it` Dave Grieser*, 🔘 *`Page` Dave Grieser* ▶️ *`alarm`* for a press, and
-    ⏰ *`1m`* or ⏰ *`5m`* ▶️ *`alarm`* when the escalation acted instead.
+    happened: *▣ [I've got it] Dave Grieser* or *▣ [Page] Dave Grieser ▶︎ [alarm]* for a press, and
+    *⌛︎ [1m]* or *⌛︎ [5m] ▶︎ [alarm]* when the escalation acted instead.
 
 - **"Need help?" example** — a question that defaults to "Yes" if ignored:
   ```bash

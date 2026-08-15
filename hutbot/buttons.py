@@ -322,19 +322,19 @@ def _ran_config(button: dict) -> str:
 
 
 def _ran_suffix(ran: str) -> str:
-    """`▶️ \u0060config\u0060`, with the emoji outside the italics."""
-    return f" ▶️ _`{ran}`_" if ran else ""
+    """The config a press or a timeout ran, if any."""
+    return f" ▶︎ [{ran}]" if ran else ""
 
 
 def _press_note(button: dict, presser: User | None) -> str:
     """What the message says in place of its buttons after somebody pressed one."""
     who = (presser.real_name or presser.name or '?') if presser else 'Someone'
-    return f"🔘 _`{button.get('label') or '?'}` {who}_{_ran_suffix(_ran_config(button))}"
+    return f"_▣ [{button.get('label') or '?'}] {who}{_ran_suffix(_ran_config(button))}_"
 
 
 def _timeout_note(timeout: float, ran: str = "") -> str:
     """…and what it says when the escalation acted instead of a person."""
-    return f"⏰ _`{int((timeout or 0) // 60)}m`_{_ran_suffix(ran)}"
+    return f"_⌛︎ [{int((timeout or 0) // 60)}m]{_ran_suffix(ran)}_"
 
 
 async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str, entry: dict | None, note: str = "") -> None:
