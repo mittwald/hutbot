@@ -562,7 +562,7 @@ async def test_button_resolves_from_snapshot_and_strips_after_press():
     app.client.chat_update.assert_awaited_once()               # buttons stripped
     kw = app.client.chat_update.await_args.kwargs
     # The buttons are replaced by a note saying who took the message.
-    assert kw["ts"] == "10.1" and kw["text"] == "Approve?\n\n_▣ [Ack] Bob_"
+    assert kw["ts"] == "10.1" and kw["text"] == "Approve?\n\n---\n_Bob: [Ack]_"
 
 
 @pytest.mark.asyncio
@@ -799,9 +799,9 @@ async def test_a_config_named_button_still_gets_its_own_commands():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("button,expected", [
-    ({"label": "I've got it", "action": "ack", "value": "On it"}, "_▣ [I've got it] Dave Grieser_"),
-    ({"label": "No", "action": "ack", "value": ""}, "_▣ [No] Dave Grieser_"),
-    ({"label": "Page", "action": "config", "value": "alarm"}, "_▣ [Page] Dave Grieser ▶︎ [alarm]_"),
+    ({"label": "I've got it", "action": "ack", "value": "On it"}, "_Dave Grieser: [I've got it]_"),
+    ({"label": "No", "action": "ack", "value": ""}, "_Dave Grieser: [No]_"),
+    ({"label": "Page", "action": "config", "value": "alarm"}, "_Dave Grieser: [Page] ▶︎ alarm_"),
 ])
 async def test_a_press_leaves_a_note_in_place_of_the_buttons(button, expected):
     import hutbot
@@ -825,13 +825,13 @@ async def test_a_press_leaves_a_note_in_place_of_the_buttons(button, expected):
          patch('hutbot.actions.run_action', new=AsyncMock()):
         await hutbot.buttons.handle_button_press(app, "token", body, action)
 
-    assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n{expected}"
+    assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{expected}"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("escalation,expected", [
-    ({"escalation_kind": "button", "escalation_target": "I've got it", "timeout": 60}, "_⌛︎ [1m]_"),
-    ({"escalation_kind": "config", "escalation_target": "alarm", "timeout": 300}, "_⌛︎ [5m] ▶︎ [alarm]_"),
+    ({"escalation_kind": "button", "escalation_target": "I've got it", "timeout": 60}, "_⌛︎ 1m_"),
+    ({"escalation_kind": "config", "escalation_target": "alarm", "timeout": 300}, "_⌛︎ 5m ▶︎ alarm_"),
 ])
 async def test_an_escalation_leaves_a_note_in_place_of_the_buttons(escalation, expected):
     import hutbot
@@ -853,4 +853,4 @@ async def test_an_escalation_leaves_a_note_in_place_of_the_buttons(escalation, e
          patch('hutbot.actions.run_action', new=AsyncMock()):
         await hutbot.buttons._escalation_task(app, "token", key, 0)
 
-    assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n{expected}"
+    assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{expected}"

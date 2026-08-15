@@ -323,18 +323,18 @@ def _ran_config(button: dict) -> str:
 
 def _ran_suffix(ran: str) -> str:
     """The config a press or a timeout ran, if any."""
-    return f" ▶︎ [{ran}]" if ran else ""
+    return f" ▶︎ {ran}" if ran else ""
 
 
 def _press_note(button: dict, presser: User | None) -> str:
     """What the message says in place of its buttons after somebody pressed one."""
     who = (presser.real_name or presser.name or '?') if presser else 'Someone'
-    return f"_▣ [{button.get('label') or '?'}] {who}{_ran_suffix(_ran_config(button))}_"
+    return f"_{who}: [{button.get('label') or '?'}]{_ran_suffix(_ran_config(button))}_"
 
 
 def _timeout_note(timeout: float, ran: str = "") -> str:
     """…and what it says when the escalation acted instead of a person."""
-    return f"_⌛︎ [{int((timeout or 0) // 60)}m]{_ran_suffix(ran)}_"
+    return f"_⌛︎ {int((timeout or 0) // 60)}m{_ran_suffix(ran)}_"
 
 
 async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str, entry: dict | None, note: str = "") -> None:
@@ -345,7 +345,8 @@ async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str,
     posted_text = (entry or {}).get('posted_text')
     if not posted_text or not posted_channel_id or not message_ts:
         return
-    text = f"{posted_text}\n\n{note}" if note else posted_text
+    # A plain rule separates the note from the message it belongs to.
+    text = f"{posted_text}\n\n---\n{note}" if note else posted_text
     try:
         await app.client.chat_update(
             channel=posted_channel_id,
