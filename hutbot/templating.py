@@ -5,10 +5,12 @@ import datetime
 from slack_bolt.async_app import AsyncApp
 
 from . import calendarfeed
+from . import conditionutil
 from . import datetimefmt
 from . import opsgenie
 from .constants import (
     DATETIME_TEMPLATE_VARIABLES,
+    LIST_TEMPLATE_VARIABLES,
     TEMPLATE_DATETIME_VARIABLES,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
@@ -157,8 +159,23 @@ def validate_template_expressions(message: str) -> str:
         )
 
     for expr in expressions:
-        if expr.args and expr.variable not in TEMPLATE_DATETIME_VARIABLES | DATETIME_TEMPLATE_VARIABLES:
-            return f"template variable `{{{{{expr.variable}}}}}` does not support arguments"
+        renders_datetime = expr.variable in TEMPLATE_DATETIME_VARIABLES | DATETIME_TEMPLATE_VARIABLES
+        holds_a_list = expr.variable in LIST_TEMPLATE_VARIABLES
+        for argument in expr.args:
+            if argument == "nth":
+                if not holds_a_list:
+                    return f"template variable `{{{{{expr.variable}}}}}` is not a list, so it does not take `nth`"
+            elif holds_a_list:
+                return f"template variable `{{{{{expr.variable}}}}}` takes only `nth`"
+            elif not renders_datetime:
+                return f"template variable `{{{{{expr.variable}}}}}` does not support arguments"
+        if "nth" in expr.args:
+            try:
+                position = int(expr.args["nth"])
+            except ValueError:
+                return f"`nth` must be a whole number, not `{expr.args['nth']}`"
+            if position < 1:
+                return "`nth` counts from 1, so it must be 1 or more"
         if "tz" in expr.args:
             try:
                 datetimefmt.validate_timezone_name(expr.args["tz"])
@@ -188,6 +205,20 @@ def find_template_variables(message: str) -> set[str]:
         return set()
 
 
+def _nth_list_item(variables: dict[str, str], expr: TemplateExpression) -> str:
+    """One entry of a list variable, counting from 1.
+
+    Asking for an entry the list does not have renders empty rather than failing, so a
+    message written for two attendees still reads when there is only one.
+    """
+    try:
+        position = int(expr.args.get("nth", ""))
+    except ValueError:
+        return ""
+    items = conditionutil.list_items(variables, expr.variable)
+    return items[position - 1] if 1 <= position <= len(items) else ""
+
+
 def render_reply_message_template(message: str, variables: dict[str, str], config: dict | None = None) -> str:
     try:
         spans = list(iter_template_expression_parts(message))
@@ -213,6 +244,8 @@ def render_reply_message_template(message: str, variables: dict[str, str], confi
                 rendered.append(datetimefmt.format_template_datetime(raw_value, expr.variable, config, expr.args))
             else:
                 rendered.append(variables.get(expr.variable, UNKNOWN_PERIOD_PLACEHOLDER))
+        elif expr.variable in LIST_TEMPLATE_VARIABLES and "nth" in expr.args:
+            rendered.append(_nth_list_item(variables, expr))
         else:
             rendered.append(variables.get(expr.variable, message[start:end]))
         last_index = end

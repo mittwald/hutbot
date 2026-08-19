@@ -264,6 +264,9 @@ TEMPLATE_ARGUMENT_ALIASES = {
     "timezone": "tz",
     "lc": "lc",
     "locale": "lc",
+    # Picks one entry out of a list variable, counting from 1: `nth=2` is the second.
+    "nth": "nth",
+    "n": "nth",
 }
 OPSGENIE_DATETIME_TEMPLATE_VARIABLES = {
     f"opsgenie_{period}_{bound}_{part}"
@@ -287,13 +290,25 @@ CALENDAR_DATETIME_TEMPLATE_VARIABLES = {
     for bound in ("start", "end")
     for part in ("date", "time", "datetime")
 }
+# Attendee names and emails: several per event, so these hold a list. A condition on one
+# matches when *any* item matches, and a `not_` operator when *none* does.
+CALENDAR_LIST_TEMPLATE_VARIABLES = {
+    f"calendar_{period}_{field}"
+    for period in ("current", "next")
+    # `other_*` drops the organizer, which a shared mailbox invites itself to — so a rota
+    # entry organized by "Notfallhotline" leaves just the person actually on call.
+    for field in ("attendees", "attendee_emails", "other_attendees", "other_attendee_emails")
+}
+LIST_TEMPLATE_VARIABLES = CALENDAR_LIST_TEMPLATE_VARIABLES
 CALENDAR_TEMPLATE_VARIABLES = {
     "calendar_name",
     *(
         f"calendar_{period}_{field}"
         for period in ("current", "next")
-        for field in ("summary", "location", "description", "organizer", "uid", "status")
+        for field in ("summary", "location", "description", "organizer", "organizer_email",
+                      "attendee_count", "uid", "status")
     ),
+    *CALENDAR_LIST_TEMPLATE_VARIABLES,
     *CALENDAR_DATETIME_TEMPLATE_VARIABLES,
 }
 # Every variable that renders an instant and therefore accepts `fmt`/`tz`/`lc`

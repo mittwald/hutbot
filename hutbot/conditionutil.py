@@ -33,6 +33,7 @@ from .constants import (
     CONDITION_OPERATORS,
     CONDITION_OPERATORS_WITHOUT_VALUE,
     FIRE_TIME_TEMPLATE_VARIABLES,
+    LIST_TEMPLATE_VARIABLES,
     UNKNOWN_PLACEHOLDERS,
 )
 
@@ -226,6 +227,18 @@ def snapshot_conditions(config: dict) -> dict:
     }
 
 
+def list_items(variables: dict, variable: str) -> list[str]:
+    """The entries of a list variable.
+
+    The provider stores them under ``__<variable>_items`` beside the comma-joined form a
+    message renders; splitting that form is the fallback for a hand-built variable dict.
+    """
+    items = variables.get(f"__{variable}_items")
+    if items is None:
+        return [part.strip() for part in (variables.get(variable) or "").split(",") if part.strip()]
+    return list(items)
+
+
 def condition_needs_fire_time(condition) -> bool:
     """Whether this condition reads something that is only known once the rule fires."""
     variable, operator, _, _ = normalize_condition(condition)
@@ -244,6 +257,29 @@ def settled_condition_variables(config: dict | None) -> set[str]:
     return variables
 
 
+def _judge_list(operator: str, items: list, value: str, case_sensitive: bool) -> tuple[bool, str]:
+    """Apply an operator across the items of a list variable.
+
+    A positive operator passes when **any** item matches; a `not_` operator passes when
+    **none** does. Negating item-by-item instead would make `not_equals` true for any list
+    with two different entries, which is never what someone means by "X is not an attendee".
+    """
+    if operator == CONDITION_OP_EMPTY:
+        return not items, ""
+    if operator == CONDITION_OP_NOT_EMPTY:
+        return bool(items), ""
+
+    negated = operator.startswith('not_')
+    positive = operator[len('not_'):] if negated else operator
+    matched = False
+    for item in items:
+        met, error = _test_condition(positive, item, value, case_sensitive)
+        if error:
+            return False, error
+        matched = matched or met
+    return (not matched) if negated else matched, ""
+
+
 def _judge(condition, variables: dict[str, str]) -> tuple[bool, str]:
     """One condition against resolved variables: `(met, reason_when_not_met)`."""
     variable, operator, value, case_sensitive = normalize_condition(condition)
@@ -252,7 +288,10 @@ def _judge(condition, variables: dict[str, str]) -> tuple[bool, str]:
         return False, f"{label} is not a usable condition"
     if variable not in variables:
         return False, f"{label} refers to an unknown variable `{{{{{variable}}}}}`"
-    met, error = _test_condition(operator, variables.get(variable) or "", value, case_sensitive)
+    if variable in LIST_TEMPLATE_VARIABLES:
+        met, error = _judge_list(operator, list_items(variables, variable), value, case_sensitive)
+    else:
+        met, error = _test_condition(operator, variables.get(variable) or "", value, case_sensitive)
     return met, error or ("" if met else f"{label} did not match")
 
 

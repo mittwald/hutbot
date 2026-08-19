@@ -355,8 +355,14 @@ def test_placeholders_cover_exactly_the_declared_variables():
     variables = get_calendar_placeholder_variables(CONFIG)
     public = {key for key in variables if not key.startswith("__")}
     assert public == CALENDAR_TEMPLATE_VARIABLES
-    raw = {key for key in variables if key.startswith("__")}
-    assert raw == {f"__{name}_raw" for name in CALENDAR_DATETIME_TEMPLATE_VARIABLES}
+    internal = {key for key in variables if key.startswith("__")}
+    assert internal == (
+        {f"__{name}_raw" for name in CALENDAR_DATETIME_TEMPLATE_VARIABLES}
+        | {f"__{name}_items" for name in hutbot.constants.CALENDAR_LIST_TEMPLATE_VARIABLES}
+    )
+    # A list with no event behind it has no items, so `empty` is true for it.
+    for name in hutbot.constants.CALENDAR_LIST_TEMPLATE_VARIABLES:
+        assert variables[f"__{name}_items"] == []
 
 
 def test_placeholders_without_a_feed_say_so():
@@ -751,3 +757,325 @@ async def test_calendar_condition_blocks_when_no_event_matches(live_cal):
             app, "token", channel, config, "gated", context={"channel_id": "C12345"})
     assert posted is None and "did not match" in reason
     post.assert_not_awaited()
+
+
+# ----- organizer and attendees, from a real on-call feed -----
+
+# An Outlook-bridge rota entry: the organizer is a room mailbox with no usable address
+# (`invalid:nomail`), and there are two attendees, one folded across lines.
+ONCALL_ICS = "\r\n".join([
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//mittwald//outlook-bridge//EN",
+    "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:N@mittwald.de",
+    "X-WR-TIMEZONE:Europe/Berlin",
+    "BEGIN:VEVENT",
+    "UID:040000008200E00074C5B7101A82E00800000000C048C877C107DD01000000000000000",
+    " 010000000B1DB35434DF24349826253ACE907D346-20260819T160000Z",
+    "DTSTAMP:20260819T140015Z", "DTSTART:20260819T160000Z", "DTEND:20260820T060000Z",
+    "SUMMARY:Rufbereitschaft - Engelbracht\\, Nico", "LOCATION:Rufbereitschaft",
+    'ORGANIZER;CN="Notfallhotline":invalid:nomail',
+    'ATTENDEE;CN="Notfallhotline";ROLE=REQ-PARTICIPANT:mailto:N@mittwald.de',
+    'ATTENDEE;CN="Nico Engelbrecht";ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailt',
+    " o:N.Engelbrecht@mittwald.de",
+    "STATUS:CONFIRMED", "TRANSP:OPAQUE", "LAST-MODIFIED:20260630T064802Z",
+    "END:VEVENT", "END:VCALENDAR",
+])
+ONCALL_NOW = datetime.datetime(2026, 8, 19, 20, 0, tzinfo=datetime.timezone.utc)
+
+
+@pytest.fixture
+def oncall_cal():
+    return icalendar.Calendar.from_ical(ONCALL_ICS)
+
+
+def _oncall_event(calendar):
+    current, _ = find_current_and_next_events(calendar, CONFIG, ONCALL_NOW)
+    return current
+
+
+def test_escaped_comma_in_the_summary_is_decoded(oncall_cal):
+    assert _oncall_event(oncall_cal).summary == "Rufbereitschaft - Engelbracht, Nico"
+
+
+def test_attendees_are_collected_with_names_and_emails(oncall_cal):
+    event = _oncall_event(oncall_cal)
+    assert event.attendees == ["Notfallhotline", "Nico Engelbrecht"]
+    assert event.attendee_emails == ["N@mittwald.de", "N.Engelbrecht@mittwald.de"]
+
+
+def test_a_single_attendee_is_not_treated_as_characters(oncall_cal):
+    """icalendar returns a bare value for one ATTENDEE and a list for several."""
+    ics = ONCALL_ICS.replace(
+        'ATTENDEE;CN="Nico Engelbrecht";ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailt\r\n o:N.Engelbrecht@mittwald.de\r\n', "")
+    event = _oncall_event(icalendar.Calendar.from_ical(ics))
+    assert event.attendees == ["Notfallhotline"]
+    assert event.attendee_emails == ["N@mittwald.de"]
+
+
+def test_no_attendees_at_all(oncall_cal):
+    event = _oncall_event(icalendar.Calendar.from_ical(ONCALL_ICS.replace("ATTENDEE", "X-WAS-ATTENDEE")))
+    assert event.attendees == [] and event.attendee_emails == []
+
+
+def test_an_unusable_organizer_address_is_dropped_but_the_name_kept(oncall_cal):
+    """`invalid:nomail` is a room mailbox with no address; the CN is still worth showing."""
+    event = _oncall_event(oncall_cal)
+    assert event.organizer == "Notfallhotline"
+    assert event.organizer_email == ""
+
+
+def test_a_real_organizer_address_is_exposed():
+    ics = ONCALL_ICS.replace('ORGANIZER;CN="Notfallhotline":invalid:nomail',
+                             'ORGANIZER;CN="Notfallhotline":mailto:hotline@example.com')
+    event = _oncall_event(icalendar.Calendar.from_ical(ics))
+    assert event.organizer == "Notfallhotline"
+    assert event.organizer_email == "hotline@example.com"
+
+
+def test_an_attendee_without_a_cn_falls_back_to_its_address():
+    ics = ONCALL_ICS.replace('ATTENDEE;CN="Notfallhotline";ROLE=REQ-PARTICIPANT:mailto:N@mittwald.de',
+                             'ATTENDEE;ROLE=REQ-PARTICIPANT:mailto:plain@example.com')
+    event = _oncall_event(icalendar.Calendar.from_ical(ics))
+    assert "plain@example.com" in event.attendees
+
+
+def test_an_attendee_with_an_x500_address_keeps_its_name_but_has_no_email():
+    ics = ONCALL_ICS.replace(
+        'ATTENDEE;CN="Notfallhotline";ROLE=REQ-PARTICIPANT:mailto:N@mittwald.de',
+        'ATTENDEE;CN="Room 1":mailto:/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=ABC')
+    event = _oncall_event(icalendar.Calendar.from_ical(ics))
+    assert "Room 1" in event.attendees
+    assert event.attendee_emails == ["N.Engelbrecht@mittwald.de"]
+
+
+@pytest.mark.asyncio
+async def test_attendee_variables_render_as_a_comma_separated_list(oncall_cal):
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+    assert variables["calendar_current_attendees"] == "Notfallhotline, Nico Engelbrecht"
+    assert variables["calendar_current_attendee_emails"] == "N@mittwald.de, N.Engelbrecht@mittwald.de"
+    assert variables["calendar_current_attendee_count"] == "2"
+    assert variables["calendar_current_organizer_email"] == ""
+    # The items a condition matches against ride along beside the joined form.
+    assert variables["__calendar_current_attendee_emails_items"] == [
+        "N@mittwald.de", "N.Engelbrecht@mittwald.de"]
+
+
+@pytest.mark.asyncio
+async def test_conditions_on_attendee_emails(oncall_cal):
+    """A list operator matches any entry; its `not_` form requires that none does."""
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+
+    def judge(operator, value, variable="calendar_current_attendee_emails", case_sensitive=False):
+        condition = {"variable": variable, "operator": operator, "value": value,
+                     "case_sensitive": case_sensitive}
+        return hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0]
+
+    # Membership, case-insensitively by default.
+    assert judge("equals", "n.engelbrecht@mittwald.de") is True
+    assert judge("equals", "N.Engelbrecht@mittwald.de") is True
+    assert judge("equals", "someone.else@mittwald.de") is False
+    # `not_equals` means "not among them", not "some entry differs".
+    assert judge("not_equals", "someone.else@mittwald.de") is True
+    assert judge("not_equals", "n.engelbrecht@mittwald.de") is False
+    # Substring and regex apply per entry.
+    assert judge("contains", "@mittwald.de") is True
+    assert judge("not_contains", "@example.com") is True
+    assert judge("not_contains", "@mittwald.de") is False
+    assert judge("regex", r"^n\.\w+@mittwald\.de$") is True
+    assert judge("starts_with", "n.engelbrecht") is True
+    assert judge("ends_with", "@mittwald.de") is True
+    # Emptiness is about the list, not about any entry.
+    assert judge("not_empty", "") is True
+    assert judge("empty", "") is False
+    # Names work the same way.
+    assert judge("contains", "Nico", variable="calendar_current_attendees") is True
+    # And the case flag still applies per entry.
+    assert judge("equals", "n.engelbrecht@mittwald.de", case_sensitive=True) is False
+    assert judge("equals", "N.Engelbrecht@mittwald.de", case_sensitive=True) is True
+
+
+def test_an_empty_list_is_empty_and_matches_nothing():
+    variables = get_calendar_placeholder_variables({})
+    def judge(operator, value=""):
+        condition = {"variable": "calendar_current_attendee_emails", "operator": operator,
+                     "value": value, "case_sensitive": False}
+        return hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0]
+    assert judge("empty") is True
+    assert judge("not_empty") is False
+    assert judge("equals", "anyone@example.com") is False
+    # Nothing is among an empty list, so a `not_` operator holds.
+    assert judge("not_equals", "anyone@example.com") is True
+
+
+def test_a_bad_regex_on_a_list_still_fails_closed():
+    variables = {"calendar_current_attendee_emails": "a@b.de",
+                 "__calendar_current_attendee_emails_items": ["a@b.de"]}
+    for operator in ("regex", "not_regex"):
+        condition = {"variable": "calendar_current_attendee_emails", "operator": operator,
+                     "value": "[unclosed", "case_sensitive": False}
+        met, reason = hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)
+        assert met is False and "invalid pattern" in reason
+
+
+def test_a_list_variable_falls_back_to_splitting_the_joined_form():
+    """A hand-built variable dict without the items still behaves sensibly."""
+    variables = {"calendar_current_attendee_emails": "a@b.de, c@d.de"}
+    condition = {"variable": "calendar_current_attendee_emails", "operator": "equals",
+                 "value": "c@d.de", "case_sensitive": False}
+    assert hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0] is True
+
+
+@pytest.mark.asyncio
+async def test_show_calendar_lists_the_attendees(oncall_cal):
+    app = AsyncMock()
+    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG}
+    channel = _mk_channel({"default": config})
+    current, next_event = find_current_and_next_events(oncall_cal, config, ONCALL_NOW)
+    context = hutbot.models.CalendarContext("N@mittwald.de", current, next_event)
+    with patch('hutbot.calendarfeed.resolve_calendar_context', new=AsyncMock(return_value=context)), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "show calendar", channel, User("U1", "dave", "Dave", "T"))
+    text = send.call_args.args[3]
+    # The organizer has its own line, so it is not repeated under Attendees.
+    assert "*Organizer*: Notfallhotline" in text
+    assert "*Attendees*: Nico Engelbrecht" in text
+
+
+def test_the_organizer_is_dropped_from_the_other_attendees(oncall_cal):
+    """A shared mailbox invites itself, which buries the person actually on call."""
+    event = _oncall_event(oncall_cal)
+    assert event.attendees == ["Notfallhotline", "Nico Engelbrecht"]
+    assert event.other_attendees == ["Nico Engelbrecht"]
+    assert event.other_attendee_emails == ["N.Engelbrecht@mittwald.de"]
+
+
+def test_the_organizer_is_matched_by_address_when_it_has_one():
+    ics = ONCALL_ICS.replace('ORGANIZER;CN="Notfallhotline":invalid:nomail',
+                             'ORGANIZER;CN="Something Else":mailto:N@mittwald.de')
+    event = _oncall_event(icalendar.Calendar.from_ical(ics))
+    # Matched on the address even though the names differ.
+    assert event.other_attendees == ["Nico Engelbrecht"]
+
+
+def test_an_event_without_an_organizer_keeps_every_attendee():
+    ics = ONCALL_ICS.replace('ORGANIZER;CN="Notfallhotline":invalid:nomail', "X-NO-ORGANIZER:none")
+    event = _oncall_event(icalendar.Calendar.from_ical(ics))
+    assert event.other_attendees == event.attendees == ["Notfallhotline", "Nico Engelbrecht"]
+
+
+def test_an_organizer_who_is_not_an_attendee_changes_nothing():
+    ics = ONCALL_ICS.replace('ORGANIZER;CN="Notfallhotline":invalid:nomail',
+                             'ORGANIZER;CN="Someone Outside":mailto:outside@example.com')
+    event = _oncall_event(icalendar.Calendar.from_ical(ics))
+    assert event.other_attendees == ["Notfallhotline", "Nico Engelbrecht"]
+
+
+@pytest.mark.asyncio
+async def test_other_attendee_variables_and_conditions(oncall_cal):
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+    assert variables["calendar_current_other_attendees"] == "Nico Engelbrecht"
+    assert variables["calendar_current_other_attendee_emails"] == "N.Engelbrecht@mittwald.de"
+    assert variables["__calendar_current_other_attendee_emails_items"] == ["N.Engelbrecht@mittwald.de"]
+
+    def judge(operator, value, variable="calendar_current_other_attendee_emails"):
+        condition = {"variable": variable, "operator": operator, "value": value, "case_sensitive": False}
+        return hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0]
+
+    # The shared mailbox is an attendee, but not one of the "other" attendees.
+    assert judge("equals", "n@mittwald.de") is False
+    assert judge("equals", "n@mittwald.de", variable="calendar_current_attendee_emails") is True
+    assert judge("equals", "n.engelbrecht@mittwald.de") is True
+    assert judge("not_empty", "") is True
+
+
+# ----- picking one entry out of a list variable -----
+
+@pytest.mark.asyncio
+async def test_nth_picks_one_attendee(oncall_cal):
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+
+    def render(template):
+        return hutbot.templating.render_reply_message_template(template, variables, CONFIG)
+
+    assert render("{{calendar_current_attendees(nth=1)}}") == "Notfallhotline"
+    assert render("{{calendar_current_attendees(nth=2)}}") == "Nico Engelbrecht"
+    assert render("{{calendar_current_attendee_emails(nth=2)}}") == "N.Engelbrecht@mittwald.de"
+    # `n` is the short spelling.
+    assert render("{{calendar_current_attendees(n=2)}}") == "Nico Engelbrecht"
+    # Without it, the whole list still renders comma-separated.
+    assert render("{{calendar_current_attendees}}") == "Notfallhotline, Nico Engelbrecht"
+    # The `other_*` lists are indexed the same way.
+    assert render("{{calendar_current_other_attendees(nth=1)}}") == "Nico Engelbrecht"
+
+
+@pytest.mark.asyncio
+async def test_nth_beyond_the_end_renders_empty(oncall_cal):
+    """A message written for two attendees still reads when there is only one."""
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+
+    def render(template):
+        return hutbot.templating.render_reply_message_template(template, variables, CONFIG)
+
+    # Two attendees, so the third is empty rather than an error or a placeholder.
+    assert render("[{{calendar_current_attendees(nth=3)}}]") == "[]"
+    # Only one non-organizer attendee.
+    assert render("[{{calendar_current_other_attendees(nth=2)}}]") == "[]"
+    # No next event at all, so every entry is out of range.
+    assert render("[{{calendar_next_attendees(nth=1)}}]") == "[]"
+
+
+def test_nth_on_an_empty_list_renders_empty():
+    variables = get_calendar_placeholder_variables({})
+    assert hutbot.templating.render_reply_message_template(
+        "[{{calendar_current_attendees(nth=1)}}]", variables, {}) == "[]"
+
+
+@pytest.mark.asyncio
+async def test_nth_reads_a_real_on_call_message(oncall_cal):
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+    template = ("On call: {{calendar_current_other_attendees(nth=1)}} "
+                "<{{calendar_current_other_attendee_emails(nth=1)}}> until {{calendar_current_end_time}}")
+    assert hutbot.templating.render_reply_message_template(template, variables, CONFIG) == (
+        "On call: Nico Engelbrecht <N.Engelbrecht@mittwald.de> until 08:00")
+
+
+@pytest.mark.parametrize("template,expected", [
+    ("{{calendar_current_attendees(nth=1)}}", ""),
+    ("{{calendar_current_attendees(n=12)}}", ""),
+    ("{{calendar_current_attendees(nth=0)}}", "counts from 1"),
+    ("{{calendar_current_attendees(nth=-1)}}", "counts from 1"),
+    ("{{calendar_current_attendees(nth=abc)}}", "must be a whole number"),
+    # A list variable takes nothing else.
+    ("{{calendar_current_attendees(fmt='x')}}", "takes only `nth`"),
+    ("{{calendar_current_attendees(tz='UTC')}}", "takes only `nth`"),
+    # And `nth` is meaningless on anything that is not a list.
+    ("{{message(nth=1)}}", "is not a list"),
+    ("{{calendar_current_summary(nth=1)}}", "is not a list"),
+    ("{{calendar_current_start_time(nth=1)}}", "is not a list"),
+    # The date/time arguments still work where they belong.
+    ("{{calendar_current_start_time(tz='UTC')}}", ""),
+])
+def test_nth_validation(template, expected):
+    error = hutbot.templating.validate_template_expressions(template)
+    if expected:
+        assert expected in error
+    else:
+        assert error == ""
+
+
+@pytest.mark.asyncio
+async def test_set_message_accepts_and_rejects_nth():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set message On call: {{calendar_current_other_attendees(nth=1)}}", channel, user)
+        assert channel.configs["default"]["reply_message"] == "On call: {{calendar_current_other_attendees(nth=1)}}"
+        await process_command(app, "set message Nope: {{calendar_current_attendees(nth=0)}}", channel, user)
+    assert "counts from 1" in send.call_args.args[3]

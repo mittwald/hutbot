@@ -27,6 +27,7 @@ from . import messaging
 from . import state
 from .constants import (
     CALENDAR_DATETIME_TEMPLATE_VARIABLES,
+    CALENDAR_LIST_TEMPLATE_VARIABLES,
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
     UNKNOWN_CALENDAR_PLACEHOLDER,
     UNKNOWN_PERIOD_PLACEHOLDER,
@@ -61,24 +62,62 @@ def _text(event, key: str) -> str:
     return "" if value is None else str(value).strip()
 
 
+def _properties(event, key: str) -> list:
+    """Every occurrence of a repeatable property.
+
+    icalendar returns a bare value for one `ATTENDEE` and a list for several, so callers
+    would otherwise have to branch on the type.
+    """
+    value = event.get(key)
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list) else [value]
+
+
+def _address(value) -> str:
+    """The email address of a CAL-ADDRESS, or "" when it does not carry one.
+
+    Real feeds put all sorts of things here: Exchange writes an X.500 distinguished name
+    (`mailto:/O=EXCHANGELABS/OU=.../CN=...`) and a room mailbox can be `invalid:nomail`.
+    Better empty than gibberish.
+    """
+    address = str(value if value is not None else "").strip()
+    if address.lower().startswith("mailto:"):
+        address = address[len("mailto:"):]
+    return address if "@" in address and "/" not in address else ""
+
+
+def _common_name(value) -> str:
+    return str((getattr(value, 'params', None) or {}).get('CN') or "").strip()
+
+
+def _display_name(value) -> str:
+    """What to call a participant: their `CN`, else their address."""
+    return _common_name(value) or _address(value)
+
+
+def _is_organizer(attendee, organizer_email: str, organizer_name: str) -> bool:
+    """Whether this attendee is the event's organizer, invited to their own event.
+
+    Matched on the address first, and on the display name when the organizer has no usable
+    address — which is exactly the case for a shared mailbox published as `invalid:nomail`.
+    """
+    email = _address(attendee)
+    if organizer_email and email and email.casefold() == organizer_email.casefold():
+        return True
+    name = _display_name(attendee)
+    return bool(organizer_name and name and name.casefold() == organizer_name.casefold())
+
+
 def _organizer(event) -> str:
     """A human-readable organizer, or "" when there is none worth showing.
 
     Exchange publishes `ORGANIZER;CN="Real Name":mailto:/O=EXCHANGELABS/OU=.../CN=...`,
-    where the mailto value is an X.500 DN and useless as a display value. So the `CN`
-    parameter wins, and the address is only used when it actually looks like one.
+    where the mailto value is useless as a display value. So the `CN` parameter wins, and the
+    address is only used when it actually looks like one.
     """
     value = event.get("ORGANIZER")
-    if value is None:
-        return ""
-    common_name = str((getattr(value, 'params', None) or {}).get('CN') or "").strip()
-    if common_name:
-        return common_name
-    address = str(value).strip()
-    if address.lower().startswith("mailto:"):
-        address = address[len("mailto:"):]
-    # An X.500 distinguished name is not an address; better empty than gibberish.
-    return address if "@" in address and "/" not in address else ""
+    return _display_name(value) if value is not None else ""
 
 
 def _aware(value, timezone: datetime.tzinfo) -> datetime.datetime:
@@ -149,12 +188,22 @@ def build_calendar_event(event, config: dict | None = None) -> CalendarEvent:
     # inclusive last day. Guard against a zero-length all-day event going backwards.
     if all_day and end - start >= datetime.timedelta(days=1):
         end -= datetime.timedelta(days=1)
+    attendees = _properties(event, "ATTENDEE")
+    organizer_name, organizer_email = _organizer(event), _address(event.get("ORGANIZER"))
+    others = [a for a in attendees if not _is_organizer(a, organizer_email, organizer_name)]
     return CalendarEvent(
         uid=_text(event, "UID"),
         summary=_text(event, "SUMMARY"),
         location=_text(event, "LOCATION"),
         description=_text(event, "DESCRIPTION"),
-        organizer=_organizer(event),
+        organizer=organizer_name,
+        organizer_email=organizer_email,
+        # Independent lists: an attendee can have a name with no usable address, or the
+        # reverse, and dropping the blanks keeps both readable.
+        attendees=[name for name in (_display_name(a) for a in attendees) if name],
+        attendee_emails=[email for email in (_address(a) for a in attendees) if email],
+        other_attendees=[name for name in (_display_name(a) for a in others) if name],
+        other_attendee_emails=[email for email in (_address(a) for a in others) if email],
         status=_text(event, "STATUS").upper() or "CONFIRMED",
         start=start.isoformat(),
         end=end.isoformat(),
@@ -370,8 +419,13 @@ def get_calendar_placeholder_variables(config: dict | None = None) -> dict[str, 
         "calendar_name": describe_calendar_url(url) or UNKNOWN_CALENDAR_PLACEHOLDER,
     }
     for prefix in ("current", "next"):
-        for field in ("summary", "location", "description", "organizer", "uid", "status"):
+        for field in ("summary", "location", "description", "organizer", "organizer_email",
+                      "attendee_count", "uid", "status"):
             variables[f"calendar_{prefix}_{field}"] = UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
+    for variable in CALENDAR_LIST_TEMPLATE_VARIABLES:
+        variables[variable] = UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
+        # The items a condition matches against, beside the joined form a message renders.
+        variables[f"__{variable}_items"] = []
     for variable in CALENDAR_DATETIME_TEMPLATE_VARIABLES:
         variables[variable] = UNKNOWN_PERIOD_PLACEHOLDER
         variables[f"__{variable}_raw"] = ""
@@ -386,8 +440,17 @@ def fill_calendar_event_variables(variables: dict[str, str], config: dict | None
     variables[f"calendar_{prefix}_location"] = event.location
     variables[f"calendar_{prefix}_description"] = event.description
     variables[f"calendar_{prefix}_organizer"] = event.organizer
+    variables[f"calendar_{prefix}_organizer_email"] = event.organizer_email
     variables[f"calendar_{prefix}_uid"] = event.uid
     variables[f"calendar_{prefix}_status"] = event.status
+    variables[f"calendar_{prefix}_attendee_count"] = str(len(event.attendees or event.attendee_emails))
+    for field, items in (("attendees", event.attendees),
+                         ("attendee_emails", event.attendee_emails),
+                         ("other_attendees", event.other_attendees),
+                         ("other_attendee_emails", event.other_attendee_emails)):
+        variable = f"calendar_{prefix}_{field}"
+        variables[variable] = ", ".join(items)
+        variables[f"__{variable}_items"] = list(items)
 
     for bound, value in (("start", event.start), ("end", event.end)):
         for part in ("date", "time", "datetime"):
@@ -421,7 +484,14 @@ def _describe_event(config: dict, label: str, event: CalendarEvent | None) -> st
     if event.location:
         lines.append(f"*Location*: {event.location}")
     if event.organizer:
-        lines.append(f"*Organizer*: {event.organizer}")
+        organizer = event.organizer
+        # Only worth printing the address when it says something the name does not.
+        if event.organizer_email and event.organizer_email != organizer:
+            organizer += f" ({event.organizer_email})"
+        lines.append(f"*Organizer*: {organizer}")
+    attendees = event.other_attendees or event.other_attendee_emails or event.attendees or event.attendee_emails
+    if attendees:
+        lines.append(f"*Attendees*: {', '.join(attendees)}")
     part = "date" if event.all_day else "datetime"
     lines.append(f"*Start*: `{datetimefmt.format_datetime_value(event.start, part, config)}`")
     lines.append(f"*End*: `{datetimefmt.format_datetime_value(event.end, part, config)}`")

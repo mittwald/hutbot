@@ -23,7 +23,23 @@ Hutbot reads the ICS feed and exposes the event running **now** and the **next**
 
 - `{{calendar_name}}` for the feed's own name (`X-WR-CALNAME`), or its redacted URL
 - `{{calendar_current_summary}}`, `{{calendar_current_location}}`, `{{calendar_current_description}}`
-- `{{calendar_current_organizer}}` (the organizer's display name), `{{calendar_current_uid}}`, `{{calendar_current_status}}`
+- `{{calendar_current_organizer}}` (display name) and `{{calendar_current_organizer_email}}`
+- `{{calendar_current_attendees}}` (display names) and `{{calendar_current_attendee_emails}}` —
+  **lists**, rendered comma-separated — plus `{{calendar_current_attendee_count}}`
+- `{{calendar_current_other_attendees}}` / `{{calendar_current_other_attendee_emails}}` — the
+  same lists **without the organizer**. A shared mailbox invites itself to the events it
+  organizes, so on a rota entry organized by *Notfallhotline* these leave just the person
+  actually on call
+
+A list variable renders comma-separated, and `nth` picks one entry out of it, counting from 1:
+`{{calendar_current_attendees(nth=2)}}` is the second (`n=2` is the short spelling). Asking for
+an entry the list does not have renders **empty** rather than failing, so a message written for
+two attendees still reads when there is only one:
+
+```bash
+/hutbot oncall set message "On call: {{calendar_current_other_attendees(nth=1)}} <{{calendar_current_other_attendee_emails(nth=1)}}> until {{calendar_current_end_time}}"
+```
+- `{{calendar_current_uid}}`, `{{calendar_current_status}}`
 - `{{calendar_current_start_date}}`, `{{calendar_current_start_time}}`, and `{{calendar_current_start_datetime}}`
 - `{{calendar_current_end_date}}`, `{{calendar_current_end_time}}`, and `{{calendar_current_end_datetime}}`
 - the same set again as `{{calendar_next_…}}` for the next event that starts after now
@@ -123,6 +139,16 @@ existing configs keep working unchanged.
   - The left-hand side is any supported reply variable, so a rule can react to the message
     (`{{message}}`), the sender (`{{team}}`), the on-call state (`{{opsgenie_current_user}}`),
     or the calendar (`{{calendar_current_summary}}`).
+  - **List variables** — the calendar's `attendees` / `attendee_emails` and their
+    `other_*` counterparts — match when *any* entry matches, and their `not_` forms when
+    *none* does. So `equals` is a membership test and `not_equals` means "not among
+    them", rather than the useless "some entry differs":
+    ```bash
+    # is this person on the event that is running right now?
+    /hutbot oncall add condition calendar_current_attendee_emails equals nico@example.com
+    # nobody from outside the company is on it
+    /hutbot oncall add condition calendar_current_attendee_emails not_contains @external.com
+    ```
   - **Quote a value that contains spaces** if you also want the case flag:
     `add condition message contains "deploy to prod" 1`.
   - A condition that cannot be judged (an unknown variable, an invalid regex) counts as **not

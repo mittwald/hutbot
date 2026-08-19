@@ -13,7 +13,9 @@ OpsGenieContext = collections.namedtuple('OpsGenieContext', ['schedule_name', 'c
 # A single calendar entry read from an ICS feed. `start`/`end` are ISO-8601 strings
 # (like OpsGeniePeriod) so the date/time formatters can re-render them; for an all-day
 # event `end` is the *inclusive* last day, not the RFC-exclusive one.
-CalendarEvent = collections.namedtuple('CalendarEvent', ['uid', 'summary', 'location', 'description', 'organizer', 'status', 'start', 'end', 'all_day'])
+# `attendees` and `attendee_emails` are lists; an attendee may have a name without a usable
+# address, or an address without a name, so the two are collected independently.
+CalendarEvent = collections.namedtuple('CalendarEvent', ['uid', 'summary', 'location', 'description', 'organizer', 'organizer_email', 'attendees', 'attendee_emails', 'other_attendees', 'other_attendee_emails', 'status', 'start', 'end', 'all_day'])
 CalendarContext = collections.namedtuple('CalendarContext', ['name', 'current', 'next'])
 
 
