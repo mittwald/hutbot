@@ -207,12 +207,32 @@ def find_current_and_next_events(calendar, config: dict | None = None, now: date
 # ----- URL validation and display -----
 
 
+def _is_loopback_host(host: str) -> bool:
+    """Whether a host can only ever mean this machine.
+
+    RFC 6761 reserves `localhost` and everything under `.localhost` for loopback, and the
+    loopback ranges (`127.0.0.0/8`, `::1`) speak for themselves.
+    """
+    host = (host or "").lower()
+    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def validate_calendar_url(url: str) -> str:
     """Return a usable feed URL, or raise ``ValueError`` explaining why it is not.
 
-    The bot fetches this URL from inside the cluster on a user's word, so the scheme is
-    pinned to https and obvious internal targets are refused. The NetworkPolicy egress
+    The bot fetches this URL on a user's word, from inside the cluster in production, so a
+    remote feed has to be https and the addresses that make SSRF worth attempting — the
+    private ranges and the cloud metadata endpoint — are refused. The NetworkPolicy egress
     allow-list is the real control; this is the readable first line of defence.
+
+    Loopback is the exception, over http as well: serving a feed from a local file server is
+    how this gets developed, and `127.0.0.1` is not a target worth reaching through the bot
+    that anyone who can set a config could not already reach directly.
     """
     url = (url or "").strip()
     if not url:
@@ -221,22 +241,25 @@ def validate_calendar_url(url: str) -> str:
         parts = urllib.parse.urlsplit(url)
     except ValueError as e:
         raise ValueError(f"calendar URL could not be parsed: {e}")
-    if parts.scheme.lower() != "https":
-        raise ValueError("calendar URL must start with `https://`")
     if not parts.hostname:
         raise ValueError("calendar URL has no host")
+
+    scheme = parts.scheme.lower()
+    loopback = _is_loopback_host(parts.hostname)
+    if scheme not in ("https", "http"):
+        raise ValueError("calendar URL must start with `https://`")
+    if scheme == "http" and not loopback:
+        raise ValueError("calendar URL must start with `https://` (plain `http://` is only allowed for localhost)")
     if parts.username or parts.password:
         raise ValueError("calendar URL must not embed credentials")
 
-    host = parts.hostname.lower()
-    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
-        raise ValueError("calendar URL must not point at localhost")
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        address = None
-    if address is not None and (address.is_loopback or address.is_private or address.is_link_local or address.is_reserved):
-        raise ValueError("calendar URL must not point at an internal address")
+    if not loopback:
+        try:
+            address = ipaddress.ip_address(parts.hostname)
+        except ValueError:
+            address = None
+        if address is not None and (address.is_private or address.is_link_local or address.is_reserved):
+            raise ValueError("calendar URL must not point at an internal address")
     return url
 
 

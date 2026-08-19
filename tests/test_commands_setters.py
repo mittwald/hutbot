@@ -748,3 +748,42 @@ async def test_real_nonsense_still_gets_a_hint_not_the_whole_help():
     with patch('hutbot.messaging.send_message') as send:
         await process_command(app, "wat is this", channel, user)
     assert "Huh?" in send.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_quotes_the_command_it_answers():
+    """Every command reply ends with the command that produced it."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    hutbot.state.slash_command = "/hutbot"
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
+        await process_command(app, "set wait-time 5", channel, user)
+    sent = app.client.chat_postEphemeral.await_args.kwargs["text"]
+    assert sent.endswith("> Response to command:\n> ```\n> /hutbot set wait-time 5\n> ```")
+
+
+@pytest.mark.asyncio
+async def test_a_mention_is_quoted_back_as_the_slash_command():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    hutbot.state.slash_command = "/hutbot"
+    hutbot.state.bot_user_id = "U0BOT"
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
+        await process_command(app, "<@U0BOT> set wait-time 7", channel, user, allow_test_message=True)
+    sent = app.client.chat_postEphemeral.await_args.kwargs["text"]
+    assert "> /hutbot set wait-time 7" in sent
+
+
+@pytest.mark.asyncio
+async def test_a_chunked_reply_is_quoted_once_at_the_end():
+    """The help runs to several messages; repeating the footer on each would be noise."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    await process_command(app, "help", channel, user)
+    messages = [c.kwargs["text"] for c in app.client.chat_postEphemeral.await_args_list]
+    assert len(messages) > 1
+    assert sum("Response to command:" in m for m in messages) == 1
+    assert "Response to command:" in messages[-1]

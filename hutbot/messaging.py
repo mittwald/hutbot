@@ -46,7 +46,9 @@ def command_footer() -> str:
     Appended by `send_message` at the API boundary rather than by each of its ~120 callers.
     """
     command = state.current_command.get()
-    return f"\n\nResponse to command:\n```\n{command}\n```" if command else ""
+    if not command:
+        return ""
+    return f"\n\n> Response to command:\n> ```\n> {command}\n> ```"
 
 
 async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "", footer: bool = True) -> None:

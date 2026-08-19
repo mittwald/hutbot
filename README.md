@@ -87,9 +87,13 @@ so a message can name them — and a condition can gate a rule on them.
 
 **The URL is a secret.** A published-calendar link needs no login, so possession of it *is* read
 access to the calendar. Hutbot therefore only ever echoes a redacted form
-(`outlook.office365.com/…/calendar.ics`) in `show config` and in the setter's confirmation. Only
-`https://` URLs are accepted, and URLs pointing at internal or loopback addresses are refused.
+(`outlook.office365.com/…/calendar.ics`) in `show config` and in the setter's confirmation.
 The feed is cached for 5 minutes (`HUTBOT_CALENDAR_TTL`, in seconds).
+
+A remote feed must be `https://`, and URLs pointing at the private ranges or the cloud metadata
+address are refused — the bot fetches them from inside the cluster. **Loopback is exempt**, over
+plain `http://` too, so a local file server works while developing:
+`/hutbot set calendar http://127.0.0.1:8073/calendar.ics`.
 
 ## Triggers, conditions, and actions
 

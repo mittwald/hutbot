@@ -423,16 +423,33 @@ def test_validate_calendar_url_accepts_public_https(url):
     assert validate_calendar_url(url) == url
 
 
+@pytest.mark.parametrize("url", [
+    # Serving a feed from a local file server is how this gets developed, so loopback is
+    # allowed without TLS. Everything else still has to be https.
+    "http://127.0.0.1:8073/calendar.ics?5363fdaeabdfbd2b2b91a8112d7040e36bab6fa6b477c0d6",
+    "http://localhost:8073/calendar.ics",
+    "http://[::1]:8073/calendar.ics",
+    "http://dev.localhost:9000/calendar.ics",
+    "https://127.0.0.1/calendar.ics",
+    "https://localhost/calendar.ics",
+])
+def test_validate_calendar_url_allows_plain_http_for_loopback(url):
+    assert validate_calendar_url(url) == url
+
+
 @pytest.mark.parametrize("url,expected", [
-    ("http://cal.example.com/feed.ics", "https"),
-    ("file:///etc/passwd", "https"),
+    # Plain http is only for loopback.
+    ("http://cal.example.com/feed.ics", "only allowed for localhost"),
+    ("http://10.0.0.1/feed.ics", "only allowed for localhost"),
+    ("http://169.254.169.254/latest/meta-data", "only allowed for localhost"),
     ("ftp://cal.example.com/feed.ics", "https"),
+    ("file:///etc/passwd", "has no host"),
     ("https://user:pw@cal.example.com/feed.ics", "credentials"),
-    ("https://127.0.0.1/feed.ics", "internal"),
+    # The addresses that make SSRF worth attempting stay refused even over https.
     ("https://169.254.169.254/latest/meta-data", "internal"),
     ("https://10.0.0.1/feed.ics", "internal"),
     ("https://192.168.1.1/feed.ics", "internal"),
-    ("https://localhost/feed.ics", "localhost"),
+    ("https://172.16.0.1/feed.ics", "internal"),
     ("", "non-empty"),
     ("   ", "non-empty"),
 ])

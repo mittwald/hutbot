@@ -367,8 +367,8 @@ async def test_validate_config_payload_rejects_a_bad_conditions_shape_and_match(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("url,expected", [
-    ("http://cal.example.com/feed.ics", "https"),
-    ("https://127.0.0.1/feed.ics", "internal"),
+    ("http://cal.example.com/feed.ics", "only allowed for localhost"),
+    ("https://10.0.0.1/feed.ics", "internal"),
     ("https://user:pw@cal.example.com/feed.ics", "credentials"),
 ])
 async def test_validate_config_payload_rejects_unsafe_calendar_urls(url, expected):
