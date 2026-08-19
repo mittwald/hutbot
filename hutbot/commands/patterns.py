@@ -26,7 +26,7 @@ SET_CALENDAR_PATTERN = create_command_pattern(r'(set\s+)?calendar([_ -]?url)?\s+
 SHOW_CALENDAR_PATTERN = re.compile(r'^(show\s+)?calendar$', re.IGNORECASE)
 SET_DATETIME_FORMAT_PATTERN = create_command_pattern(r'(set\s+)?(datetime[_ -]?format|date[_ -]?format|datefmt)\s+(?P<values>.+)')
 CLEAR_PATTERN_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+pattern')
-SET_PATTERN_PATTERN = create_command_pattern(r'(set\s+)?pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|[^\r\n\t\f\v\s"\']+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
+SET_PATTERN_PATTERN = create_command_pattern(r'(set\s+)?pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|`[^`]*`|[^\r\n\t\f\v\s"\'`]+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
 ADD_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)')
 CLEAR_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+excluded?([_ -]?teams?)?')
 ADD_INCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?included?([_ -]?teams?)?\s+(?P<team>.+)')
@@ -57,7 +57,7 @@ ADD_CONDITION_PATTERN = create_command_pattern(r'(add\s+)?condition\s+(?P<spec>.
 # The target belongs to the action, so both arrive in one command. `set` is
 # optional, like it is for `wait-time` and `message`.
 SET_ACTION_PATTERN = create_command_pattern(r'(set\s+)?action\s+(?P<action>\S+)(?:\s+(?P<target>.+))?$')
-ADD_BUTTON_PATTERN = create_command_pattern(r'(add\s+)?button\s+(?P<label>"[^"]*"|\'[^\']*\'|\S+)\s+(?P<spec>.+)')
+ADD_BUTTON_PATTERN = create_command_pattern(r'(add\s+)?button\s+(?P<label>"[^"]*"|\'[^\']*\'|`[^`]*`|\S+)\s+(?P<spec>.+)')
 CLEAR_BUTTONS_PATTERN = create_command_pattern(r'clear\s+buttons?')
 # `<minutes> <kind> <target>`: the timeout and what it escalates to are one setting.
 CLEAR_ESCALATION_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+escalation')

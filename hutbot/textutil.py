@@ -26,8 +26,13 @@ def _log(file, prefix, *args: object) -> None:
     print(prefix, message, flush=True, file=file)
 
 
+# Quote characters accepted around any command argument. Backticks are included because
+# Slack renders `like this` as code, so people reach for them naturally.
+QUOTE_CHARACTERS = ('"', "'", '`')
+
+
 def strip_quotes(text: str) -> str:
-    if text and ((text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'"))):
+    if text and len(text) > 1 and text[0] == text[-1] and text[0] in QUOTE_CHARACTERS:
         text = text[1:-1]
 
     return text
@@ -40,10 +45,16 @@ SLACK_LINK_PATTERN = re.compile(r'^<(?P<url>[^|>]+)(?:\|[^>]*)?>$')
 
 
 def unwrap_slack_link(text: str) -> str:
-    """Strip Slack's `<url>` / `<url|label>` auto-link wrapping from a URL argument."""
+    """Strip Slack's `<url>` / `<url|label>` auto-link wrapping from a URL argument.
+
+    Quotes come off on both sides of the unwrap, because Slack still auto-links a URL typed
+    inside backticks — so the argument can arrive as ``` `<http://…>` ```.
+    """
     text = strip_quotes((text or "").strip())
     match = SLACK_LINK_PATTERN.match(text)
-    return match.group("url").strip() if match else text
+    if match:
+        text = match.group("url").strip()
+    return strip_quotes(text)
 
 
 def parse_quoted_tokens(text: str) -> tuple[list[str], str]:
@@ -55,7 +66,7 @@ def parse_quoted_tokens(text: str) -> tuple[list[str], str]:
         if i >= len(text):
             break
 
-        if text[i] in ("'", '"'):
+        if text[i] in QUOTE_CHARACTERS:
             quote = text[i]
             i += 1
             value = []

@@ -48,7 +48,9 @@ def command_footer() -> str:
     command = state.current_command.get()
     if not command:
         return ""
-    return f"\n\n> Response to command:\n> ```\n> {command}\n> ```"
+    # The fence stays outside the quote: Slack renders a `>` inside a code block literally,
+    # so quoting those lines puts the prefixes in the output.
+    return f"\n\n> Response to command:\n```\n{command}\n```"
 
 
 async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "", footer: bool = True) -> None:
@@ -322,7 +324,8 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"Displays all configurations for `#{channel.name}`."
     )
     outro = (
-        "`[config]` is optional; omitted commands use `default`. The leading `set`/`add` is optional too.\n\n"
+        "`[config]` is optional; omitted commands use `default`. The leading `set`/`add` is optional too. "
+        "Any value can be quoted with `\"`, `'` or a backtick.\n\n"
         f"Supported reply variables: {supported_template_variables}.\n\n"
         f"Supported condition operators: {supported_condition_operators}. "
         "Conditions are checked when the rule fires — for a `message` rule that is after the "

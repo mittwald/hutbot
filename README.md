@@ -3,7 +3,8 @@
 The hutbot is a simple Slack bot that monitors messages in a channel and automatically replies in a thread if no one reacts or responds to the message within a configurable time period (by default 30 minutes). The bot reminds channel members that a message has gone unanswered. Scheduled reminders are cancelled when someone replies in the thread or reacts in a way that does not match the config criteria that caused that reminder to be scheduled, or when the original message is deleted. Users can adjust both the waiting time and the reminder message directly within the channel, including `{{variable}}` placeholders in the reminder text.
 
 Run `/hutbot` (or just `@hutbot` on its own) with nothing after it to get the full command
-list; `/hutbot help` does the same.
+list; `/hutbot help` does the same. Any argument may be quoted with `"`, `'` or backticks —
+handy since Slack renders a backticked value as code as you type it.
 
 Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. `{{date}}`, `{{time}}`, and `{{datetime}}` render the triggering message's time — or the time the rule ran, for `cron`/`manual` triggers and for `test`/`run` — using the config's date/time format, timezone, and locale, and take the same `fmt`/`tz`/`lc` arguments as the Opsgenie date/time variables below. `{{timestamp}}` is the raw Slack timestamp of the same instant. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
 

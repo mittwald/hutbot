@@ -760,7 +760,8 @@ async def test_a_reply_quotes_the_command_it_answers():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
         await process_command(app, "set wait-time 5", channel, user)
     sent = app.client.chat_postEphemeral.await_args.kwargs["text"]
-    assert sent.endswith("> Response to command:\n> ```\n> /hutbot set wait-time 5\n> ```")
+    # The fence is outside the quote: Slack renders a `>` inside a code block literally.
+    assert sent.endswith("> Response to command:\n```\n/hutbot set wait-time 5\n```")
 
 
 @pytest.mark.asyncio
@@ -773,7 +774,7 @@ async def test_a_mention_is_quoted_back_as_the_slash_command():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
         await process_command(app, "<@U0BOT> set wait-time 7", channel, user, allow_test_message=True)
     sent = app.client.chat_postEphemeral.await_args.kwargs["text"]
-    assert "> /hutbot set wait-time 7" in sent
+    assert "> Response to command:\n```\n/hutbot set wait-time 7\n```" in sent
 
 
 @pytest.mark.asyncio
@@ -787,3 +788,35 @@ async def test_a_chunked_reply_is_quoted_once_at_the_end():
     assert len(messages) > 1
     assert sum("Response to command:" in m for m in messages) == 1
     assert "Response to command:" in messages[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command,field,expected", [
+    ("set calendar `http://127.0.0.1:8073/calendar.ics?token=abc`", "calendar_url",
+     "http://127.0.0.1:8073/calendar.ics?token=abc"),
+    ("set pattern `.*alarm.*`", "pattern", ".*alarm.*"),
+    ("set message `Hey there`", "reply_message", "Hey there"),
+    ("set opsgenie-schedule `Team Primary`", "opsgenie_schedule_name", "Team Primary"),
+    ("set datetime-format `02.01.2006` `15:04`", "date_format", "02.01.2006"),
+])
+async def test_backticks_work_as_quotes(command, field, expected):
+    """Slack renders `like this` as code, so people reach for backticks."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message'):
+        await process_command(app, command, channel, user)
+    assert channel.configs["default"][field] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_backticked_button_label_keeps_its_apostrophe():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message'):
+        await process_command(app, "add button `I've got it` ack `On it`", channel, user)
+    assert channel.configs["default"]["buttons"] == [
+        {"label": "I've got it", "action": "ack", "value": "On it"}]

@@ -44,7 +44,7 @@ from .constants import (
 # reflects over every `*_PATTERN` name in that module and would treat this as a command
 # matcher, making ordinary text like `foo 1` look like a command.
 CONDITION_VALUE_PATTERN = re.compile(
-    r'^(?P<value>"[^"]*"|\'[^\']*\'|\S+)\s+'
+    r'^(?P<value>"[^"]*"|\'[^\']*\'|`[^`]*`|\S+)\s+'
     r'(?P<flag>true|false|1|0|yes|no|on|off|case[_-]?sensitive|case[_-]?insensitive)$',
     re.IGNORECASE,
 )
@@ -97,8 +97,9 @@ def split_case_flag(text: str) -> tuple[str, bool]:
 
 
 def _strip_quotes(text: str) -> str:
-    # Local copy so this module stays dependency-free (textutil imports models).
-    if text and ((text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'"))):
+    # Local copy so this module stays dependency-free (textutil imports models). Kept in step
+    # with textutil.QUOTE_CHARACTERS.
+    if text and len(text) > 1 and text[0] == text[-1] and text[0] in ('"', "'", '`'):
         return text[1:-1]
     return text
 
