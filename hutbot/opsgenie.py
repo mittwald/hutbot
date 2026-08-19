@@ -1,5 +1,6 @@
 """OpsGenie integration: on-call resolution, template variables, alerts, heartbeat."""
 
+import copy
 import json
 import asyncio
 import datetime
@@ -22,7 +23,7 @@ from .constants import (
     OPSGENIE_PRIORITIES,
     UNKNOWN_EMAIL_ONCALL_PLACEHOLDER,
     UNKNOWN_NAME_ONCALL_PLACEHOLDER,
-    UNKNOWN_ONCALL_PERIOD_PLACEHOLDER,
+    UNKNOWN_PERIOD_PLACEHOLDER,
     UNKNOWN_OPSGENIE_SCHEDULE_PLACEHOLDER,
     UNKNOWN_USER_ONCALL_PLACEHOLDER,
 )
@@ -48,7 +49,7 @@ def get_opsgenie_placeholder_variables(config: dict | None = None) -> dict[str, 
         "opsgenie_next_user": UNKNOWN_USER_ONCALL_PLACEHOLDER,
     }
     for variable in OPSGENIE_DATETIME_TEMPLATE_VARIABLES:
-        variables[variable] = UNKNOWN_ONCALL_PERIOD_PLACEHOLDER
+        variables[variable] = UNKNOWN_PERIOD_PLACEHOLDER
         variables[f"__{variable}_raw"] = ""
     return variables
 
@@ -67,7 +68,7 @@ def fill_opsgenie_period_variables(variables: dict[str, str], config: dict, pref
         for part in ("date", "time", "datetime"):
             variable = f"opsgenie_{prefix}_{bound}_{part}"
             variables[f"__{variable}_raw"] = value or ""
-            variables[variable] = datetimefmt.format_opsgenie_template_datetime(value, variable, config)
+            variables[variable] = datetimefmt.format_template_datetime(value, variable, config)
 
 
 async def resolve_slack_user_for_opsgenie_recipient(app: AsyncApp, recipient_email: str) -> User | None:
@@ -343,7 +344,7 @@ async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, co
 
 
 async def send_current_on_call(app: AsyncApp, opsgenie_token: str, channel, config_name: str, schedule_name: str, user, thread_ts: str = "") -> None:
-    config = channel.configs.get(config_name, DEFAULT_CONFIG.copy())
+    config = channel.configs.get(config_name) or copy.deepcopy(DEFAULT_CONFIG)
     schedule_name = schedule_name.strip() or config.get("opsgenie_schedule_name", "").strip()
     if not schedule_name:
         await messaging.send_message(app, channel, user, f"No OpsGenie schedule configured. Use `{state.slash_command} [config] set opsgenie-schedule <name>` or `{state.slash_command} [config] on-call <schedule name>`.", thread_ts)

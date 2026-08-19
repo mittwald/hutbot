@@ -1,3 +1,5 @@
+import copy
+
 from tests._common import *  # noqa: F401,F403
 
 
@@ -176,7 +178,6 @@ async def test_scheduler_tick_fires_due_schedule_when_condition_met():
     with patch.dict('hutbot.state.channel_config', {"C12345": {"sched": sched}}, clear=True), \
          patch('hutbot.scheduling._cron_due', return_value=True), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
-         patch('hutbot.actions.evaluate_condition', new=AsyncMock(return_value=True)), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
         await hutbot.scheduling.scheduler_tick(app, "token")
     assert run.await_count == 1
@@ -186,19 +187,21 @@ async def test_scheduler_tick_fires_due_schedule_when_condition_met():
 
 @pytest.mark.asyncio
 async def test_scheduler_tick_skips_when_condition_not_met():
+    """`run_action` owns the gate, so this drives it for real instead of patching it out."""
     app = AsyncMock()
-    sched = DEFAULT_CONFIG.copy()
+    sched = copy.deepcopy(DEFAULT_CONFIG)
     sched["trigger"] = TRIGGER_CRON
     sched["cron"] = "* * * * *"
+    # A cron run has no message behind it, so `{{message}}` is empty and this cannot hold.
+    sched["conditions"] = [{"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False}]
     channel = _mk_channel({"sched": sched})
     hutbot.state._scheduler_last_check = datetime.datetime.now(datetime.timezone.utc)
     with patch.dict('hutbot.state.channel_config', {"C12345": {"sched": sched}}, clear=True), \
          patch('hutbot.scheduling._cron_due', return_value=True), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
-         patch('hutbot.actions.evaluate_condition', new=AsyncMock(return_value=False)), \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.messaging._post_message', new=AsyncMock()) as post:
         await hutbot.scheduling.scheduler_tick(app, "token")
-    assert run.await_count == 0
+    post.assert_not_awaited()
 
 
 

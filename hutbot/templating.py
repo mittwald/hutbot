@@ -4,17 +4,18 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
+from . import calendarfeed
 from . import datetimefmt
 from . import opsgenie
 from .constants import (
     DATETIME_TEMPLATE_VARIABLES,
-    OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
+    TEMPLATE_DATETIME_VARIABLES,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
     TEMPLATE_ARGUMENT_ALIASES,
     TEMPLATE_ARGUMENT_NAME_PATTERN,
     TEMPLATE_VARIABLE_NAME_PATTERN,
-    UNKNOWN_ONCALL_PERIOD_PLACEHOLDER,
+    UNKNOWN_PERIOD_PLACEHOLDER,
 )
 from .models import Channel, TemplateExpression, TemplateExpressionError, User
 
@@ -156,7 +157,7 @@ def validate_template_expressions(message: str) -> str:
         )
 
     for expr in expressions:
-        if expr.args and expr.variable not in OPSGENIE_DATETIME_TEMPLATE_VARIABLES | DATETIME_TEMPLATE_VARIABLES:
+        if expr.args and expr.variable not in TEMPLATE_DATETIME_VARIABLES | DATETIME_TEMPLATE_VARIABLES:
             return f"template variable `{{{{{expr.variable}}}}}` does not support arguments"
         if "tz" in expr.args:
             try:
@@ -206,12 +207,12 @@ def render_reply_message_template(message: str, variables: dict[str, str], confi
 
         if expr.variable in DATETIME_TEMPLATE_VARIABLES:
             rendered.append(datetimefmt.format_timestamp_value(variables.get("__timestamp_raw", ""), expr.variable, config, expr.args))
-        elif expr.variable in OPSGENIE_DATETIME_TEMPLATE_VARIABLES:
+        elif expr.variable in TEMPLATE_DATETIME_VARIABLES:
             raw_value = variables.get(f"__{expr.variable}_raw", "")
             if raw_value or expr.args:
-                rendered.append(datetimefmt.format_opsgenie_template_datetime(raw_value, expr.variable, config, expr.args))
+                rendered.append(datetimefmt.format_template_datetime(raw_value, expr.variable, config, expr.args))
             else:
-                rendered.append(variables.get(expr.variable, UNKNOWN_ONCALL_PERIOD_PLACEHOLDER))
+                rendered.append(variables.get(expr.variable, UNKNOWN_PERIOD_PLACEHOLDER))
         else:
             rendered.append(variables.get(expr.variable, message[start:end]))
         last_index = end
@@ -220,11 +221,16 @@ def render_reply_message_template(message: str, variables: dict[str, str], confi
     return "".join(rendered)
 
 
-async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False) -> dict[str, str]:
+async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False, include_calendar: bool = False) -> dict[str, str]:
     wait_time = config.get('wait_time') or 0
     opsgenie_template_variables = {}
     if include_opsgenie:
         opsgenie_template_variables = await opsgenie.get_opsgenie_template_variables(app, opsgenie_token, config)
+    # Both providers cost a network round-trip, so they are only resolved when something
+    # actually references one of their variables (see `actions._build_variables`).
+    calendar_template_variables = {}
+    if include_calendar:
+        calendar_template_variables = await calendarfeed.get_calendar_template_variables(config)
 
     # `test`, `run`, and schedule/manual triggers have no message behind them, so
     # there is no Slack timestamp to report. Stand in the current time instead of
@@ -243,6 +249,7 @@ async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, cha
         "message": text,
         "message_link": permalink,
         **opsgenie_template_variables,
+        **calendar_template_variables,
         "team": user.team if user.team else TEAM_UNKNOWN,
         "timestamp": ts,
         "user": f"<@{user.id}>",

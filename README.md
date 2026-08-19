@@ -14,6 +14,22 @@ Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, 
 - `{{opsgenie_next_start_date}}`, `{{opsgenie_next_start_time}}`, and `{{opsgenie_next_start_datetime}}`
 - `{{opsgenie_next_end_date}}`, `{{opsgenie_next_end_time}}`, and `{{opsgenie_next_end_datetime}}`
 
+If a channel config has a calendar feed configured via `/hutbot [config] set calendar <url>`,
+Hutbot reads the ICS feed and exposes the event running **now** and the **next** one:
+
+- `{{calendar_name}}` for the feed's own name (`X-WR-CALNAME`), or its redacted URL
+- `{{calendar_current_summary}}`, `{{calendar_current_location}}`, `{{calendar_current_description}}`
+- `{{calendar_current_organizer}}` (the organizer's display name), `{{calendar_current_uid}}`, `{{calendar_current_status}}`
+- `{{calendar_current_start_date}}`, `{{calendar_current_start_time}}`, and `{{calendar_current_start_datetime}}`
+- `{{calendar_current_end_date}}`, `{{calendar_current_end_time}}`, and `{{calendar_current_end_datetime}}`
+- the same set again as `{{calendar_next_…}}` for the next event that starts after now
+
+Calendar date/time variables take the same `fmt`/`tz`/`lc` arguments as the Opsgenie ones. For an
+**all-day** event the end is the *inclusive* last day, not the exclusive `DTEND` the ICS file
+carries — a one-day event on the 19th reports the 19th, not the 20th. Cancelled events are skipped;
+tentative ones are kept, and `{{calendar_current_status}}` says which is which. Recurring events
+(`RRULE`, with `EXDATE` exclusions) are expanded, including their `VTIMEZONE`.
+
 Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments, for example `{{opsgenie_next_start_datetime(format='02.01.2006 15:04', timezone='Europe/Berlin', locale='de_DE')}}`. The default date/time output for Opsgenie variables and `/hutbot on-call` can be configured with:
 
 ```bash
@@ -53,6 +69,25 @@ Opsgenie alert priority defaults to `P4` and can be configured per channel confi
 /hutbot [config] set opsgenie-priority <P1|P2|P3|P4|P5>
 ```
 
+## Calendar feeds
+
+A config can read **one** ICS calendar feed, the same way it has one Opsgenie schedule:
+
+```bash
+/hutbot [config] set calendar <url>     # a published .ics link
+/hutbot [config] clear calendar
+/hutbot [config] show calendar          # the event running now, and the next one
+```
+
+The event running now and the next one become `{{calendar_*}}` template variables (see above),
+so a message can name them — and a condition can gate a rule on them.
+
+**The URL is a secret.** A published-calendar link needs no login, so possession of it *is* read
+access to the calendar. Hutbot therefore only ever echoes a redacted form
+(`outlook.office365.com/…/calendar.ics`) in `show config` and in the setter's confirmation. Only
+`https://` URLs are accepted, and URLs pointing at internal or loopback addresses are refused.
+The feed is cached for 5 minutes (`HUTBOT_CALENDAR_TTL`, in seconds).
+
 ## Triggers, conditions, and actions
 
 Beyond the classic "reply if a message goes unanswered" behavior, each named config is a **rule**
@@ -67,11 +102,34 @@ existing configs keep working unchanged.
     `scheduled` are accepted as names for this trigger.
   - `set trigger manual` — never fires on its own; used as the target of a button or a button timeout.
 
-- **Conditions** (`/hutbot [config] set condition <none|outlook>`) gate a `cron` trigger.
-  - `outlook` — matches Outlook calendar entries by `set outlook-subject <regex>` /
-    `set outlook-body <regex>`. Use `enable negate` to fire when *no* matching entry exists.
-    **Note:** the Outlook integration is currently a stub (events come from the
-    `HUTBOT_OUTLOOK_STUB_EVENTS` env var); the real implementation lands in a later task.
+- **Conditions** gate a rule on any `{{variable}}`, and apply to **every** trigger. Each one is
+  added separately, so several chain together:
+  - `/hutbot [config] add condition <variable> <operator> ["value"] [0|1]` — the trailing `0|1`
+    is case sensitivity (default `0`, case-**in**sensitive), exactly like `set pattern`.
+  - `/hutbot [config] set conditions-match <all|any>` — whether every condition must apply, or
+    any one of them is enough. Defaults to `all`.
+  - `/hutbot [config] clear conditions` — remove them all; the rule stops being gated.
+  - Operators: `empty`, `not_empty`, `equals`, `not_equals`, `contains`, `not_contains`,
+    `starts_with`, `not_starts_with`, `ends_with`, `not_ends_with`, `regex`, `not_regex`.
+    Common spellings are accepted too (`is`, `=`, `!=`, `has`, `matches`, `not contains`, …).
+  - The left-hand side is any supported reply variable, so a rule can react to the message
+    (`{{message}}`), the sender (`{{team}}`), the on-call state (`{{opsgenie_current_user}}`),
+    or the calendar (`{{calendar_current_summary}}`).
+  - **Quote a value that contains spaces** if you also want the case flag:
+    `add condition message contains "deploy to prod" 1`.
+  - A condition that cannot be judged (an unknown variable, an invalid regex) counts as **not
+    met**, whatever its operator — so a broken config stays quiet instead of paging someone.
+  - Conditions are evaluated **when the rule fires**. For a `message` rule that is *after* the
+    reminder delay, so use `set pattern` to decide which messages start the timer at all.
+  - `/hutbot [config] test` prints each condition with ✓/✗ and whether the rule would run.
+
+  ```bash
+  # nudge only while a "Composer" meeting is actually running
+  /hutbot standup set calendar https://outlook.office365.com/owa/calendar/…/calendar.ics
+  /hutbot standup add condition calendar_current_summary contains composer
+  /hutbot standup add condition message not_empty
+  /hutbot standup set conditions-match all
+  ```
 
 - **Actions** (`/hutbot [config] set action <action> [<target>]`) decide what the rule does, using
   `reply_message` (with the usual `{{variables}}`) as the body. The recipient is part of the same
@@ -380,6 +438,9 @@ export HUTBOT_SLASH_COMMAND='/hutbot'
 # Name the bot uses for itself in help/news messages. Default: Hutbot
 export HUTBOT_BOT_NAME='Hutbot'
 # To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
+# NOTE: this is an allow-list. A calendar feed (`set calendar <url>`) is fetched from inside the
+# cluster, so its host needs an entry here on 443 or the fetch is silently dropped. Only TCP
+# rules are rendered, so DNS resolution has to be reachable by other means.
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
@@ -532,6 +593,9 @@ export PERSISTENCE_SIZE=1Gi
 export PERSISTENCE_STORAGE_CLASS=<your-storage-class>
 export PERSISTENCE_MOUNT_PATH=/data
 # To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
+# NOTE: this is an allow-list. A calendar feed (`set calendar <url>`) is fetched from inside the
+# cluster, so its host needs an entry here on 443 or the fetch is silently dropped. Only TCP
+# rules are rendered, so DNS resolution has to be reachable by other means.
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
@@ -549,6 +613,8 @@ split into cohesive modules; `bot.py` remains as a backward-compatible launcher:
 - `hutbot/persistence.py` — config and cache load/save
 - `hutbot/slackcache.py` — Slack user/channel/usergroup lookups
 - `hutbot/templating.py`, `hutbot/opsgenie.py` — reply templates and OpsGenie integration
+- `hutbot/calendarfeed.py` — the ICS calendar feed (fetch, parse, current/next event)
+- `hutbot/conditionutil.py` — condition normalization and evaluation
 - `hutbot/messaging.py`, `hutbot/actions.py`, `hutbot/buttons.py` — sending, the action engine, and interactive buttons/escalation
 - `hutbot/scheduling.py`, `hutbot/routing.py` — scheduled replies / cron triggers and Slack event routing
 - `hutbot/commands/` — slash-command parsing and handlers

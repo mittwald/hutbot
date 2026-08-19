@@ -17,6 +17,8 @@ from . import state
 from . import slackcache
 from . import messaging
 from . import templating
+from . import calendarfeed
+from . import conditionutil
 from . import datetimefmt
 from . import persistence
 from .constants import (
@@ -32,9 +34,11 @@ from .constants import (
     ESCALATION_NONE,
     BUTTON_ACTION_DELAY,
     BUTTON_ACTIONS,
-    CONDITION_NONE,
-    CONDITION_OUTLOOK,
-    CONDITIONS,
+    CONDITION_MATCH_ALL,
+    CONDITION_MATCHES,
+    CONDITION_OPERATORS_ORDERED,
+    CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE,
+    CONDITION_OPERATORS_WITHOUT_VALUE,
     CONFIG_NAME_PATTERN,
     DEFAULT_CONFIG,
     DEFAULT_CONFIG_NAME,
@@ -102,7 +106,7 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
         return payload.get(key, DEFAULT_CONFIG.get(key))
 
     for key in ('enabled', 'include_bots', 'only_work_days', 'debug',
-                'opsgenie', 'condition_negate', 'pattern_case_sensitive'):
+                'opsgenie', 'pattern_case_sensitive'):
         cfg[key] = _ui_bool(get(key))
 
     # wait_time (stored as seconds; 1..1440 minutes)
@@ -211,24 +215,60 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     else:
         cfg['trigger'] = trigger
 
-    condition = str(get('condition') or CONDITION_NONE).strip().lower()
-    condition = {'none': CONDITION_NONE, 'off': CONDITION_NONE, '': CONDITION_NONE,
-                 'outlook': CONDITION_OUTLOOK, 'calendar': CONDITION_OUTLOOK,
-                 'outlook_calendar': CONDITION_OUTLOOK}.get(condition, condition)
-    if condition not in CONDITIONS:
-        errors['condition'] = "Condition must be `none` or `outlook`."
+    # Conditions: a list of {variable, operator, value, case_sensitive}, validated
+    # per-row like buttons so the editor can mark the offending row.
+    conditions_value = get('conditions')
+    if conditions_value is None:
+        conditions_value = []
+    clean_conditions = []
+    if not isinstance(conditions_value, list):
+        errors['conditions'] = "Conditions must be a list."
     else:
-        cfg['condition'] = condition
-
-    for field in ('outlook_subject_pattern', 'outlook_body_pattern'):
-        value = str(get(field) or "")
-        if value:
-            try:
-                re.compile(value)
-            except re.error as e:
-                errors[field] = f"Invalid pattern: {e}"
+        for i, condition in enumerate(conditions_value):
+            if not isinstance(condition, dict):
+                errors[f'conditions.{i}'] = "Each condition needs a variable and an operator."
                 continue
-        cfg[field] = value
+            variable = conditionutil.normalize_variable(str(condition.get('variable') or ""))
+            operator = conditionutil.canonical_operator(str(condition.get('operator') or ""))
+            value = condition.get('value')
+            value = "" if value is None else str(value)
+            case_sensitive = _ui_bool(condition.get('case_sensitive'))
+            if variable not in SUPPORTED_TEMPLATE_VARIABLES:
+                errors[f'conditions.{i}'] = "Pick a supported template variable."
+                continue
+            if not operator:
+                errors[f'conditions.{i}'] = "Operator must be one of " + ", ".join(CONDITION_OPERATORS_ORDERED) + "."
+                continue
+            if operator in CONDITION_OPERATORS_WITHOUT_VALUE:
+                # Nothing to compare, so a value and a case flag would both be dead weight.
+                value, case_sensitive = "", False
+            elif operator in CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE and not value:
+                errors[f'conditions.{i}'] = f"`{operator}` needs a value."
+                continue
+            if operator in ('regex', 'not_regex'):
+                try:
+                    re.compile(value)
+                except re.error as e:
+                    errors[f'conditions.{i}'] = f"Invalid pattern: {e}"
+                    continue
+            clean_conditions.append({'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive})
+    if not any(key == 'conditions' or key.startswith('conditions.') for key in errors):
+        cfg['conditions'] = clean_conditions
+
+    conditions_match = conditionutil.canonical_match_mode(str(get('conditions_match') or CONDITION_MATCH_ALL))
+    if not conditions_match:
+        errors['conditions_match'] = "Conditions match must be " + " or ".join(sorted(CONDITION_MATCHES)) + "."
+    else:
+        cfg['conditions_match'] = conditions_match
+
+    calendar_url = str(get('calendar_url') or "").strip()
+    if calendar_url:
+        try:
+            cfg['calendar_url'] = calendarfeed.validate_calendar_url(calendar_url)
+        except ValueError as e:
+            errors['calendar_url'] = str(e)
+    else:
+        cfg['calendar_url'] = ""
 
     action = str(get('action') or ACTION_REPLY).strip().lower().replace('-', '_')
     if action not in ACTIONS:
@@ -406,7 +446,10 @@ def ui_meta() -> dict:
     """Option lists and defaults the editor needs, sourced from the live constants."""
     return {
         'triggers': sorted(TRIGGERS),
-        'conditions': sorted(CONDITIONS),
+        # Deliberately unsorted: each operator sits next to its negation.
+        'condition_operators': list(CONDITION_OPERATORS_ORDERED),
+        'condition_operators_without_value': sorted(CONDITION_OPERATORS_WITHOUT_VALUE),
+        'condition_matches': sorted(CONDITION_MATCHES),
         'actions': sorted(ACTIONS),
         'button_actions': sorted(BUTTON_ACTIONS),
         'opsgenie_priorities': sorted(OPSGENIE_PRIORITIES),

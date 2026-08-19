@@ -1,3 +1,5 @@
+import copy
+
 from tests._common import *  # noqa: F401,F403
 
 
@@ -48,54 +50,95 @@ async def test_set_action_normalizes_dashes():
 
 
 @pytest.mark.asyncio
-async def test_set_condition_aliases():
+async def test_add_condition_accepts_operator_aliases():
     app = AsyncMock()
     channel = _mk_channel()
     user = User("U1", "test", "Test User", "Testers")
     with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
-        await process_command(app, "set condition outlook", channel, user)
-        assert channel.configs["default"]["condition"] == hutbot.constants.CONDITION_OUTLOOK
-        await process_command(app, "set condition none", channel, user)
-        assert channel.configs["default"]["condition"] == ""
+        await process_command(app, "add condition message has urgent", channel, user)
+        await process_command(app, "condition {{team}} is Platform", channel, user)
+        await process_command(app, "add condition calendar_current_summary not contains daily", channel, user)
+    conditions = channel.configs["default"]["conditions"]
+    assert [(c["variable"], c["operator"], c["value"]) for c in conditions] == [
+        ("message", "contains", "urgent"),
+        ("team", "equals", "Platform"),
+        ("calendar_current_summary", "not_contains", "daily"),
+    ]
+    assert channel.configs["default"]["conditions_match"] == "all"
 
 
-
-# ----- Conditions -----
 
 @pytest.mark.asyncio
-async def test_evaluate_condition_none_is_true():
+async def test_conditions_gate_run_action():
     app = AsyncMock()
-    config = DEFAULT_CONFIG.copy()
-    assert await hutbot.actions.evaluate_condition(app, config) is True
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["reply_message"] = "ping"
+    config["conditions"] = [{"variable": "message", "operator": "contains", "value": "deploy"}]
+    channel = _mk_channel({"gated": config})
+    with patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})) as post:
+        posted, reason = await hutbot.actions.run_action_with_reason(
+            app, "token", channel, config, "gated", context={"text": "nothing to see"})
+        assert posted is None and "did not match" in reason
+        post.assert_not_awaited()
+
+        posted, reason = await hutbot.actions.run_action_with_reason(
+            app, "token", channel, config, "gated", context={"text": "please deploy this"})
+        assert posted is not None and reason == ""
+        assert post.await_count == 1
 
 
 
 @pytest.mark.asyncio
-async def test_evaluate_condition_outlook_passes_negate():
+async def test_blocked_config_does_not_page_opsgenie():
     app = AsyncMock()
-    config = DEFAULT_CONFIG.copy()
-    config["condition"] = hutbot.constants.CONDITION_OUTLOOK
-    config["outlook_subject_pattern"] = "standup"
-    config["condition_negate"] = True
-    with patch('hutbot.actions.outlook.calendar_condition_met', new=AsyncMock(return_value=False)) as met:
-        result = await hutbot.actions.evaluate_condition(app, config)
-        assert result is False
-        met.assert_awaited_once_with("standup", "", True)
+    hutbot.state.opsgenie_configured = True
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["opsgenie"] = True
+    config["conditions"] = [{"variable": "message", "operator": "not_empty"}]
+    channel = _mk_channel({"page": config})
+    with patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert, \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})):
+        # No message behind the run, so `{{message}}` is empty and the gate closes.
+        posted = await hutbot.actions.run_action(app, "token", channel, config, "page", context={"channel_id": "C12345"})
+    assert posted is None
+    alert.assert_not_awaited()
 
 
 
 @pytest.mark.asyncio
-async def test_outlook_stub_reads_env(monkeypatch):
-    monkeypatch.setenv("HUTBOT_OUTLOOK_STUB_EVENTS", json.dumps([
-        {"subject": "Daily standup", "body": "join here"},
-        {"subject": "1:1", "body": "private"},
-    ]))
-    events = await outlook.find_calendar_events("standup")
-    assert len(events) == 1 and events[0]["subject"] == "Daily standup"
-    assert await outlook.calendar_condition_met("standup") is True
-    assert await outlook.calendar_condition_met("standup", negate=True) is False
-    assert await outlook.calendar_condition_met("no-such-meeting") is False
-    assert await outlook.calendar_condition_met("no-such-meeting", negate=True) is True
+async def test_conditions_build_variables_once():
+    """The gate, the message, and the alert share one resolution — never three."""
+    app = AsyncMock()
+    hutbot.state.opsgenie_configured = True
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["opsgenie"] = True
+    config["reply_message"] = "on call: {{opsgenie_current_user}}"
+    config["opsgenie_message"] = "alert for {{opsgenie_current_user}}"
+    config["conditions"] = [{"variable": "opsgenie_current_user", "operator": "not_empty"}]
+    channel = _mk_channel({"page": config})
+    resolved = {"opsgenie_current_user": "<@U9>"}
+    with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value=resolved)) as og, \
+         patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})):
+        posted = await hutbot.actions.run_action(app, "token", channel, config, "page", context={"channel_id": "C12345"})
+    assert posted is not None
+    assert og.await_count == 1
+
+
+
+@pytest.mark.asyncio
+async def test_conditions_do_not_fetch_opsgenie_when_unreferenced():
+    app = AsyncMock()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["reply_message"] = "ping"
+    config["conditions"] = [{"variable": "config", "operator": "not_empty"}]
+    channel = _mk_channel({"plain": config})
+    with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})) as og, \
+         patch('hutbot.calendarfeed.get_calendar_template_variables', new=AsyncMock(return_value={})) as cal, \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})):
+        await hutbot.actions.run_action(app, "token", channel, config, "plain", context={"channel_id": "C12345"})
+    og.assert_not_awaited()
+    cal.assert_not_awaited()
 
 
 
@@ -144,7 +187,9 @@ async def test_run_action_fires_opsgenie_when_slack_post_fails():
         posted = await hutbot.actions.run_action(app, "token", channel, config, "src", {"text": "DB down"})
 
     assert posted is None
-    alert.assert_awaited_once_with(app, "token", channel, config, "src", {"text": "DB down"}, "")
+    # The trailing None is the shared variable dict: this config has no conditions, so
+    # nothing was resolved up front and the alert renders its own.
+    alert.assert_awaited_once_with(app, "token", channel, config, "src", {"text": "DB down"}, "", None)
 
 
 

@@ -292,3 +292,101 @@ async def test_validate_config_payload_stores_escalation_as_one_setting():
     cfg, errors = await validate_config_payload(
         {**base, "escalation_timeout": 300, "escalation_kind": "nonsense", "escalation_target": "x"}, app)
     assert errors == {"escalation_kind": "Escalation must be none, button or config."}
+
+
+@pytest.mark.asyncio
+async def test_validate_config_payload_accepts_and_canonicalizes_conditions():
+    _seed_user_caches()
+    app = _ui_app()
+    payload = {
+        "reply_message": "Hi",
+        "wait_time": 600,
+        "conditions": [
+            # `is` canonicalizes to `equals`; the case flag is coerced from a UI string.
+            {"variable": "{{team}}", "operator": "is", "value": "Platform", "case_sensitive": "true"},
+            # A value-less operator drops both the value and the flag.
+            {"variable": "message", "operator": "not empty", "value": "junk", "case_sensitive": True},
+        ],
+        "conditions_match": "any",
+        "calendar_url": "https://cal.example.com/a/b/calendar.ics",
+    }
+
+    cfg, errors = await validate_config_payload(payload, app)
+
+    assert errors == {}
+    assert cfg["conditions"] == [
+        {"variable": "team", "operator": "equals", "value": "Platform", "case_sensitive": True},
+        {"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False},
+    ]
+    assert cfg["conditions_match"] == "any"
+    assert cfg["calendar_url"] == "https://cal.example.com/a/b/calendar.ics"
+
+
+@pytest.mark.asyncio
+async def test_validate_config_payload_defaults_conditions():
+    _seed_user_caches()
+    cfg, errors = await validate_config_payload({"reply_message": "Hi", "wait_time": 600}, _ui_app())
+    assert errors == {}
+    assert cfg["conditions"] == [] and cfg["conditions_match"] == "all"
+    assert cfg["calendar_url"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("condition,expected", [
+    ({"variable": "nope", "operator": "contains", "value": "x"}, "supported template variable"),
+    ({"variable": "message", "operator": "bogus", "value": "x"}, "Operator must be one of"),
+    ({"variable": "message", "operator": "contains", "value": ""}, "needs a value"),
+    ({"variable": "message", "operator": "regex", "value": "[unclosed"}, "Invalid pattern"),
+    ("not even a dict", "needs a variable and an operator"),
+])
+async def test_validate_config_payload_reports_per_condition_errors(condition, expected):
+    _seed_user_caches()
+    payload = {
+        "reply_message": "Hi", "wait_time": 600,
+        "conditions": [
+            {"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False},
+            condition,
+        ],
+    }
+    cfg, errors = await validate_config_payload(payload, _ui_app())
+    assert cfg is None
+    # Indexed like the buttons editor, so the UI can mark the offending row.
+    assert expected in errors["conditions.1"]
+
+
+@pytest.mark.asyncio
+async def test_validate_config_payload_rejects_a_bad_conditions_shape_and_match():
+    _seed_user_caches()
+    cfg, errors = await validate_config_payload(
+        {"reply_message": "Hi", "wait_time": 600, "conditions": "nope", "conditions_match": "sometimes"},
+        _ui_app())
+    assert cfg is None
+    assert "must be a list" in errors["conditions"]
+    assert "conditions_match" in errors
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url,expected", [
+    ("http://cal.example.com/feed.ics", "https"),
+    ("https://127.0.0.1/feed.ics", "internal"),
+    ("https://user:pw@cal.example.com/feed.ics", "credentials"),
+])
+async def test_validate_config_payload_rejects_unsafe_calendar_urls(url, expected):
+    _seed_user_caches()
+    cfg, errors = await validate_config_payload(
+        {"reply_message": "Hi", "wait_time": 600, "calendar_url": url}, _ui_app())
+    assert cfg is None
+    assert expected in errors["calendar_url"]
+
+
+def test_ui_meta_ships_condition_operators_in_declared_order():
+    meta = ui_meta()
+    # Not sorted: each operator has to sit next to its negation in the dropdown.
+    assert meta["condition_operators"] == list(CONDITION_OPERATORS_ORDERED)
+    assert meta["condition_operators"] != sorted(meta["condition_operators"])
+    assert meta["condition_operators_without_value"] == sorted(CONDITION_OPERATORS_WITHOUT_VALUE)
+    assert meta["condition_matches"] == [CONDITION_MATCH_ALL, CONDITION_MATCH_ANY]
+    # The variable picker and the defaults pick up the calendar entries for free.
+    assert CALENDAR_TEMPLATE_VARIABLES <= set(meta["template_variables"])
+    assert meta["default_config"]["conditions"] == []
+    assert "conditions" not in meta

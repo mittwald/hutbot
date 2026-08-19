@@ -397,7 +397,9 @@ async def test_show_config_hides_settings_that_do_not_apply():
         "post": {**DEFAULT_CONFIG.copy(), "trigger": "manual", "reply_message": ":x: pressed"},
         # cron with a date in its message: condition + full date/time block
         "standup": {**DEFAULT_CONFIG.copy(), "trigger": TRIGGER_CRON, "cron": "0 9 * * 1-5",
-                    "reply_message": "Standup at {{time}}", "condition": "outlook_calendar"},
+                    "reply_message": "Standup at {{time}}",
+                    "conditions": [{"variable": "calendar_current_summary", "operator": "contains",
+                                    "value": "standup", "case_sensitive": False}]},
         # message trigger with work hours: timezone only, no formats
         "watch": {**DEFAULT_CONFIG.copy(), "hours": ["9:00", "17:00"]},
     }
@@ -412,12 +414,14 @@ async def test_show_config_hides_settings_that_do_not_apply():
 
     manual = sections["post"]
     for mute in ("Pattern", "Included teams", "Include bots", "Wait time", "Only work days",
-                 "Work hours", "Date format", "Date/time timezone", "Condition"):
+                 "Work hours", "Date format", "Date/time timezone", "Conditions", "Calendar"):
         assert mute not in manual, mute
     assert "OpsGenie" in manual
 
     cron = sections["standup"]
-    assert "Condition           outlook_calendar" in cron
+    # Conditions gate every trigger now, and a single one needs no `Match` row.
+    assert '{{calendar_current_summary}} contains "standup"' in cron
+    assert "Conditions" in cron and "Match" not in cron
     assert "Date format" in cron and "Date/time locale" in cron
     for mute in ("Pattern", "Wait time", "Work hours", "Include bots"):
         assert mute not in cron, mute

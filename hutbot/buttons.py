@@ -146,18 +146,29 @@ async def _escalation_context(app: AsyncApp, entry: dict | None, posted_channel_
     }
 
 
-async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '') -> None:
+async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '') -> bool:
     """Run a button's action. Shared by a real press and an auto-press on timeout.
 
+    Returns whether the action actually happened. The caller has already consumed the
+    pending record by this point and goes on to strip the buttons and post a note, so it
+    needs to know: a target config whose own conditions declined must not be reported as
+    having run.
+
     `delay` is handled by the caller (it is only meaningful for a live press).
+
+    `ack` is deliberately not condition-gated. Its text belongs to the *source* config,
+    whose conditions were already evaluated when the buttoned message was posted;
+    re-checking them minutes later could swallow a person's acknowledgement.
     """
     action, value = normalize_button(button)
     if action == BUTTON_ACTION_CONFIG:
         target_config = channel.configs.get(value)
         if not target_config:
             log_warning(f"Button target config '{value}' not found in #{channel.name}.")
-            return
-        await actions.run_action(app, opsgenie_token, channel, target_config, value, context=run_context)
+            return False
+        # `run_action` already logs why it declined, and the note only needs to know that
+        # it did — so this stays on the plain entry point the rest of the code uses.
+        return bool(await actions.run_action(app, opsgenie_token, channel, target_config, value, context=run_context))
     elif action == BUTTON_ACTION_ACK:
         # Dismissing posts the ack text when there is one. The text is a template
         # like a config's reply message, rendered against the original message with
@@ -165,8 +176,11 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, po
         if value:
             text = await actions.render_template_text(app, opsgenie_token, channel, src_config or {}, src_config_name, run_context, value)
             await messaging._post_message(app, posted_channel_id, text, None, message_ts)
+        # Nothing to post is still a successful "handled".
+        return True
     else:
         log_warning(f"Unsupported button action '{action}' in #{channel.name}.")
+        return False
 
 
 async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> None:
@@ -186,15 +200,15 @@ async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> No
             return
         buttons = snapshot if snapshot is not None else (src_config or {}).get('buttons') or []
         log(f"No button pressed on message {message_ts}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
-        await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''))
-        await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), _ran_config(buttons[idx])))
+        ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''))
+        await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), _ran_config(buttons[idx]), ok))
     elif kind == ESCALATION_CONFIG:
         target = entry.get('escalation_target', '')
         target_config = channel.configs.get(target)
         if target_config:
             log(f"Escalating message {message_ts}: running '{target}' in #{channel.name}.")
-            await actions.run_action(app, opsgenie_token, channel, target_config, target, context=run_context)
-            await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), target))
+            posted = await actions.run_action(app, opsgenie_token, channel, target_config, target, context=run_context)
+            await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), target, bool(posted)))
         else:
             log_warning(f"Escalation target '{target}' not found in #{channel.name}.")
 
@@ -321,20 +335,27 @@ def _ran_config(button: dict) -> str:
     return value if action == BUTTON_ACTION_CONFIG and value else ""
 
 
-def _ran_suffix(ran: str) -> str:
-    """The config a press or a timeout ran, if any."""
-    return f" ▶︎ {ran}" if ran else ""
+def _ran_suffix(ran: str, ok: bool = True) -> str:
+    """The config a press or a timeout ran, if any.
+
+    Marked `(skipped)` when that config declined to run — its conditions were not met, or
+    its action had nowhere to send. The message is consumed either way, so the note has to
+    say which of the two happened.
+    """
+    if not ran:
+        return ""
+    return f" ▶︎ {ran}" if ok else f" ▶︎ {ran} (skipped)"
 
 
-def _press_note(button: dict, presser: User | None) -> str:
+def _press_note(button: dict, presser: User | None, ok: bool = True) -> str:
     """What the message says in place of its buttons after somebody pressed one."""
     who = (presser.real_name or presser.name or '?') if presser else 'Someone'
-    return f"_{who}: [{button.get('label') or '?'}]{_ran_suffix(_ran_config(button))}_"
+    return f"_{who}: [{button.get('label') or '?'}]{_ran_suffix(_ran_config(button), ok)}_"
 
 
-def _timeout_note(timeout: float, ran: str = "") -> str:
+def _timeout_note(timeout: float, ran: str = "", ok: bool = True) -> str:
     """…and what it says when the escalation acted instead of a person."""
-    return f"_⌛︎ {int((timeout or 0) // 60)}m{_ran_suffix(ran)}_"
+    return f"_⌛︎ {int((timeout or 0) // 60)}m{_ran_suffix(ran, ok)}_"
 
 
 async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str, entry: dict | None, note: str = "") -> None:
@@ -414,5 +435,5 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
     # run is attributed to the *original* author (presser=None ⇒ orig.user_id), matching
     # the timeout-escalation path; the presser is only used for the log line above.
     run_context = await _escalation_context(app, entry, posted_channel_id, message_ts)
-    await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name)
-    await _strip_buttons(app, posted_channel_id, message_ts, entry, _press_note(buttons[index], presser))
+    ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name)
+    await _strip_buttons(app, posted_channel_id, message_ts, entry, _press_note(buttons[index], presser, ok))

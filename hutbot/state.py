@@ -65,6 +65,12 @@ opsgenie_configured = False
 # Slack member ids per channel, cached briefly (see slackcache.get_channel_members).
 _channel_members_cache: dict[str, tuple[float, set]] = {}
 
+# Parsed ICS calendars per feed URL, cached briefly (see calendarfeed.fetch_calendar).
+# The parsed calendar is cached rather than the raw text (parsing is the expensive part)
+# or the derived context (which would go stale at every event boundary).
+# Values are (monotonic_fetched_at, icalendar.Calendar, display_name).
+_calendar_cache: dict[str, tuple[float, object, str]] = {}
+
 # Serializes web-UI config writes (mutate channel_config + save_configuration).
 _config_write_lock = asyncio.Lock()
 
@@ -84,6 +90,7 @@ def reset() -> None:
     id_usergroup_cache.clear()
     team_cache.clear()
     _channel_members_cache.clear()
+    _calendar_cache.clear()
     _scheduler_last_check = None
     bot_user_id = None
     bot_user_name = DEFAULT_BOT_NAME

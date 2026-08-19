@@ -1,0 +1,430 @@
+"""Calendar integration: read an ICS feed from a URL, resolve the current/next event.
+
+Named `calendarfeed` rather than `calendar` so nothing in the package can shadow the
+standard library's `calendar` module (the same reason `datetimefmt` is not `datetime`).
+
+Layered like ``opsgenie``: pure parsers and selectors, a thin cached HTTP wrapper, one
+aggregator, and one template-variable builder. The pure half needs no network, so most of
+it is directly testable.
+"""
+
+import asyncio
+import datetime
+import ipaddress
+import itertools
+import os
+import time
+import urllib.parse
+
+import aiohttp
+import icalendar
+import recurring_ical_events
+
+from employee_list import log, log_error
+
+from . import datetimefmt
+from . import messaging
+from . import state
+from .constants import (
+    CALENDAR_DATETIME_TEMPLATE_VARIABLES,
+    UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
+    UNKNOWN_CALENDAR_PLACEHOLDER,
+    UNKNOWN_PERIOD_PLACEHOLDER,
+)
+from .models import CalendarContext, CalendarEvent
+
+# How long a fetched calendar stays usable. Matches slackcache's channel-member TTL, but
+# is env-tunable because it trades freshness against a host we do not control, and
+# conditions can make this path hot. Read at import; tests patch the module attribute.
+_CALENDAR_TTL = float(os.environ.get('HUTBOT_CALENDAR_TTL', '300'))
+# Safety valve for `find_next_event`: `after()` is a lazy generator over possibly infinite
+# recurrences, so bound how many occurrences we are willing to skip. Not a time horizon —
+# a calendar whose only future entry is months away is still found.
+_CALENDAR_LOOKAHEAD_EVENTS = 200
+# A feed that is not a calendar (an HTML sign-in page) or is absurdly large is rejected
+# before it reaches the parser.
+_MAX_ICS_BYTES = 5 * 1024 * 1024
+_HTTP_TIMEOUT = 10
+_MAX_REDIRECTS = 3
+
+
+# ----- pure helpers -----
+
+
+def _text(event, key: str) -> str:
+    """A calendar property as a plain string.
+
+    icalendar returns `vText`, which subclasses `str` but whose repr is `vText(b'...')`;
+    without `str()` that representation leaks into logs and JSON. Missing keys are `None`.
+    """
+    value = event.get(key)
+    return "" if value is None else str(value).strip()
+
+
+def _organizer(event) -> str:
+    """A human-readable organizer, or "" when there is none worth showing.
+
+    Exchange publishes `ORGANIZER;CN="Real Name":mailto:/O=EXCHANGELABS/OU=.../CN=...`,
+    where the mailto value is an X.500 DN and useless as a display value. So the `CN`
+    parameter wins, and the address is only used when it actually looks like one.
+    """
+    value = event.get("ORGANIZER")
+    if value is None:
+        return ""
+    common_name = str((getattr(value, 'params', None) or {}).get('CN') or "").strip()
+    if common_name:
+        return common_name
+    address = str(value).strip()
+    if address.lower().startswith("mailto:"):
+        address = address[len("mailto:"):]
+    # An X.500 distinguished name is not an address; better empty than gibberish.
+    return address if "@" in address and "/" not in address else ""
+
+
+def _aware(value, timezone: datetime.tzinfo) -> datetime.datetime:
+    """An aware datetime for any DTSTART/DTEND icalendar hands back.
+
+    All-day events come back as `date`, which cannot be compared with a `datetime` at all,
+    so they are anchored at midnight in the config's timezone — an all-day event means
+    "that calendar day where the reader is". Floating (naive) times get the same treatment.
+    """
+    if isinstance(value, datetime.datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone)
+    return datetime.datetime.combine(value, datetime.time.min, tzinfo=timezone)
+
+
+def _is_all_day(event) -> bool:
+    return not isinstance(event.start, datetime.datetime)
+
+
+def _is_usable(event) -> bool:
+    """False for events that are not happening.
+
+    Only `CANCELLED` is dropped. `TENTATIVE` is kept — it is on the calendar, and
+    `{{calendar_current_status}}` lets a template say so. A missing STATUS is normal in
+    Outlook feeds and means confirmed.
+    """
+    return _text(event, "STATUS").upper() != "CANCELLED"
+
+
+def _is_busy(event) -> bool:
+    """Whether the event occupies the owner's time (`TRANSP` is not `TRANSPARENT`).
+
+    A free block is still an event, so it is never filtered out — it just loses to a real
+    meeting when both cover this instant (see `_current_rank`). Exposed as its own predicate
+    so an "is this person available" check has it ready.
+    """
+    return _text(event, "TRANSP").upper() != "TRANSPARENT"
+
+
+def _current_rank(event, timezone: datetime.tzinfo) -> tuple:
+    """Sort key deciding which of several overlapping events is "happening now".
+
+    A feed routinely has an all-day marker, a multi-day conference, a free/busy block and
+    the actual meeting all covering this instant, so "earliest start" picks the wrong one.
+    Preference order: a timed event over an all-day one, then one that occupies the owner
+    over a `TRANSP:TRANSPARENT` free block, then the most recently started (the thing you
+    just walked into), then the shortest — a session beats the conference containing it —
+    and finally the UID so ties are stable.
+    """
+    start = _aware(event.start, timezone)
+    end = _aware(event.end, timezone)
+    return (
+        1 if _is_all_day(event) else 0,
+        0 if _is_busy(event) else 1,
+        -start.timestamp(),
+        (end - start).total_seconds(),
+        _text(event, "UID"),
+    )
+
+
+def build_calendar_event(event, config: dict | None = None) -> CalendarEvent:
+    """Convert an icalendar event into the flat, JSON-friendly shape templates see."""
+    timezone = datetimefmt.get_config_timezone(config)
+    all_day = _is_all_day(event)
+    start = _aware(event.start, timezone)
+    end = _aware(event.end, timezone)
+    # An all-day DTEND is exclusive per RFC 5545 (a one-day event on the 19th ends on the
+    # 20th). Overlap maths wants that, but a reader does not, so the stored end is the
+    # inclusive last day. Guard against a zero-length all-day event going backwards.
+    if all_day and end - start >= datetime.timedelta(days=1):
+        end -= datetime.timedelta(days=1)
+    return CalendarEvent(
+        uid=_text(event, "UID"),
+        summary=_text(event, "SUMMARY"),
+        location=_text(event, "LOCATION"),
+        description=_text(event, "DESCRIPTION"),
+        organizer=_organizer(event),
+        status=_text(event, "STATUS").upper() or "CONFIRMED",
+        start=start.isoformat(),
+        end=end.isoformat(),
+        all_day=all_day,
+    )
+
+
+def find_current_and_next_events(calendar, config: dict | None = None, now: datetime.datetime | None = None) -> tuple[CalendarEvent | None, CalendarEvent | None]:
+    """The event covering `now` and the soonest one starting after it.
+
+    Takes `now` so callers (and tests) never depend on the wall clock, like
+    ``opsgenie.find_opsgenie_on_call_period``.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    timezone = datetimefmt.get_config_timezone(config)
+
+    try:
+        # Malformed RRULEs are common in real Outlook feeds; without skip_bad_series a
+        # single broken series would take the whole calendar down with it.
+        query = recurring_ical_events.of(calendar, skip_bad_series=True)
+    except Exception as e:
+        log_error("Failed to index calendar events:", e)
+        return None, None
+
+    current = None
+    try:
+        candidates = [event for event in query.at(now) if _is_usable(event)]
+        candidates.sort(key=lambda event: _current_rank(event, timezone))
+        if candidates:
+            current = build_calendar_event(candidates[0], config)
+    except Exception as e:
+        log_error("Failed to resolve the current calendar event:", e)
+
+    next_event = None
+    try:
+        # `after()` deliberately yields events that are *ongoing* at `now` before future
+        # ones, so the start filter is what keeps "next" from echoing "current".
+        for event in itertools.islice(query.after(now), _CALENDAR_LOOKAHEAD_EVENTS):
+            if _aware(event.start, timezone) > now and _is_usable(event):
+                next_event = build_calendar_event(event, config)
+                break
+    except Exception as e:
+        log_error("Failed to resolve the next calendar event:", e)
+
+    return current, next_event
+
+
+# ----- URL validation and display -----
+
+
+def validate_calendar_url(url: str) -> str:
+    """Return a usable feed URL, or raise ``ValueError`` explaining why it is not.
+
+    The bot fetches this URL from inside the cluster on a user's word, so the scheme is
+    pinned to https and obvious internal targets are refused. The NetworkPolicy egress
+    allow-list is the real control; this is the readable first line of defence.
+    """
+    url = (url or "").strip()
+    if not url:
+        raise ValueError("calendar URL must be non-empty")
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError as e:
+        raise ValueError(f"calendar URL could not be parsed: {e}")
+    if parts.scheme.lower() != "https":
+        raise ValueError("calendar URL must start with `https://`")
+    if not parts.hostname:
+        raise ValueError("calendar URL has no host")
+    if parts.username or parts.password:
+        raise ValueError("calendar URL must not embed credentials")
+
+    host = parts.hostname.lower()
+    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
+        raise ValueError("calendar URL must not point at localhost")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and (address.is_loopback or address.is_private or address.is_link_local or address.is_reserved):
+        raise ValueError("calendar URL must not point at an internal address")
+    return url
+
+
+def describe_calendar_url(url: str) -> str:
+    """A safe-to-echo form of the feed URL.
+
+    A published-calendar link needs no credentials, so possession of it *is* access. It is
+    stored per config and anyone in the channel can run `show config`, so only the host and
+    the last path segment are ever printed back.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "<unprintable URL>"
+    host = parts.hostname or ""
+    tail = parts.path.rsplit("/", 1)[-1] if parts.path else ""
+    if not host:
+        return "<unprintable URL>"
+    return f"{host}/…/{tail}" if tail else f"{host}/…"
+
+
+# ----- fetching -----
+
+
+async def fetch_calendar(url: str) -> tuple[object | None, str]:
+    """Fetch and parse a feed, returning ``(calendar, display_name)``.
+
+    Never raises: a failure logs and returns ``(None, "")`` so a broken feed degrades a
+    rule instead of taking down the event loop, matching the OpsGenie helpers.
+    Successful parses are cached per URL for ``_CALENDAR_TTL`` seconds.
+    """
+    url = (url or "").strip()
+    if not url:
+        return None, ""
+
+    cached = state._calendar_cache.get(url)
+    if cached and (time.monotonic() - cached[0]) < _CALENDAR_TTL:
+        return cached[1], cached[2]
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, max_redirects=_MAX_REDIRECTS) as response:
+                if response.status != 200:
+                    log_error(f"Failed to fetch the calendar feed {describe_calendar_url(url)}: {response.status}")
+                    return None, ""
+                if response.content_length and response.content_length > _MAX_ICS_BYTES:
+                    log_error(f"Calendar feed {describe_calendar_url(url)} is too large ({response.content_length} bytes).")
+                    return None, ""
+                text = await response.text()
+    except Exception as e:
+        log_error(f"Failed to fetch the calendar feed {describe_calendar_url(url)}:", e)
+        return None, ""
+
+    if len(text) > _MAX_ICS_BYTES:
+        log_error(f"Calendar feed {describe_calendar_url(url)} is too large ({len(text)} bytes).")
+        return None, ""
+    if "BEGIN:VCALENDAR" not in text:
+        # Usually an HTML sign-in page: say so instead of reporting an empty calendar.
+        log_error(f"Calendar feed {describe_calendar_url(url)} did not return an iCalendar document.")
+        return None, ""
+
+    try:
+        # Parsing a real feed takes tens of milliseconds, which is long enough to be worth
+        # keeping off the event loop while Slack events are queueing.
+        calendar = await asyncio.to_thread(icalendar.Calendar.from_ical, text)
+    except Exception as e:
+        log_error(f"Failed to parse the calendar feed {describe_calendar_url(url)}:", e)
+        return None, ""
+
+    name = ""
+    try:
+        name = str(calendar.get("X-WR-CALNAME") or "").strip()
+    except Exception:
+        name = ""
+
+    state._calendar_cache[url] = (time.monotonic(), calendar, name)
+    return calendar, name
+
+
+async def resolve_calendar_context(config: dict, now: datetime.datetime | None = None) -> CalendarContext:
+    """The configured feed's name plus its current and next event."""
+    url = (config or {}).get('calendar_url', '').strip()
+    if not url:
+        return CalendarContext("", None, None)
+    calendar, name = await fetch_calendar(url)
+    if calendar is None:
+        return CalendarContext("", None, None)
+    current, next_event = find_current_and_next_events(calendar, config, now)
+    return CalendarContext(name, current, next_event)
+
+
+# ----- template variables -----
+
+
+def get_calendar_placeholder_variables(config: dict | None = None) -> dict[str, str]:
+    """Every calendar variable, filled with placeholders.
+
+    Mirrors ``opsgenie.get_opsgenie_placeholder_variables``: a template referencing a
+    calendar variable renders a visible placeholder rather than an empty string when
+    there is no feed, no event, or a failed fetch.
+    """
+    url = (config or {}).get('calendar_url', '').strip()
+    variables = {
+        "calendar_name": describe_calendar_url(url) or UNKNOWN_CALENDAR_PLACEHOLDER,
+    }
+    for prefix in ("current", "next"):
+        for field in ("summary", "location", "description", "organizer", "uid", "status"):
+            variables[f"calendar_{prefix}_{field}"] = UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
+    for variable in CALENDAR_DATETIME_TEMPLATE_VARIABLES:
+        variables[variable] = UNKNOWN_PERIOD_PLACEHOLDER
+        variables[f"__{variable}_raw"] = ""
+    return variables
+
+
+def fill_calendar_event_variables(variables: dict[str, str], config: dict | None, prefix: str, event: CalendarEvent | None) -> None:
+    """Overwrite one period's placeholders from a resolved event."""
+    if event is None:
+        return
+    variables[f"calendar_{prefix}_summary"] = event.summary
+    variables[f"calendar_{prefix}_location"] = event.location
+    variables[f"calendar_{prefix}_description"] = event.description
+    variables[f"calendar_{prefix}_organizer"] = event.organizer
+    variables[f"calendar_{prefix}_uid"] = event.uid
+    variables[f"calendar_{prefix}_status"] = event.status
+
+    for bound, value in (("start", event.start), ("end", event.end)):
+        for part in ("date", "time", "datetime"):
+            variable = f"calendar_{prefix}_{bound}_{part}"
+            variables[f"__{variable}_raw"] = value or ""
+            variables[variable] = datetimefmt.format_template_datetime(value, variable, config)
+
+
+async def get_calendar_template_variables(config: dict, now: datetime.datetime | None = None) -> dict[str, str]:
+    """The `{{calendar_*}}` values for one config. Takes no `app`: no Slack lookups."""
+    variables = get_calendar_placeholder_variables(config)
+    url = (config or {}).get('calendar_url', '').strip()
+    if not url:
+        return variables
+
+    context = await resolve_calendar_context(config, now)
+    if context.name:
+        variables["calendar_name"] = context.name
+    fill_calendar_event_variables(variables, config, "current", context.current)
+    fill_calendar_event_variables(variables, config, "next", context.next)
+    return variables
+
+
+# ----- the read command -----
+
+
+def _describe_event(config: dict, label: str, event: CalendarEvent | None) -> str:
+    if event is None:
+        return f"*{label}*: _none_"
+    lines = [f"*{label}*: {event.summary or UNKNOWN_CALENDAR_EVENT_PLACEHOLDER}"]
+    if event.location:
+        lines.append(f"*Location*: {event.location}")
+    if event.organizer:
+        lines.append(f"*Organizer*: {event.organizer}")
+    part = "date" if event.all_day else "datetime"
+    lines.append(f"*Start*: `{datetimefmt.format_datetime_value(event.start, part, config)}`")
+    lines.append(f"*End*: `{datetimefmt.format_datetime_value(event.end, part, config)}`")
+    if event.status and event.status != "CONFIRMED":
+        lines.append(f"*Status*: `{event.status}`")
+    return "\n".join(lines)
+
+
+async def send_current_calendar_event(app, channel, config_name: str, user, thread_ts: str = "") -> None:
+    """`show calendar` — print the event running now and the next one."""
+    config = channel.configs.get(config_name) or {}
+    url = (config.get('calendar_url') or '').strip()
+    if not url:
+        await messaging.send_message(app, channel, user, f"No calendar configured. Use `{state.slash_command} [config] set calendar <url>`.", thread_ts)
+        return
+
+    context = await resolve_calendar_context(config)
+    if context.current is None and context.next is None:
+        await messaging.send_message(app, channel, user, f"No current or upcoming events in the calendar `{describe_calendar_url(url)}`.", thread_ts)
+        return
+
+    header = f"*Calendar*: `{context.name or describe_calendar_url(url)}`"
+    message = "\n\n".join([
+        header,
+        _describe_event(config, "Now", context.current),
+        _describe_event(config, "Next", context.next),
+    ])
+    log(f"Reporting calendar events for config '{config_name}' in #{channel.name}.")
+    await messaging.send_message(app, channel, user, message, thread_ts)

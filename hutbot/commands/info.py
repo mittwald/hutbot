@@ -14,12 +14,15 @@ from .. import opsgenie
 from .. import buttons
 from .. import datetimefmt
 from .. import templating
+from .. import calendarfeed
+from .. import conditionutil
 from ..buttonutil import normalize_button
 from .. import targets
 from ..constants import (
+    CONDITION_MATCH_ALL,
     ACTION_DM_USER,
     DATETIME_TEMPLATE_VARIABLES,
-    OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
+    TEMPLATE_DATETIME_VARIABLES,
     ACTION_GROUP_DM,
     ACTION_POST_CHANNEL,
     ACTION_REPLY,
@@ -189,17 +192,20 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         # never read.
         groups: list[list[tuple]] = []
         reacts_to_messages = trigger == TRIGGER_MESSAGE
-        template_variables = templating.find_template_variables(reply_message or '') | templating.find_template_variables(config.get('opsgenie_message') or '')
-        renders_datetime = bool(template_variables & (DATETIME_TEMPLATE_VARIABLES | OPSGENIE_DATETIME_TEMPLATE_VARIABLES))
+        template_variables = (
+            templating.find_template_variables(reply_message or '')
+            | templating.find_template_variables(config.get('opsgenie_message') or '')
+            | conditionutil.condition_variables(config)
+        )
+        renders_datetime = bool(template_variables & (DATETIME_TEMPLATE_VARIABLES | TEMPLATE_DATETIME_VARIABLES))
 
-        condition = config.get('condition') or ''
-        if condition and trigger == TRIGGER_CRON:
-            negate = ' (negated)' if config.get('condition_negate') else ''
-            condition_rows = [("Condition", f"{condition}{negate}")]
-            if config.get('outlook_subject_pattern'):
-                condition_rows.append(("Outlook subject", config.get('outlook_subject_pattern')))
-            if config.get('outlook_body_pattern'):
-                condition_rows.append(("Outlook body", config.get('outlook_body_pattern')))
+        # Conditions gate every trigger, so this block is not tied to `cron` any more.
+        conditions = config.get('conditions') or []
+        if conditions:
+            condition_rows = [("Conditions", [conditionutil.describe_condition(c) for c in conditions])]
+            if len(conditions) > 1:
+                mode = config.get('conditions_match') or CONDITION_MATCH_ALL
+                condition_rows.append(("Match", "all must apply" if mode == CONDITION_MATCH_ALL else "any may apply"))
             groups.append(condition_rows)
 
         if reacts_to_messages:
@@ -239,6 +245,10 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
                 ("OpsGenie message",  config.get('opsgenie_message') or '<original message>'),
             ]
         groups.append(opsgenie_rows)
+
+        calendar_url = config.get('calendar_url') or ''
+        if calendar_url:
+            groups.append([("Calendar", calendarfeed.describe_calendar_url(calendar_url))])
 
         # The timezone also decides when a cron fires and when work hours are, so it
         # is shown for those even when nothing renders a date.

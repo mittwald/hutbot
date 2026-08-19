@@ -1,5 +1,6 @@
 """Slash-command handlers that mutate configuration (and run/test commands)."""
 
+import copy
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -9,6 +10,8 @@ from slack_sdk.errors import SlackApiError
 from .. import state
 from .. import messaging
 from .. import persistence
+from .. import calendarfeed
+from .. import conditionutil
 from .. import templating
 from .. import datetimefmt
 from .. import slackcache
@@ -27,9 +30,11 @@ from ..constants import (
     BUTTON_ACTION_CONFIG,
     BUTTON_ACTION_DELAY,
     BUTTON_ACTIONS,
-    CONDITION_NONE,
-    CONDITION_OUTLOOK,
-    CONDITIONS,
+    CONDITION_MATCH_ALL,
+    CONDITION_MATCHES,
+    CONDITION_OPERATORS_ORDERED,
+    CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE,
+    CONDITION_OPERATORS_WITHOUT_VALUE,
     DEFAULT_CONFIG,
     DEFAULT_CONFIG_NAME,
     ID_PATTERN,
@@ -39,7 +44,7 @@ from ..constants import (
     TRIGGER_CRON,
     TRIGGERS,
 )
-from ..textutil import log_debug, parse_quoted_tokens, strip_quotes
+from ..textutil import log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
 
 try:
     from croniter import croniter
@@ -48,8 +53,14 @@ except ImportError:  # pragma: no cover - dependency optional at runtime
 
 
 def _ensure_config(channel, config_name: str) -> dict:
+    """The named config, created from the defaults when it does not exist yet.
+
+    Deep-copied, because `DEFAULT_CONFIG.copy()` is shallow: a new config would otherwise
+    share `hours` / `excluded_teams` / `included_teams` / `conditions` with DEFAULT_CONFIG
+    itself, and one in-place append would leak into every other config.
+    """
     if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+        channel.configs[config_name] = copy.deepcopy(DEFAULT_CONFIG)
     return channel.configs[config_name]
 
 
@@ -61,24 +72,21 @@ def _set_action_hint(config_name: str, config: dict) -> str:
 
 
 async def set_bots(app: AsyncApp, channel, config_name: str, enabled: bool, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     channel.configs[config_name]['include_bots'] = enabled
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"*Bot messages* will {'also be *handled*' if enabled else 'be *ignored*'} in configuration `{config_name}`.", thread_ts)
 
 
 async def set_only_work_days(app: AsyncApp, channel, config_name: str, enabled: bool, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     channel.configs[config_name]['only_work_days'] = enabled
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"Messages will be handled {'*only on work days*' if enabled else '*on all days*'} in configuration `{config_name}`.", thread_ts)
 
 
 async def set_replies_enabled(app: AsyncApp, channel, config_name: str, enabled: bool, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     channel.configs[config_name]['enabled'] = enabled
     # An explicit enable/disable supersedes an automatic one (see DISABLED_REASON_REMOVED).
     channel.configs[config_name]['disabled_reason'] = ""
@@ -93,8 +101,7 @@ async def clear_work_hours(app: AsyncApp, channel, config_name: str, user, threa
 
 
 async def set_work_hours(app: AsyncApp, channel, config_name: str, start: str, end: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     if f"{start} {end}".strip().lower().replace('-', ' ') == "all day":
         await messaging.send_message(app, channel, user, f"To handle messages at any hour, use `{state.slash_command} {config_name} clear work-hours`.", thread_ts)
         return
@@ -115,16 +122,14 @@ async def set_work_hours(app: AsyncApp, channel, config_name: str, start: str, e
 
 
 async def set_opsgenie(app: AsyncApp, channel, config_name: str, enabled: bool, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     channel.configs[config_name]['opsgenie'] = enabled
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"*OpsGenie integration* {'*enabled*' if enabled else '*disabled*'}{', but not configured' if enabled and not state.opsgenie_configured else ''} in configuration `{config_name}`.", thread_ts)
 
 
 async def set_opsgenie_schedule_name(app: AsyncApp, channel, config_name: str, schedule_name: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     if not schedule_name.strip():
         await messaging.send_message(app, channel, user, "Invalid *OpsGenie schedule name*. Must be non-empty.", thread_ts)
         return
@@ -136,8 +141,7 @@ async def set_opsgenie_schedule_name(app: AsyncApp, channel, config_name: str, s
 
 
 async def set_opsgenie_priority(app: AsyncApp, channel, config_name: str, priority: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
 
     priority = priority.strip().upper()
     if priority not in OPSGENIE_PRIORITIES:
@@ -168,8 +172,7 @@ async def clear_opsgenie_message(app: AsyncApp, channel, config_name: str, user,
 
 
 async def set_datetime_format(app: AsyncApp, channel, config_name: str, values: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
 
     tokens, error = parse_quoted_tokens(values)
     if error:
@@ -228,8 +231,7 @@ async def set_wait_time(app: AsyncApp, channel, config_name: str, wait_time_str:
     if not wait_time_minutes or wait_time_minutes < 0 or wait_time_minutes > 1440:
         await messaging.send_message(app, channel, user, "Invalid wait time. Must be a number between 0 and 1440.", thread_ts)
         return
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
 
     channel.configs[config_name]['wait_time'] = wait_time_minutes * 60  # Convert to seconds
     log_debug(channel, f"Wait time for #{channel.name} set to {wait_time_minutes} minutes for configuration `{config_name}`")
@@ -238,8 +240,7 @@ async def set_wait_time(app: AsyncApp, channel, config_name: str, wait_time_str:
 
 
 async def set_reply_message(app: AsyncApp, channel, config_name: str, message: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     # check message
     if not message or message.strip() == "":
         await messaging.send_message(app, channel, user, "Invalid *reply message*. Must be non-empty.", thread_ts)
@@ -266,7 +267,7 @@ async def set_reply_message(app: AsyncApp, channel, config_name: str, message: s
 
 
 async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config_name: str, user, text: str = "", ts: str = "", thread_ts: str = "") -> None:
-    config = channel.configs.get(config_name, DEFAULT_CONFIG.copy())
+    config = channel.configs.get(config_name) or copy.deepcopy(DEFAULT_CONFIG)
     reply_message_template = config.get('reply_message')
     permalink = await slackcache.get_message_permalink(app, channel, ts) if ts else ""
     template_variables = await templating.build_reply_template_variables(
@@ -280,19 +281,29 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
         ts,
         permalink,
         include_opsgenie=True,
+        include_calendar=True,
     )
     reply_message = templating.render_reply_message_template(reply_message_template, template_variables, config)
     variable_lines = [
         f"`{{{{{variable}}}}}`: {template_variables.get(variable, '')}"
         for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES)
     ]
-    message = (
-        f"*Reply preview for configuration `{config_name}`:*\n"
-        f"{reply_message}\n\n"
-        "*Template variables:*\n"
-        + "\n".join(variable_lines)
-    )
-    await messaging.send_message(app, channel, user, message, thread_ts)
+    sections = [
+        f"*Reply preview for configuration `{config_name}`:*\n{reply_message}",
+    ]
+    conditions = config.get('conditions') or []
+    if conditions:
+        mode = config.get('conditions_match') or CONDITION_MATCH_ALL
+        met, reason = conditionutil.evaluate_conditions(config, template_variables)
+        condition_lines = []
+        for condition in conditions:
+            single_met, _ = conditionutil.evaluate_conditions({'conditions': [condition]}, template_variables)
+            condition_lines.append(f"{':white_check_mark:' if single_met else ':x:'} {conditionutil.describe_condition(condition)}")
+        verdict = "would run" if met else f"would *not* run — {reason}"
+        header = "all must apply" if mode == CONDITION_MATCH_ALL else "any may apply"
+        sections.append(f"*Conditions* ({header}):\n" + "\n".join(condition_lines) + f"\n\nThis rule {verdict}.")
+    sections.append("*Template variables:*\n" + "\n".join(variable_lines))
+    await messaging.send_message(app, channel, user, "\n\n".join(sections), thread_ts)
 
 
 async def clear_pattern(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
@@ -304,8 +315,7 @@ async def clear_pattern(app: AsyncApp, channel, config_name: str, user, thread_t
 
 
 async def set_pattern(app: AsyncApp, channel, config_name: str, pattern_str: str, case_sensitive_str: str | None, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
 
     pattern_str = strip_quotes(pattern_str)
 
@@ -380,36 +390,111 @@ async def set_trigger(app: AsyncApp, channel, config_name: str, value: str, expr
         await messaging.send_message(app, channel, user, f"*Trigger* set to `{value}` in configuration `{config_name}`.", thread_ts)
 
 
-async def set_condition(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:
-    value = strip_quotes(value).strip().lower()
-    value = {'none': CONDITION_NONE, 'off': CONDITION_NONE, '': CONDITION_NONE,
-             'outlook': CONDITION_OUTLOOK, 'calendar': CONDITION_OUTLOOK, 'outlook_calendar': CONDITION_OUTLOOK}.get(value, value)
-    if value not in CONDITIONS:
-        await messaging.send_message(app, channel, user, "Invalid *condition*. Must be `none` or `outlook`.", thread_ts)
+async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, user, thread_ts: str = "") -> None:
+    """`add condition <variable> <operator> ["value"] [0|1]`.
+
+    The spec is split progressively rather than tokenized, because an operator can be
+    several words (`not contains`, `starts with`) and the value has to keep its own spacing.
+    """
+    spec = (spec or "").strip()
+    parts = spec.split(None, 1)
+    if not parts:
+        await messaging.send_message(app, channel, user, f"Invalid *condition*. Use `{state.slash_command} {config_name} add condition <variable> <operator> [value]`.", thread_ts)
         return
-    _ensure_config(channel, config_name)['condition'] = value
+    variable = conditionutil.normalize_variable(parts[0])
+    rest = parts[1] if len(parts) > 1 else ""
+
+    operator, value, case_sensitive = "", "", False
+    for word_count in (3, 2, 1):
+        head = rest.split(None, word_count)
+        if len(head) < word_count:
+            continue
+        candidate = conditionutil.canonical_operator(" ".join(head[:word_count]))
+        if candidate:
+            operator = candidate
+            value, case_sensitive = conditionutil.split_case_flag(head[word_count] if len(head) > word_count else "")
+            break
+
+    if variable not in SUPPORTED_TEMPLATE_VARIABLES:
+        supported = ", ".join(f"`{{{{{v}}}}}`" for v in sorted(SUPPORTED_TEMPLATE_VARIABLES))
+        await messaging.send_message(app, channel, user, f"Unknown *condition variable* `{{{{{variable}}}}}`. Supported variables: {supported}.", thread_ts)
+        return
+    if not operator:
+        supported = ", ".join(f"`{op}`" for op in CONDITION_OPERATORS_ORDERED)
+        await messaging.send_message(app, channel, user, f"Invalid *condition operator*. Must be one of {supported}.", thread_ts)
+        return
+    if operator in CONDITION_OPERATORS_WITHOUT_VALUE and value:
+        await messaging.send_message(app, channel, user, f"Invalid *condition*. `{operator}` takes no value.", thread_ts)
+        return
+    if operator in CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE and not value:
+        await messaging.send_message(app, channel, user, f"Invalid *condition*. `{operator}` needs a value.", thread_ts)
+        return
+    if operator in ('regex', 'not_regex'):
+        try:
+            re.compile(value)
+        except re.error as e:
+            await messaging.send_message(app, channel, user, f"Invalid pattern: `{e}`", thread_ts)
+            return
+
+    condition = {'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive}
+    config = _ensure_config(channel, config_name)
+    existing = list(config.get('conditions') or [])
+    if any(conditionutil.normalize_condition(c) == conditionutil.normalize_condition(condition) for c in existing):
+        await messaging.send_message(app, channel, user, f"Condition {conditionutil.describe_condition(condition)} is already set in configuration `{config_name}`.", thread_ts)
+        return
+    # Copy-on-write so we never mutate a shared default list.
+    config['conditions'] = existing + [condition]
     await persistence.save_configuration()
-    label = value or 'none'
-    await messaging.send_message(app, channel, user, f"*Condition* set to `{label}` in configuration `{config_name}`.", thread_ts)
+
+    total = len(config['conditions'])
+    mode = config.get('conditions_match') or CONDITION_MATCH_ALL
+    note = ""
+    if total > 1:
+        note = f" ({'all' if mode == CONDITION_MATCH_ALL else 'any'} of {total} conditions must apply)"
+    await messaging.send_message(app, channel, user, f"Added condition {conditionutil.describe_condition(condition)} in configuration `{config_name}`{note}.", thread_ts)
 
 
-async def set_outlook_pattern(app: AsyncApp, channel, config_name: str, field: str, pattern_str: str, user, thread_ts: str = "") -> None:
-    pattern_str = strip_quotes(pattern_str)
+async def clear_conditions(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    _ensure_config(channel, config_name)['conditions'] = []
+    await persistence.save_configuration()
+    await messaging.send_message(app, channel, user, f"Cleared *conditions* in configuration `{config_name}`; this rule is no longer gated.", thread_ts)
+
+
+async def set_conditions_match(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:
+    mode = conditionutil.canonical_match_mode(strip_quotes(value or ""))
+    if not mode:
+        supported = ", ".join(f"`{m}`" for m in sorted(CONDITION_MATCHES))
+        await messaging.send_message(app, channel, user, f"Invalid *conditions match*. Must be one of {supported}.", thread_ts)
+        return
+    config = _ensure_config(channel, config_name)
+    config['conditions_match'] = mode
+    await persistence.save_configuration()
+    explanation = "every condition must apply" if mode == CONDITION_MATCH_ALL else "any one condition is enough"
+    await messaging.send_message(app, channel, user, f"*Conditions match* set to `{mode}` in configuration `{config_name}`: {explanation}.", thread_ts)
+
+
+async def set_calendar_url(app: AsyncApp, channel, config_name: str, url: str, user, thread_ts: str = "") -> None:
+    """`set calendar <url>` — the ICS feed this config reads, one per config.
+
+    Slack wraps a typed URL as `<url>` or `<url|label>`, so it is unwrapped before
+    validation. The confirmation prints the redacted form: a published-calendar link needs
+    no credentials, so anyone who can read it back has the calendar.
+    """
+    url = unwrap_slack_link(url or "")
     try:
-        re.compile(pattern_str)
-    except re.error as e:
-        await messaging.send_message(app, channel, user, f"Invalid pattern: `{e}`", thread_ts)
+        url = calendarfeed.validate_calendar_url(url)
+    except ValueError as e:
+        await messaging.send_message(app, channel, user, f"Invalid *calendar URL*: {e}.", thread_ts)
         return
-    _ensure_config(channel, config_name)[field] = pattern_str
+    _ensure_config(channel, config_name)['calendar_url'] = url
     await persistence.save_configuration()
-    which = "subject" if field == "outlook_subject_pattern" else "body"
-    await messaging.send_message(app, channel, user, f"*Outlook {which} pattern* set to `{pattern_str}` in configuration `{config_name}`.", thread_ts)
+    await messaging.send_message(app, channel, user, f"*Calendar* set to `{calendarfeed.describe_calendar_url(url)}` in configuration `{config_name}`.", thread_ts)
 
 
-async def set_condition_negate(app: AsyncApp, channel, config_name: str, enabled: bool, user, thread_ts: str = "") -> None:
-    _ensure_config(channel, config_name)['condition_negate'] = enabled
+async def clear_calendar_url(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    _ensure_config(channel, config_name)['calendar_url'] = ""
     await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"*Condition negation* {'*enabled*' if enabled else '*disabled*'} in configuration `{config_name}`.", thread_ts)
+    await messaging.send_message(app, channel, user, f"Cleared the *calendar* in configuration `{config_name}`.", thread_ts)
 
 
 async def set_action(app: AsyncApp, channel, config_name: str, value: str, target: str, user, thread_ts: str = "") -> None:
@@ -587,14 +672,17 @@ async def run_config_now(app: AsyncApp, opsgenie_token: str, channel, config_nam
         await messaging.send_message(app, channel, user, f"Cannot run configuration `{config_name}`: {reason}. Set one with {_set_action_hint(config_name, config)}.", thread_ts)
         return
     await messaging.send_message(app, channel, user, f"Running configuration `{config_name}` now…", thread_ts)
-    posted = await actions.run_action(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel.id, 'user': user})
+    posted, run_reason = await actions.run_action_with_reason(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel.id, 'user': user})
     if not posted:
-        await messaging.send_message(app, channel, user, f"Configuration `{config_name}` did not send anything. Check its action and target with `{state.slash_command} show config`.", thread_ts)
+        if run_reason:
+            message = f"Configuration `{config_name}` did not send anything: {run_reason}. Check it with `{state.slash_command} show config`."
+        else:
+            message = f"Configuration `{config_name}` did not send anything. Check its action and target with `{state.slash_command} show config`."
+        await messaging.send_message(app, channel, user, message, thread_ts)
 
 
 async def add_excluded_team(app: AsyncApp, channel, config_name: str, team: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     config = channel.configs[config_name]
     await slackcache.update_user_cache(app)
     if team not in state.team_cache:
@@ -614,16 +702,14 @@ async def add_excluded_team(app: AsyncApp, channel, config_name: str, team: str,
 
 
 async def clear_excluded_team(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     channel.configs[config_name]['excluded_teams'] = []
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"Cleared *excluded teams* in configuration `{config_name}`.", thread_ts)
 
 
 async def add_included_team(app: AsyncApp, channel, config_name: str, team: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     config = channel.configs[config_name]
     await slackcache.update_user_cache(app)
     if team not in state.team_cache:
@@ -643,8 +729,7 @@ async def add_included_team(app: AsyncApp, channel, config_name: str, team: str,
 
 
 async def clear_included_team(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
-    if config_name not in channel.configs:
-        channel.configs[config_name] = DEFAULT_CONFIG.copy()
+    _ensure_config(channel, config_name)
     channel.configs[config_name]['included_teams'] = []
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"Cleared *included teams* in configuration `{config_name}`.", thread_ts)

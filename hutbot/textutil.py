@@ -1,5 +1,6 @@
 """Logging + small text helpers with no Slack/network dependencies."""
 
+import re
 import sys
 import datetime
 
@@ -30,6 +31,19 @@ def strip_quotes(text: str) -> str:
         text = text[1:-1]
 
     return text
+
+
+# Slack turns any URL a user types into `<https://...>` or `<https://...|label>` before
+# the slash command reaches the bot. `strip_quotes` does not touch that, and
+# `messaging.clean_slack_text` would replace it with the literal string "[URL]".
+SLACK_LINK_PATTERN = re.compile(r'^<(?P<url>[^|>]+)(?:\|[^>]*)?>$')
+
+
+def unwrap_slack_link(text: str) -> str:
+    """Strip Slack's `<url>` / `<url|label>` auto-link wrapping from a URL argument."""
+    text = strip_quotes((text or "").strip())
+    match = SLACK_LINK_PATTERN.match(text)
+    return match.group("url").strip() if match else text
 
 
 def parse_quoted_tokens(text: str) -> tuple[list[str], str]:

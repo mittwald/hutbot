@@ -119,9 +119,8 @@ async def scheduler_tick(app: AsyncApp, opsgenie_token: str) -> None:
             if not _cron_due(cron_expr, config, last, now):
                 continue
             channel = await slackcache.get_channel_by_id(app, channel_id)
-            if not await actions.evaluate_condition(app, config):
-                log(f"Cron config '{config_name}' in #{channel.name} fired but condition not met.")
-                continue
+            # Conditions are not checked here: `run_action` gates every trigger, so the
+            # cron path cannot drift out of step with the message and button paths.
             log(f"Cron config '{config_name}' in #{channel.name} firing.")
             try:
                 await actions.run_action(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel_id})

@@ -10,7 +10,7 @@ from employee_list import log_error, log_warning
 
 from . import slackcache
 from . import state
-from .constants import ID_PATTERN, MENTION_PATTERN, SUPPORTED_TEMPLATE_VARIABLES
+from .constants import CONDITION_OPERATORS_ORDERED, ID_PATTERN, MENTION_PATTERN, SUPPORTED_TEMPLATE_VARIABLES
 from .models import Channel, User
 from .textutil import log_debug
 
@@ -184,6 +184,10 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"> Rules can now run on a `cron` schedule, DM a user or group, post to a channel, and carry interactive buttons (with an auto-press default + timeout escalation). See `{command} help`.\n>\n"
         "> :calendar: *OpsGenie date/time template variables and defaults*\n>\n"
         f"> OpsGenie templates can now include current and next on-call start/end dates, times, and datetimes. Use `{command} [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]` to set the defaults.\n>\n"
+        "> :date: *Calendar feeds*\n>\n"
+        f"> Point a config at an ICS calendar URL with `{command} [config] set calendar <url>` and use the event running now (or the next one) in any message: `{{{{calendar_current_summary}}}}`, `{{{{calendar_current_location}}}}`, `{{{{calendar_next_start_time}}}}` and more. `{command} [config] show calendar` prints both.\n>\n"
+        "> :traffic_light: *Conditions on any variable*\n>\n"
+        f"> A rule can now be gated on any `{{{{variable}}}}`: `{command} [config] add condition <var> <operator> [value]`, with `empty`, `equals`, `contains`, `starts-with`, `ends-with`, `regex` and their `not-` forms. Chain several and pick `{command} [config] set conditions-match <all|any>`. Conditions apply to every trigger, and `{command} [config] test` shows which ones pass.\n>\n"
         "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
         "> That means " + name + " can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
         "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
@@ -203,6 +207,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
 
 async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     supported_template_variables = ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
+    supported_condition_operators = ", ".join(f"`{operator}`" for operator in CONDITION_OPERATORS_ORDERED)
     command = state.slash_command
     name = state.bot_name
     version = state.version
@@ -221,12 +226,10 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] set trigger <message|manual>", "Set how the rule starts."),
             (f"{command} [config] set trigger cron \"<expr>\"", "Fire on a cron schedule, e.g. 0 9 * * 1-5."),
         ]),
-        ("Condition", [
-            (f"{command} [config] set condition <none|outlook>", "Gate a cron trigger on a condition."),
-            (f"{command} [config] set outlook-subject <regex>", "Match Outlook event subject (stub)."),
-            (f"{command} [config] set outlook-body <regex>", "Match Outlook event body (stub)."),
-            (f"{command} [config] enable negate", "Invert the condition (e.g. no matching event)."),
-            (f"{command} [config] disable negate", "Stop inverting the condition."),
+        ("Conditions", [
+            (f"{command} [config] add condition <var> <operator> [value] [0|1]", "Gate this rule on a variable; 1 means case sensitive."),
+            (f"{command} [config] set conditions-match <all|any>", "All conditions must apply, or any one of them."),
+            (f"{command} [config] clear conditions", "Remove all conditions; the rule stops being gated."),
         ]),
         ("What to react to", [
             (f"{command} [config] set pattern \"<regex>\" [0|1]", "Set message pattern; 1 means case sensitive."),
@@ -269,6 +272,11 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] set opsgenie-message <text>", "Template for the alert text (default: the message)."),
             (f"{command} [config] clear opsgenie-message", "Back to alerting with the message itself."),
         ]),
+        ("Calendar", [
+            (f"{command} [config] set calendar <url>", "Read an ICS calendar feed (one per config)."),
+            (f"{command} [config] clear calendar", "Stop reading a calendar feed."),
+            (f"{command} [config] show calendar", "Show the event running now and the next one."),
+        ]),
         ("Date and time", [
             (f"{command} [config] set datetime-format \"<date>\" \"<time>\" [<tz> <locale>]", "Date/time output; <tz> also drives cron and work hours."),
         ]),
@@ -301,7 +309,10 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     )
     outro = (
         "`[config]` is optional; omitted commands use `default`. The leading `set`/`add` is optional too.\n\n"
-        f"Supported reply variables: {supported_template_variables}."
+        f"Supported reply variables: {supported_template_variables}.\n\n"
+        f"Supported condition operators: {supported_condition_operators}. "
+        "Conditions are checked when the rule fires — for a `message` rule that is after the "
+        "reminder delay, so use `set pattern` to decide which messages start the timer at all."
     )
     # The command table alone is well past Slack's per-message limit, and Slack
     # splits an oversized message wherever it happens to land — which cuts the code

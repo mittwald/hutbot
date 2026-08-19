@@ -27,9 +27,96 @@ TRIGGER_CRON = "cron"
 TRIGGER_MANUAL = "manual"
 TRIGGERS = {TRIGGER_MESSAGE, TRIGGER_CRON, TRIGGER_MANUAL}
 
-CONDITION_NONE = ""
-CONDITION_OUTLOOK = "outlook_calendar"
-CONDITIONS = {CONDITION_NONE, CONDITION_OUTLOOK}
+# Conditions: a chain of `{{variable}} <operator> [value]` tests that gate a rule.
+CONDITION_OP_EMPTY = "empty"
+CONDITION_OP_NOT_EMPTY = "not_empty"
+CONDITION_OP_EQUALS = "equals"
+CONDITION_OP_NOT_EQUALS = "not_equals"
+CONDITION_OP_STARTS_WITH = "starts_with"
+CONDITION_OP_NOT_STARTS_WITH = "not_starts_with"
+CONDITION_OP_ENDS_WITH = "ends_with"
+CONDITION_OP_NOT_ENDS_WITH = "not_ends_with"
+CONDITION_OP_CONTAINS = "contains"
+CONDITION_OP_NOT_CONTAINS = "not_contains"
+CONDITION_OP_REGEX = "regex"
+CONDITION_OP_NOT_REGEX = "not_regex"
+# Ordered so each operator sits next to its negation in help text and the web UI's
+# dropdown. Never sort this — alphabetical order splits the pairs apart.
+CONDITION_OPERATORS_ORDERED = (
+    CONDITION_OP_EMPTY,
+    CONDITION_OP_NOT_EMPTY,
+    CONDITION_OP_EQUALS,
+    CONDITION_OP_NOT_EQUALS,
+    CONDITION_OP_CONTAINS,
+    CONDITION_OP_NOT_CONTAINS,
+    CONDITION_OP_STARTS_WITH,
+    CONDITION_OP_NOT_STARTS_WITH,
+    CONDITION_OP_ENDS_WITH,
+    CONDITION_OP_NOT_ENDS_WITH,
+    CONDITION_OP_REGEX,
+    CONDITION_OP_NOT_REGEX,
+)
+CONDITION_OPERATORS = set(CONDITION_OPERATORS_ORDERED)
+# Spellings accepted on the command line, resolved to the canonical name. A leading
+# `not`/`!` is stripped and re-applied around these, so `not has` reaches `not_contains`.
+# No `<>` alias: Slack HTML-escapes `<` and `>` in command text.
+CONDITION_OPERATOR_ALIASES = {
+    "is": CONDITION_OP_EQUALS,
+    "=": CONDITION_OP_EQUALS,
+    "==": CONDITION_OP_EQUALS,
+    "eq": CONDITION_OP_EQUALS,
+    "equal": CONDITION_OP_EQUALS,
+    "!=": CONDITION_OP_NOT_EQUALS,
+    "ne": CONDITION_OP_NOT_EQUALS,
+    "isnt": CONDITION_OP_NOT_EQUALS,
+    "is_not": CONDITION_OP_NOT_EQUALS,
+    "has": CONDITION_OP_CONTAINS,
+    "contain": CONDITION_OP_CONTAINS,
+    "includes": CONDITION_OP_CONTAINS,
+    "include": CONDITION_OP_CONTAINS,
+    "excludes": CONDITION_OP_NOT_CONTAINS,
+    "lacks": CONDITION_OP_NOT_CONTAINS,
+    "matches": CONDITION_OP_REGEX,
+    "match": CONDITION_OP_REGEX,
+    "~": CONDITION_OP_REGEX,
+    "=~": CONDITION_OP_REGEX,
+    "!~": CONDITION_OP_NOT_REGEX,
+    "prefix": CONDITION_OP_STARTS_WITH,
+    "startswith": CONDITION_OP_STARTS_WITH,
+    "begins_with": CONDITION_OP_STARTS_WITH,
+    "begins": CONDITION_OP_STARTS_WITH,
+    "suffix": CONDITION_OP_ENDS_WITH,
+    "endswith": CONDITION_OP_ENDS_WITH,
+    "blank": CONDITION_OP_EMPTY,
+    "unset": CONDITION_OP_EMPTY,
+    "none": CONDITION_OP_EMPTY,
+    "is_empty": CONDITION_OP_EMPTY,
+    "set": CONDITION_OP_NOT_EMPTY,
+    "present": CONDITION_OP_NOT_EMPTY,
+}
+# These read the variable only, so a value (and a case flag) would do nothing.
+CONDITION_OPERATORS_WITHOUT_VALUE = {CONDITION_OP_EMPTY, CONDITION_OP_NOT_EMPTY}
+# An empty value here is vacuous — every string contains "" — so it is rejected instead of
+# being stored as a condition that can never fail. `equals ""` stays legal.
+CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE = {
+    CONDITION_OP_CONTAINS,
+    CONDITION_OP_NOT_CONTAINS,
+    CONDITION_OP_STARTS_WITH,
+    CONDITION_OP_NOT_STARTS_WITH,
+    CONDITION_OP_ENDS_WITH,
+    CONDITION_OP_NOT_ENDS_WITH,
+    CONDITION_OP_REGEX,
+    CONDITION_OP_NOT_REGEX,
+}
+CONDITION_MATCH_ALL = "all"
+CONDITION_MATCH_ANY = "any"
+CONDITION_MATCHES = {CONDITION_MATCH_ALL, CONDITION_MATCH_ANY}
+CONDITION_MATCH_ALIASES = {
+    "and": CONDITION_MATCH_ALL,
+    "every": CONDITION_MATCH_ALL,
+    "or": CONDITION_MATCH_ANY,
+    "some": CONDITION_MATCH_ANY,
+}
 
 ACTION_REPLY = "reply"
 ACTION_DM_USER = "dm_user"
@@ -74,6 +161,10 @@ DEFAULT_CONFIG = {
     "opsgenie_schedule_name": "",
     "opsgenie_priority": DEFAULT_OPSGENIE_PRIORITY,
     "opsgenie_message": "",  # optional template for the alert text; empty = original message
+    # Calendar: one ICS feed per config, the counterpart of `opsgenie_schedule_name`.
+    # The URL is a bearer capability (an Outlook published-calendar link needs no auth),
+    # so it is redacted wherever it is echoed back.
+    "calendar_url": "",
     "date_format": "",
     "time_format": "",
     "datetime_timezone": "",
@@ -93,11 +184,10 @@ DEFAULT_CONFIG = {
     # carries its expression in `cron`.
     "trigger": TRIGGER_MESSAGE,
     "cron": "",
-    # Condition: optional gate evaluated when a cron trigger fires.
-    "condition": CONDITION_NONE,
-    "condition_negate": False,
-    "outlook_subject_pattern": "",
-    "outlook_body_pattern": "",
+    # Conditions: `{{variable}} <operator> [value]` tests that gate every trigger. An
+    # empty list always passes.
+    "conditions": [],
+    "conditions_match": CONDITION_MATCH_ALL,
     # Action: what the rule does when it fires.
     "action": ACTION_REPLY,
     "action_target": "",
@@ -191,6 +281,24 @@ OPSGENIE_TEMPLATE_VARIABLES = {
     "opsgenie_next_user",
     *OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
 }
+CALENDAR_DATETIME_TEMPLATE_VARIABLES = {
+    f"calendar_{period}_{bound}_{part}"
+    for period in ("current", "next")
+    for bound in ("start", "end")
+    for part in ("date", "time", "datetime")
+}
+CALENDAR_TEMPLATE_VARIABLES = {
+    "calendar_name",
+    *(
+        f"calendar_{period}_{field}"
+        for period in ("current", "next")
+        for field in ("summary", "location", "description", "organizer", "uid", "status")
+    ),
+    *CALENDAR_DATETIME_TEMPLATE_VARIABLES,
+}
+# Every variable that renders an instant and therefore accepts `fmt`/`tz`/`lc`
+# arguments. Both providers store their raw ISO value under `__<variable>_raw`.
+TEMPLATE_DATETIME_VARIABLES = OPSGENIE_DATETIME_TEMPLATE_VARIABLES | CALENDAR_DATETIME_TEMPLATE_VARIABLES
 # Formatted renderings of ``{{timestamp}}``: the triggering message's time, or the
 # time the rule ran when there is no message behind it. Like the OpsGenie date/time
 # variables they take `fmt`/`tz`/`lc` arguments.
@@ -203,6 +311,7 @@ SUPPORTED_TEMPLATE_VARIABLES = {
     "message",
     "message_link",
     *OPSGENIE_TEMPLATE_VARIABLES,
+    *CALENDAR_TEMPLATE_VARIABLES,
     "team",
     "timestamp",
     "user",
@@ -212,5 +321,20 @@ SUPPORTED_TEMPLATE_VARIABLES = {
 UNKNOWN_EMAIL_ONCALL_PLACEHOLDER = "<no-email-set>"
 UNKNOWN_NAME_ONCALL_PLACEHOLDER = "<no-name-set>"
 UNKNOWN_USER_ONCALL_PLACEHOLDER = "<no-user-set>"
-UNKNOWN_ONCALL_PERIOD_PLACEHOLDER = "<unknown>"
+# Shared by the OpsGenie and calendar date/time variables.
+UNKNOWN_PERIOD_PLACEHOLDER = "<unknown>"
 UNKNOWN_OPSGENIE_SCHEDULE_PLACEHOLDER = "<no-schedule-set>"
+UNKNOWN_CALENDAR_PLACEHOLDER = "<no-calendar-set>"
+UNKNOWN_CALENDAR_EVENT_PLACEHOLDER = "<no-event>"
+# Every "nothing resolved" stand-in. A condition's `empty`/`not_empty` treats these as
+# empty, because the providers never hand back a bare "" and `opsgenie_current_user empty`
+# is the natural way to ask "is anyone on call?".
+UNKNOWN_PLACEHOLDERS = {
+    UNKNOWN_EMAIL_ONCALL_PLACEHOLDER,
+    UNKNOWN_NAME_ONCALL_PLACEHOLDER,
+    UNKNOWN_USER_ONCALL_PLACEHOLDER,
+    UNKNOWN_PERIOD_PLACEHOLDER,
+    UNKNOWN_OPSGENIE_SCHEDULE_PLACEHOLDER,
+    UNKNOWN_CALENDAR_PLACEHOLDER,
+    UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
+}

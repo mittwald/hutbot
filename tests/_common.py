@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo
 import pytest
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch, call
 
-import outlook
 from slack_sdk.errors import SlackApiError
 from employee_list import get_env_var
 
@@ -23,15 +22,21 @@ from hutbot.constants import (
     ACTION_GROUP_DM,
     ACTION_POST_CHANNEL,
     ACTION_REPLY,
+    CALENDAR_TEMPLATE_VARIABLES,
+    CONDITION_MATCH_ALL,
+    CONDITION_MATCH_ANY,
+    CONDITION_OPERATORS_ORDERED,
+    CONDITION_OPERATORS_WITHOUT_VALUE,
     DEFAULT_CONFIG,
     DISABLED_REASON_REMOVED,
     ESCALATION_NONE,
+    SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
     TRIGGER_CRON,
     bot_slug,
     normalize_slash_command,
 )
-from hutbot.textutil import extract_message_text
+from hutbot.textutil import extract_message_text, unwrap_slack_link
 from hutbot.datetimefmt import parse_time, is_work_day, is_work_time
 from hutbot.persistence import migrate_and_apply_defaults, load_replies_cache, flush_replies_cache
 from hutbot.slackcache import get_channel_members, is_user_in_channel
@@ -63,6 +68,8 @@ import hutbot.slackcache
 import hutbot.messaging
 import hutbot.templating
 import hutbot.opsgenie
+import hutbot.calendarfeed
+import hutbot.conditionutil
 import hutbot.actions
 import hutbot.buttons
 import hutbot.buttonutil

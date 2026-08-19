@@ -10,6 +10,11 @@ Usergroup = collections.namedtuple('Usergroup', ['id', 'handle', 'name'])
 Channel = collections.namedtuple('Channel', ['id', 'name', 'configs'])
 OpsGeniePeriod = collections.namedtuple('OpsGeniePeriod', ['recipient_email', 'slack_user', 'start', 'end'])
 OpsGenieContext = collections.namedtuple('OpsGenieContext', ['schedule_name', 'current', 'next'])
+# A single calendar entry read from an ICS feed. `start`/`end` are ISO-8601 strings
+# (like OpsGeniePeriod) so the date/time formatters can re-render them; for an all-day
+# event `end` is the *inclusive* last day, not the RFC-exclusive one.
+CalendarEvent = collections.namedtuple('CalendarEvent', ['uid', 'summary', 'location', 'description', 'organizer', 'status', 'start', 'end', 'all_day'])
+CalendarContext = collections.namedtuple('CalendarContext', ['name', 'current', 'next'])
 
 
 @dataclass(frozen=True)

@@ -53,7 +53,15 @@ const TRIGGER_LABEL = { message: "Message (classic)", cron: "Cron schedule", man
 const TRIGGER_SHORT = { message: "message", cron: "cron", manual: "manual" };
 const ACTION_LABEL = { reply: "Reply in thread", dm_user: "Direct message", group_dm: "Group DM", post_channel: "Post to channel" };
 const ACTION_SHORT = { reply: "reply", dm_user: "dm", group_dm: "group dm", post_channel: "post" };
-const CONDITION_LABEL = { "": "None (always)", outlook_calendar: "Outlook calendar" };
+const COND_OP_LABEL = {
+  empty: "is empty", not_empty: "is not empty",
+  equals: "equals", not_equals: "does not equal",
+  contains: "contains", not_contains: "does not contain",
+  starts_with: "starts with", not_starts_with: "does not start with",
+  ends_with: "ends with", not_ends_with: "does not end with",
+  regex: "matches regex", not_regex: "does not match regex",
+};
+const COND_MATCH_LABEL = { all: "All conditions must apply", any: "Any one condition is enough" };
 const BTN_ACTION_LABEL = { config: "Run rule", ack: "Acknowledge / post text", delay: "Delay timer" };
 const ESCALATION_LABEL = { none: "Never escalate; buttons stay open", button: "Auto-press a button", config: "Run another rule" };
 const TARGET_HINT = { dm_user: "A @user (id, name, or email)", group_dm: "A @usergroup handle", post_channel: "A channel ID like C0123ABCD" };
@@ -237,8 +245,10 @@ function cardIdBlock(name, cfg) {
 }
 
 function pipelineFor(cfg) {
-  const condText = cfg.trigger === "cron" && cfg.condition === "outlook_calendar"
-    ? (cfg.condition_negate ? "no outlook" : "outlook") : "—";
+  const condCount = (cfg.conditions || []).length;
+  const condText = condCount
+    ? `${condCount} condition${condCount > 1 ? "s" : ""}${cfg.conditions_match === "any" ? " (any)" : ""}`
+    : "—";
   const chip = (kind, text, muted) => h("span", { class: "pipe-chip" + (muted ? " muted" : "") },
     h("span", { class: "pipe-kind", text: kind }), text);
   return h("span", { class: "pipeline" },
@@ -357,19 +367,8 @@ function renderEditor(name) {
   }
   wrap.append(section("Status & trigger", null, ...triggerRows));
 
-  // — Condition (schedule only) —
-  if (cfg.trigger === "cron") {
-    const condRows = [grid(field("Condition", selectInput("condition", state.meta.conditions, CONDITION_LABEL, structuralRefresh),
-      { hint: "Gate the schedule on an Outlook calendar entry." }))];
-    if (cfg.condition === "outlook_calendar") {
-      condRows.push(grid(
-        field("Subject matches", textInput("outlook_subject_pattern", { mono: true, placeholder: "regex" }), { error: fieldErr("outlook_subject_pattern") }),
-        field("Body matches", textInput("outlook_body_pattern", { mono: true, placeholder: "regex" }), { error: fieldErr("outlook_body_pattern") }),
-      ));
-      condRows.push(h("div", { class: "toggles-row" }, toggleInput("condition_negate", "Fire when no matching entry exists")));
-    }
-    wrap.append(section("Condition", "cron", ...condRows));
-  }
+  // — Conditions (every trigger) —
+  wrap.append(conditionsSection());
 
   // — Action —
   const actionRows = [grid(field("Action", selectInput("action", state.meta.actions, ACTION_LABEL, structuralRefresh), { hint: ACTION_LABEL[cfg.action] }))];
@@ -389,6 +388,9 @@ function renderEditor(name) {
 
   // — OpsGenie —
   wrap.append(opsgenieSection());
+
+  // — Calendar —
+  wrap.append(calendarSection());
 
   // — Formatting (advanced) —
   wrap.append(formattingSection());
@@ -552,6 +554,59 @@ function buttonRow(btn, i) {
   const row = h("div", { class: "btn-row" }, labelI, actionSel, valueControl, remove);
   if (fieldErr(`buttons.${i}`)) { row.classList.add("has-error"); row.append(h("div", { class: "err row-err", text: fieldErr(`buttons.${i}`) })); }
   return row;
+}
+
+function conditionsSection() {
+  const cfg = draft();
+  const conditions = cfg.conditions || [];
+  const rows = h("div", { class: "btn-rows" });
+  if (!conditions.length) rows.append(h("div", { class: "btn-empty", text: "No conditions. This rule always runs when its trigger fires." }));
+  conditions.forEach((cond, i) => rows.append(conditionRow(cond, i)));
+
+  const add = h("button", { class: "add-row", type: "button", onclick: () => {
+    cfg.conditions = conditions.concat([{ variable: "message", operator: "contains", value: "", case_sensitive: false }]);
+    structuralRefresh();
+  } }, "+ Add condition");
+
+  const extras = [rows, add];
+  // Only meaningful once there is more than one condition to combine.
+  if (conditions.length > 1) {
+    extras.push(grid(field("Combine with", selectInput("conditions_match", state.meta.condition_matches, COND_MATCH_LABEL, liveRefresh),
+      { hint: COND_MATCH_LABEL[cfg.conditions_match || "all"], error: fieldErr("conditions_match") })));
+  }
+  return section("Conditions", conditions.length ? String(conditions.length) : null, ...extras);
+}
+
+function conditionRow(cond, i) {
+  const varSel = h("select", { class: "mono", onchange: (e) => { cond.variable = e.target.value; liveRefresh(); } });
+  for (const v of state.meta.template_variables) varSel.append(h("option", { value: v, selected: cond.variable === v }, v));
+
+  const opSel = h("select", { onchange: (e) => { cond.operator = e.target.value; structuralRefresh(); } });
+  for (const op of state.meta.condition_operators) opSel.append(h("option", { value: op, selected: cond.operator === op }, COND_OP_LABEL[op] || op));
+
+  const parts = [varSel, opSel];
+  // `empty`/`not_empty` read the variable only, so neither a value nor a case flag applies.
+  if (!(state.meta.condition_operators_without_value || []).includes(cond.operator)) {
+    parts.push(h("input", { type: "text", value: cond.value || "", placeholder: "Value",
+      oninput: (e) => { cond.value = e.target.value; liveRefresh(); } }));
+    const caseBox = h("input", { type: "checkbox", checked: !!cond.case_sensitive,
+      onchange: (e) => { cond.case_sensitive = e.target.checked; liveRefresh(); } });
+    parts.push(h("label", { class: "case-toggle", title: "Match case exactly" }, caseBox, h("span", { text: "Aa" })));
+  }
+  parts.push(h("div", { class: "drop" }, h("button", { class: "icon-btn", type: "button", title: "Remove condition", "aria-label": "Remove condition",
+    onclick: () => { draft().conditions.splice(i, 1); structuralRefresh(); } }, "×")));
+
+  const row = h("div", { class: "btn-row cond-row" }, ...parts);
+  if (fieldErr(`conditions.${i}`)) { row.classList.add("has-error"); row.append(h("div", { class: "err row-err", text: fieldErr(`conditions.${i}`) })); }
+  return row;
+}
+
+function calendarSection() {
+  const cfg = draft();
+  const rows = [grid(field("Calendar feed URL", textInput("calendar_url", { mono: true, placeholder: "https://outlook.office365.com/owa/calendar/…/calendar.ics" }),
+    { wide: true, error: fieldErr("calendar_url"),
+      hint: "Published .ics link. Treat it as a secret — it grants read access without a login. Exposes {{calendar_current_summary}}, {{calendar_next_start_time}} and more." }))];
+  return section("Calendar", cfg.calendar_url ? "feed" : null, ...rows);
 }
 
 function opsgenieSection() {

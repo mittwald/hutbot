@@ -13,7 +13,7 @@ from .constants import (
     DEFAULT_DATE_FORMAT,
     DEFAULT_TIME_FORMAT,
     TIME_HOUR_PATTERN,
-    UNKNOWN_ONCALL_PERIOD_PLACEHOLDER,
+    UNKNOWN_PERIOD_PLACEHOLDER,
 )
 
 
@@ -352,7 +352,7 @@ def format_datetime_value(
 ) -> str:
     parsed = parse_opsgenie_datetime(value)
     if not parsed:
-        return UNKNOWN_ONCALL_PERIOD_PLACEHOLDER
+        return UNKNOWN_PERIOD_PLACEHOLDER
     return render_datetime(parsed, part, config, args, local_tz)
 
 
@@ -392,7 +392,12 @@ def format_timestamp_value(value: str, part: str = "datetime", config: dict | No
     return render_datetime(parsed, part, config, args)
 
 
-def format_opsgenie_template_datetime(value: str, variable: str, config: dict | None = None, args: dict[str, str] | None = None) -> str:
+def format_template_datetime(value: str, variable: str, config: dict | None = None, args: dict[str, str] | None = None) -> str:
+    """Render one of the `_date`/`_time`/`_datetime` template variables.
+
+    The part to render is the variable's last segment, so this serves every provider
+    (`opsgenie_current_start_time`, `calendar_next_end_date`, ...) unchanged.
+    """
     part = variable.rsplit("_", 1)[-1]
     return format_datetime_value(value, part, config, args)
 

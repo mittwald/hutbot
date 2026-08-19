@@ -10,6 +10,7 @@ from employee_list import log_error
 from .. import state
 from .. import messaging
 from .. import opsgenie
+from .. import calendarfeed
 from ..constants import CONFIG_NAME_PATTERN, DEFAULT_CONFIG_NAME, RESERVED_CONFIG_NAMES
 from ..textutil import log_debug, strip_quotes
 
@@ -38,6 +39,12 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.clear_opsgenie_message(app, channel, config_name, user, thread_ts)
     elif (match := patterns.SET_OPSGENIE_MESSAGE_PATTERN.match(command_text)):
         await setters.set_opsgenie_message(app, channel, config_name, strip_quotes(match.group("message")), user, thread_ts)
+    elif patterns.SHOW_CALENDAR_PATTERN.match(command_text):
+        await calendarfeed.send_current_calendar_event(app, channel, config_name, user, thread_ts)
+    elif patterns.CLEAR_CALENDAR_PATTERN.match(command_text):
+        await setters.clear_calendar_url(app, channel, config_name, user, thread_ts)
+    elif (match := patterns.SET_CALENDAR_PATTERN.match(command_text)):
+        await setters.set_calendar_url(app, channel, config_name, match.group("url"), user, thread_ts)
     elif (match := patterns.SET_DATETIME_FORMAT_PATTERN.match(command_text)):
         await setters.set_datetime_format(app, channel, config_name, match.group("values"), user, thread_ts)
     elif patterns.CLEAR_PATTERN_PATTERN.match(command_text):
@@ -86,16 +93,12 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.clear_included_team(app, channel, config_name, user, thread_ts)
     elif (match := patterns.SET_TRIGGER_PATTERN.match(command_text)):
         await setters.set_trigger(app, channel, config_name, match.group("trigger"), match.group("expression"), user, thread_ts)
-    elif (match := patterns.SET_CONDITION_PATTERN.match(command_text)):
-        await setters.set_condition(app, channel, config_name, match.group("condition"), user, thread_ts)
-    elif (match := patterns.SET_OUTLOOK_SUBJECT_PATTERN.match(command_text)):
-        await setters.set_outlook_pattern(app, channel, config_name, "outlook_subject_pattern", match.group("pattern"), user, thread_ts)
-    elif (match := patterns.SET_OUTLOOK_BODY_PATTERN.match(command_text)):
-        await setters.set_outlook_pattern(app, channel, config_name, "outlook_body_pattern", match.group("pattern"), user, thread_ts)
-    elif patterns.ENABLE_CONDITION_NEGATE_PATTERN.match(command_text):
-        await setters.set_condition_negate(app, channel, config_name, True, user, thread_ts)
-    elif patterns.DISABLE_CONDITION_NEGATE_PATTERN.match(command_text):
-        await setters.set_condition_negate(app, channel, config_name, False, user, thread_ts)
+    elif patterns.CLEAR_CONDITIONS_PATTERN.match(command_text):
+        await setters.clear_conditions(app, channel, config_name, user, thread_ts)
+    elif (match := patterns.SET_CONDITIONS_MATCH_PATTERN.match(command_text)):
+        await setters.set_conditions_match(app, channel, config_name, match.group("mode"), user, thread_ts)
+    elif (match := patterns.ADD_CONDITION_PATTERN.match(command_text)):
+        await setters.add_condition(app, channel, config_name, match.group("spec"), user, thread_ts)
     elif (match := patterns.SET_ACTION_PATTERN.match(command_text)):
         await setters.set_action(app, channel, config_name, match.group("action"), match.group("target"), user, thread_ts)
     elif (match := patterns.ADD_BUTTON_PATTERN.match(command_text)):

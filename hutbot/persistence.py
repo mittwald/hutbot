@@ -3,6 +3,7 @@
 File paths come from ``constants`` (read qualified so tests can patch them).
 """
 
+import copy
 import json
 
 import aiofiles
@@ -13,6 +14,8 @@ from employee_list import log, log_error, log_warning
 from . import state
 from . import constants
 from .buttonutil import normalize_button
+from .conditionutil import canonical_match_mode, normalize_condition
+from .constants import SUPPORTED_TEMPLATE_VARIABLES
 
 
 async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
@@ -38,7 +41,11 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
         for config_name, single_config in channel_data.items():
             for key, value in constants.DEFAULT_CONFIG.items():
                 if key not in single_config:
-                    single_config[key] = value
+                    # Deep-copied: a plain assignment would give every config that is
+                    # missing a list-valued default (`hours`, `excluded_teams`,
+                    # `conditions`, ...) the very same list object, so an in-place
+                    # append in one channel would show up in all the others.
+                    single_config[key] = copy.deepcopy(value)
             # `forward_channel` was replaced by the `post_channel` action. Drop it
             # instead of silently keeping a field nothing reads any more.
             legacy_forward_channel = single_config.pop('forward_channel', '')
@@ -65,6 +72,29 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
                         f"Config '{config_name}' in channel {channel_id}: dropping the schedule timezone "
                         f"{legacy_schedule_timezone}; its cron now fires in {datetime_timezone}."
                     )
+            # The pre-release outlook-era condition fields. Nothing reads them any more,
+            # so drop them instead of carrying dead keys in bot.json forever.
+            for dead_key in ('condition', 'condition_negate', 'outlook_subject_pattern', 'outlook_body_pattern'):
+                single_config.pop(dead_key, None)
+            # Keep conditions to {variable, operator, value, case_sensitive} and drop
+            # anything unusable, so a hand-edited file cannot make a rule un-evaluable.
+            conditions = single_config.get('conditions')
+            if isinstance(conditions, list):
+                normalized_conditions = []
+                for condition in conditions:
+                    variable, operator, value, case_sensitive = normalize_condition(condition)
+                    if not variable or not operator:
+                        log_warning(f"Dropping an unusable condition of config '{config_name}' in channel {channel_id}.")
+                        continue
+                    if variable not in SUPPORTED_TEMPLATE_VARIABLES:
+                        log_warning(f"Dropping condition on unknown variable '{variable}' of config '{config_name}' in channel {channel_id}.")
+                        continue
+                    normalized_conditions.append({'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive})
+                single_config['conditions'] = normalized_conditions
+            else:
+                single_config['conditions'] = []
+            if not canonical_match_mode(str(single_config.get('conditions_match') or '')):
+                single_config['conditions_match'] = constants.CONDITION_MATCH_ALL
             # Keep buttons to {label, action, value} and drop anything unusable.
             buttons = single_config.get('buttons')
             if isinstance(buttons, list):

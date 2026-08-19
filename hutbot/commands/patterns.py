@@ -21,6 +21,9 @@ SET_OPSGENIE_SCHEDULE_PATTERN = create_command_pattern(r'(set\s+)?opsgenie[_ -]?
 SET_OPSGENIE_PRIORITY_PATTERN = create_command_pattern(r'(set\s+)?opsgenie[_ -]?priority\s+(?P<priority>.+)')
 CLEAR_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+opsgenie[_ -]?message')
 SET_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?opsgenie[_ -]?message\s+(?P<message>.+)')
+CLEAR_CALENDAR_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+calendar([_ -]?url)?')
+SET_CALENDAR_PATTERN = create_command_pattern(r'(set\s+)?calendar([_ -]?url)?\s+(?P<url>.+)')
+SHOW_CALENDAR_PATTERN = re.compile(r'^(show\s+)?calendar$', re.IGNORECASE)
 SET_DATETIME_FORMAT_PATTERN = create_command_pattern(r'(set\s+)?(datetime[_ -]?format|date[_ -]?format|datefmt)\s+(?P<values>.+)')
 CLEAR_PATTERN_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+pattern')
 SET_PATTERN_PATTERN = create_command_pattern(r'(set\s+)?pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|[^\r\n\t\f\v\s"\']+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
@@ -46,11 +49,11 @@ ENABLE_REPLIES_PATTERN = create_command_pattern(r'enable$')
 DISABLE_REPLIES_PATTERN = create_command_pattern(r'disable$')
 # The cron expression belongs to the `cron` trigger, so both arrive together.
 SET_TRIGGER_PATTERN = create_command_pattern(r'(set\s+)?trigger\s+(?P<trigger>\S+)(?:\s+(?P<expression>.+))?$')
-SET_CONDITION_PATTERN = create_command_pattern(r'(set\s+)?condition\s+(?P<condition>.+)')
-SET_OUTLOOK_SUBJECT_PATTERN = create_command_pattern(r'(set\s+)?outlook[_ -]?subject\s+(?P<pattern>.+)')
-SET_OUTLOOK_BODY_PATTERN = create_command_pattern(r'(set\s+)?outlook[_ -]?body\s+(?P<pattern>.+)')
-ENABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'enable\s+(condition[_ -]?)?negate')
-DISABLE_CONDITION_NEGATE_PATTERN = create_command_pattern(r'disable\s+(condition[_ -]?)?negate')
+# Conditions chain together, so they are added one at a time like buttons. `clear` and
+# `conditions-match` are matched before `add condition` in the dispatch chain.
+CLEAR_CONDITIONS_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+conditions?')
+SET_CONDITIONS_MATCH_PATTERN = create_command_pattern(r'(set\s+)?conditions?[_ -]?match\s+(?P<mode>\S+)')
+ADD_CONDITION_PATTERN = create_command_pattern(r'(add\s+)?condition\s+(?P<spec>.+)')
 # The target belongs to the action, so both arrive in one command. `set` is
 # optional, like it is for `wait-time` and `message`.
 SET_ACTION_PATTERN = create_command_pattern(r'(set\s+)?action\s+(?P<action>\S+)(?:\s+(?P<target>.+))?$')

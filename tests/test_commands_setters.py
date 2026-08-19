@@ -1,3 +1,5 @@
+import copy
+
 from tests._common import *  # noqa: F401,F403
 
 
@@ -633,13 +635,12 @@ async def test_clear_pattern_does_not_shadow_setting_one():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command,field,value", [
     ('trigger cron "0 9 * * 1-5"', "cron", "0 9 * * 1-5"),
-    ("condition outlook", "condition", "outlook_calendar"),
     ('pattern ".*alarm.*"', "pattern", ".*alarm.*"),
     ("opsgenie-schedule SRE", "opsgenie_schedule_name", "SRE"),
     ("opsgenie-priority P2", "opsgenie_priority", "P2"),
     ("opsgenie-message Alert!", "opsgenie_message", "Alert!"),
-    ("outlook-subject .*urlaub.*", "outlook_subject_pattern", ".*urlaub.*"),
-    ("outlook-body .*ooo.*", "outlook_body_pattern", ".*ooo.*"),
+    ("conditions-match any", "conditions_match", "any"),
+    ("calendar https://cal.example.com/a/b/calendar.ics", "calendar_url", "https://cal.example.com/a/b/calendar.ics"),
     ("escalation 5 config alarm", "escalation_timeout", 300),
 ])
 async def test_every_setting_command_works_without_the_word_set(command, field, value):
@@ -647,7 +648,7 @@ async def test_every_setting_command_works_without_the_word_set(command, field, 
     user = User("U1", "dave", "Dave", "T")
 
     for text in (command, f"set {command}"):
-        config = DEFAULT_CONFIG.copy()
+        config = copy.deepcopy(DEFAULT_CONFIG)
         channel = Channel(id="C1", name="davetest", configs={"default": config})
         with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
              patch('hutbot.messaging.send_message'):
