@@ -138,6 +138,38 @@ def cal():
     return icalendar.Calendar.from_ical(SAMPLE_ICS)
 
 
+def _live_ics(now=None):
+    """An ICS whose events always straddle the caller's clock.
+
+    A few tests go through the code paths that resolve "now" themselves
+    (`render_action_text`, `run_action`), so a fixture pinned to a date would pass or fail
+    depending on the hour the suite runs.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    fmt = "%Y%m%dT%H%M%SZ"
+    started = (now - datetime.timedelta(minutes=10)).strftime(fmt)
+    ends = (now + datetime.timedelta(minutes=50)).strftime(fmt)
+    next_start = (now + datetime.timedelta(hours=2)).strftime(fmt)
+    next_end = (now + datetime.timedelta(hours=2, minutes=30)).strftime(fmt)
+    return "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-CALNAME:Team Kalender",
+        "BEGIN:VEVENT", "UID:live-now", f"DTSTAMP:{started}",
+        f"DTSTART:{started}", f"DTEND:{ends}",
+        "SUMMARY:Composerbereitstellung", "LOCATION:Mario Kart",
+        'ORGANIZER;CN="Michel Hopfner":mailto:michel@example.com',
+        "END:VEVENT",
+        "BEGIN:VEVENT", "UID:live-next", f"DTSTAMP:{started}",
+        f"DTSTART:{next_start}", f"DTEND:{next_end}",
+        "SUMMARY:m3 daily", "LOCATION:Pong", "END:VEVENT",
+        "END:VCALENDAR",
+    ])
+
+
+@pytest.fixture
+def live_cal():
+    return icalendar.Calendar.from_ical(_live_ics())
+
+
 def _event_named(calendar, summary, at=NOW):
     import recurring_ical_events
     query = recurring_ical_events.of(calendar, skip_bad_series=True)
@@ -358,14 +390,16 @@ async def test_template_variables_without_a_url_are_all_placeholders():
 
 
 @pytest.mark.asyncio
-async def test_calendar_datetime_variables_accept_format_arguments(cal):
+async def test_calendar_datetime_variables_accept_format_arguments(live_cal):
     config = {**CONFIG, "reply_message": "{{calendar_current_start_datetime(fmt='02.01.2006 15:04', tz='Europe/Berlin', lc=de-DE)}}"}
     app = AsyncMock()
     channel = _mk_channel({"cal": config})
-    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))), \
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))), \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")):
         text = await hutbot.actions.render_action_text(app, "token", channel, config, "cal", {"channel_id": "C12345"})
-    assert text == "19.08.2026 09:35"
+    current, _ = find_current_and_next_events(live_cal, config)
+    expected = datetime.datetime.fromisoformat(current.start).astimezone(ZoneInfo("Europe/Berlin"))
+    assert text == expected.strftime("%d.%m.%Y %H:%M")
 
 
 def test_calendar_scalar_variables_reject_arguments():
@@ -658,11 +692,11 @@ async def test_calendar_is_not_fetched_when_no_variable_references_it():
 
 
 @pytest.mark.asyncio
-async def test_calendar_is_fetched_once_when_a_variable_references_it(cal):
+async def test_calendar_is_fetched_once_when_a_variable_references_it(live_cal):
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "Now: {{calendar_current_summary}}"}
     channel = _mk_channel({"cal": config})
-    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))) as fetch, \
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))) as fetch, \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")):
         text = await hutbot.actions.render_action_text(app, "token", channel, config, "cal", {"channel_id": "C12345"})
     assert fetch.await_count == 1
@@ -670,14 +704,14 @@ async def test_calendar_is_fetched_once_when_a_variable_references_it(cal):
 
 
 @pytest.mark.asyncio
-async def test_calendar_condition_gates_a_rule(cal):
+async def test_calendar_condition_gates_a_rule(live_cal):
     """The whole point: a rule that only runs while a matching event is on."""
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "standup time"}
     config["conditions"] = [{"variable": "calendar_current_summary", "operator": "contains",
                              "value": "composer", "case_sensitive": False}]
     channel = _mk_channel({"gated": config})
-    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))), \
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))), \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})) as post:
         posted, reason = await hutbot.actions.run_action_with_reason(
@@ -687,13 +721,13 @@ async def test_calendar_condition_gates_a_rule(cal):
 
 
 @pytest.mark.asyncio
-async def test_calendar_condition_blocks_when_no_event_matches(cal):
+async def test_calendar_condition_blocks_when_no_event_matches(live_cal):
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "standup time"}
     config["conditions"] = [{"variable": "calendar_current_summary", "operator": "contains",
                              "value": "no such meeting", "case_sensitive": False}]
     channel = _mk_channel({"gated": config})
-    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))), \
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))), \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post:
         posted, reason = await hutbot.actions.run_action_with_reason(

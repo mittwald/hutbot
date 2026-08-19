@@ -187,7 +187,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         "> :date: *Calendar feeds*\n>\n"
         f"> Point a config at an ICS calendar URL with `{command} [config] set calendar <url>` and use the event running now (or the next one) in any message: `{{{{calendar_current_summary}}}}`, `{{{{calendar_current_location}}}}`, `{{{{calendar_next_start_time}}}}` and more. `{command} [config] show calendar` prints both.\n>\n"
         "> :traffic_light: *Conditions on any variable*\n>\n"
-        f"> A rule can now be gated on any `{{{{variable}}}}`: `{command} [config] add condition <var> <operator> [value]`, with `empty`, `equals`, `contains`, `starts-with`, `ends-with`, `regex` and their `not-` forms. Chain several and pick `{command} [config] set conditions-match <all|any>`. Conditions apply to every trigger, and `{command} [config] test` shows which ones pass.\n>\n"
+        f"> A rule can now be gated on any `{{{{variable}}}}`: `{command} [config] add condition <var> <operator> [value]`, with `empty`, `equals`, `contains`, `starts-with`, `ends-with`, `regex` and their `not-` forms. Chain several and pick `{command} [config] set condition-mode <all|any>`. Conditions apply to every trigger, and `{command} [config] test` shows which ones pass.\n>\n"
         "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
         "> That means " + name + " can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
         "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
@@ -228,7 +228,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ]),
         ("Conditions", [
             (f"{command} [config] add condition <var> <operator> [value] [0|1]", "Gate this rule on a variable; 1 means case sensitive."),
-            (f"{command} [config] set conditions-match <all|any>", "All conditions must apply, or any one of them."),
+            (f"{command} [config] set condition-mode <all|any>", "All conditions must apply, or any one of them."),
             (f"{command} [config] clear conditions", "Remove all conditions; the rule stops being gated."),
         ]),
         ("What to react to", [

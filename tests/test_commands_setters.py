@@ -639,7 +639,7 @@ async def test_clear_pattern_does_not_shadow_setting_one():
     ("opsgenie-schedule SRE", "opsgenie_schedule_name", "SRE"),
     ("opsgenie-priority P2", "opsgenie_priority", "P2"),
     ("opsgenie-message Alert!", "opsgenie_message", "Alert!"),
-    ("conditions-match any", "conditions_match", "any"),
+    ("condition-mode any", "conditions_mode", "any"),
     ("calendar https://cal.example.com/a/b/calendar.ics", "calendar_url", "https://cal.example.com/a/b/calendar.ics"),
     ("escalation 5 config alarm", "escalation_timeout", 300),
 ])

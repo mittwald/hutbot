@@ -307,7 +307,7 @@ async def test_validate_config_payload_accepts_and_canonicalizes_conditions():
             # A value-less operator drops both the value and the flag.
             {"variable": "message", "operator": "not empty", "value": "junk", "case_sensitive": True},
         ],
-        "conditions_match": "any",
+        "conditions_mode": "any",
         "calendar_url": "https://cal.example.com/a/b/calendar.ics",
     }
 
@@ -318,7 +318,7 @@ async def test_validate_config_payload_accepts_and_canonicalizes_conditions():
         {"variable": "team", "operator": "equals", "value": "Platform", "case_sensitive": True},
         {"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False},
     ]
-    assert cfg["conditions_match"] == "any"
+    assert cfg["conditions_mode"] == "any"
     assert cfg["calendar_url"] == "https://cal.example.com/a/b/calendar.ics"
 
 
@@ -327,7 +327,7 @@ async def test_validate_config_payload_defaults_conditions():
     _seed_user_caches()
     cfg, errors = await validate_config_payload({"reply_message": "Hi", "wait_time": 600}, _ui_app())
     assert errors == {}
-    assert cfg["conditions"] == [] and cfg["conditions_match"] == "all"
+    assert cfg["conditions"] == [] and cfg["conditions_mode"] == "all"
     assert cfg["calendar_url"] == ""
 
 
@@ -358,11 +358,11 @@ async def test_validate_config_payload_reports_per_condition_errors(condition, e
 async def test_validate_config_payload_rejects_a_bad_conditions_shape_and_match():
     _seed_user_caches()
     cfg, errors = await validate_config_payload(
-        {"reply_message": "Hi", "wait_time": 600, "conditions": "nope", "conditions_match": "sometimes"},
+        {"reply_message": "Hi", "wait_time": 600, "conditions": "nope", "conditions_mode": "sometimes"},
         _ui_app())
     assert cfg is None
     assert "must be a list" in errors["conditions"]
-    assert "conditions_match" in errors
+    assert "conditions_mode" in errors
 
 
 @pytest.mark.asyncio
@@ -385,7 +385,7 @@ def test_ui_meta_ships_condition_operators_in_declared_order():
     assert meta["condition_operators"] == list(CONDITION_OPERATORS_ORDERED)
     assert meta["condition_operators"] != sorted(meta["condition_operators"])
     assert meta["condition_operators_without_value"] == sorted(CONDITION_OPERATORS_WITHOUT_VALUE)
-    assert meta["condition_matches"] == [CONDITION_MATCH_ALL, CONDITION_MATCH_ANY]
+    assert meta["condition_modes"] == [CONDITION_MODE_ALL, CONDITION_MODE_ANY]
     # The variable picker and the defaults pick up the calendar entries for free.
     assert CALENDAR_TEMPLATE_VARIABLES <= set(meta["template_variables"])
     assert meta["default_config"]["conditions"] == []

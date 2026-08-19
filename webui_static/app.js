@@ -61,7 +61,7 @@ const COND_OP_LABEL = {
   ends_with: "ends with", not_ends_with: "does not end with",
   regex: "matches regex", not_regex: "does not match regex",
 };
-const COND_MATCH_LABEL = { all: "All conditions must apply", any: "Any one condition is enough" };
+const COND_MODE_LABEL = { all: "All conditions must apply", any: "Any one condition is enough" };
 const BTN_ACTION_LABEL = { config: "Run rule", ack: "Acknowledge / post text", delay: "Delay timer" };
 const ESCALATION_LABEL = { none: "Never escalate; buttons stay open", button: "Auto-press a button", config: "Run another rule" };
 const TARGET_HINT = { dm_user: "A @user (id, name, or email)", group_dm: "A @usergroup handle", post_channel: "A channel ID like C0123ABCD" };
@@ -247,7 +247,7 @@ function cardIdBlock(name, cfg) {
 function pipelineFor(cfg) {
   const condCount = (cfg.conditions || []).length;
   const condText = condCount
-    ? `${condCount} condition${condCount > 1 ? "s" : ""}${cfg.conditions_match === "any" ? " (any)" : ""}`
+    ? `${condCount} condition${condCount > 1 ? "s" : ""}${cfg.conditions_mode === "any" ? " (any)" : ""}`
     : "—";
   const chip = (kind, text, muted) => h("span", { class: "pipe-chip" + (muted ? " muted" : "") },
     h("span", { class: "pipe-kind", text: kind }), text);
@@ -571,8 +571,8 @@ function conditionsSection() {
   const extras = [rows, add];
   // Only meaningful once there is more than one condition to combine.
   if (conditions.length > 1) {
-    extras.push(grid(field("Combine with", selectInput("conditions_match", state.meta.condition_matches, COND_MATCH_LABEL, liveRefresh),
-      { hint: COND_MATCH_LABEL[cfg.conditions_match || "all"], error: fieldErr("conditions_match") })));
+    extras.push(grid(field("Condition mode", selectInput("conditions_mode", state.meta.condition_modes, COND_MODE_LABEL, liveRefresh),
+      { hint: COND_MODE_LABEL[cfg.conditions_mode || "all"], error: fieldErr("conditions_mode") })));
   }
   return section("Conditions", conditions.length ? String(conditions.length) : null, ...extras);
 }

@@ -108,14 +108,14 @@ CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE = {
     CONDITION_OP_REGEX,
     CONDITION_OP_NOT_REGEX,
 }
-CONDITION_MATCH_ALL = "all"
-CONDITION_MATCH_ANY = "any"
-CONDITION_MATCHES = {CONDITION_MATCH_ALL, CONDITION_MATCH_ANY}
-CONDITION_MATCH_ALIASES = {
-    "and": CONDITION_MATCH_ALL,
-    "every": CONDITION_MATCH_ALL,
-    "or": CONDITION_MATCH_ANY,
-    "some": CONDITION_MATCH_ANY,
+CONDITION_MODE_ALL = "all"
+CONDITION_MODE_ANY = "any"
+CONDITION_MODES = {CONDITION_MODE_ALL, CONDITION_MODE_ANY}
+CONDITION_MODE_ALIASES = {
+    "and": CONDITION_MODE_ALL,
+    "every": CONDITION_MODE_ALL,
+    "or": CONDITION_MODE_ANY,
+    "some": CONDITION_MODE_ANY,
 }
 
 ACTION_REPLY = "reply"
@@ -187,7 +187,7 @@ DEFAULT_CONFIG = {
     # Conditions: `{{variable}} <operator> [value]` tests that gate every trigger. An
     # empty list always passes.
     "conditions": [],
-    "conditions_match": CONDITION_MATCH_ALL,
+    "conditions_mode": CONDITION_MODE_ALL,
     # Action: what the rule does when it fires.
     "action": ACTION_REPLY,
     "action_target": "",

@@ -14,7 +14,7 @@ from employee_list import log, log_error, log_warning
 from . import state
 from . import constants
 from .buttonutil import normalize_button
-from .conditionutil import canonical_match_mode, normalize_condition
+from .conditionutil import canonical_condition_mode, normalize_condition
 from .constants import SUPPORTED_TEMPLATE_VARIABLES
 
 
@@ -93,8 +93,8 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
                 single_config['conditions'] = normalized_conditions
             else:
                 single_config['conditions'] = []
-            if not canonical_match_mode(str(single_config.get('conditions_match') or '')):
-                single_config['conditions_match'] = constants.CONDITION_MATCH_ALL
+            if not canonical_condition_mode(str(single_config.get('conditions_mode') or '')):
+                single_config['conditions_mode'] = constants.CONDITION_MODE_ALL
             # Keep buttons to {label, action, value} and drop anything unusable.
             buttons = single_config.get('buttons')
             if isinstance(buttons, list):

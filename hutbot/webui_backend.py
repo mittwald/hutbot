@@ -34,8 +34,8 @@ from .constants import (
     ESCALATION_NONE,
     BUTTON_ACTION_DELAY,
     BUTTON_ACTIONS,
-    CONDITION_MATCH_ALL,
-    CONDITION_MATCHES,
+    CONDITION_MODE_ALL,
+    CONDITION_MODES,
     CONDITION_OPERATORS_ORDERED,
     CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE,
     CONDITION_OPERATORS_WITHOUT_VALUE,
@@ -255,11 +255,11 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     if not any(key == 'conditions' or key.startswith('conditions.') for key in errors):
         cfg['conditions'] = clean_conditions
 
-    conditions_match = conditionutil.canonical_match_mode(str(get('conditions_match') or CONDITION_MATCH_ALL))
-    if not conditions_match:
-        errors['conditions_match'] = "Conditions match must be " + " or ".join(sorted(CONDITION_MATCHES)) + "."
+    conditions_mode = conditionutil.canonical_condition_mode(str(get('conditions_mode') or CONDITION_MODE_ALL))
+    if not conditions_mode:
+        errors['conditions_mode'] = "Condition mode must be " + " or ".join(sorted(CONDITION_MODES)) + "."
     else:
-        cfg['conditions_match'] = conditions_match
+        cfg['conditions_mode'] = conditions_mode
 
     calendar_url = str(get('calendar_url') or "").strip()
     if calendar_url:
@@ -449,7 +449,7 @@ def ui_meta() -> dict:
         # Deliberately unsorted: each operator sits next to its negation.
         'condition_operators': list(CONDITION_OPERATORS_ORDERED),
         'condition_operators_without_value': sorted(CONDITION_OPERATORS_WITHOUT_VALUE),
-        'condition_matches': sorted(CONDITION_MATCHES),
+        'condition_modes': sorted(CONDITION_MODES),
         'actions': sorted(ACTIONS),
         'button_actions': sorted(BUTTON_ACTIONS),
         'opsgenie_priorities': sorted(OPSGENIE_PRIORITIES),

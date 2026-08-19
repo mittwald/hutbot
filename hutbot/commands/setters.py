@@ -30,8 +30,8 @@ from ..constants import (
     BUTTON_ACTION_CONFIG,
     BUTTON_ACTION_DELAY,
     BUTTON_ACTIONS,
-    CONDITION_MATCH_ALL,
-    CONDITION_MATCHES,
+    CONDITION_MODE_ALL,
+    CONDITION_MODES,
     CONDITION_OPERATORS_ORDERED,
     CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE,
     CONDITION_OPERATORS_WITHOUT_VALUE,
@@ -293,14 +293,14 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
     ]
     conditions = config.get('conditions') or []
     if conditions:
-        mode = config.get('conditions_match') or CONDITION_MATCH_ALL
+        mode = config.get('conditions_mode') or CONDITION_MODE_ALL
         met, reason = conditionutil.evaluate_conditions(config, template_variables)
         condition_lines = []
         for condition in conditions:
             single_met, _ = conditionutil.evaluate_conditions({'conditions': [condition]}, template_variables)
             condition_lines.append(f"{':white_check_mark:' if single_met else ':x:'} {conditionutil.describe_condition(condition)}")
         verdict = "would run" if met else f"would *not* run — {reason}"
-        header = "all must apply" if mode == CONDITION_MATCH_ALL else "any may apply"
+        header = "all must apply" if mode == CONDITION_MODE_ALL else "any may apply"
         sections.append(f"*Conditions* ({header}):\n" + "\n".join(condition_lines) + f"\n\nThis rule {verdict}.")
     sections.append("*Template variables:*\n" + "\n".join(variable_lines))
     await messaging.send_message(app, channel, user, "\n\n".join(sections), thread_ts)
@@ -447,10 +447,10 @@ async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, use
     await persistence.save_configuration()
 
     total = len(config['conditions'])
-    mode = config.get('conditions_match') or CONDITION_MATCH_ALL
+    mode = config.get('conditions_mode') or CONDITION_MODE_ALL
     note = ""
     if total > 1:
-        note = f" ({'all' if mode == CONDITION_MATCH_ALL else 'any'} of {total} conditions must apply)"
+        note = f" ({'all' if mode == CONDITION_MODE_ALL else 'any'} of {total} conditions must apply)"
     await messaging.send_message(app, channel, user, f"Added condition {conditionutil.describe_condition(condition)} in configuration `{config_name}`{note}.", thread_ts)
 
 
@@ -460,17 +460,17 @@ async def clear_conditions(app: AsyncApp, channel, config_name: str, user, threa
     await messaging.send_message(app, channel, user, f"Cleared *conditions* in configuration `{config_name}`; this rule is no longer gated.", thread_ts)
 
 
-async def set_conditions_match(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:
-    mode = conditionutil.canonical_match_mode(strip_quotes(value or ""))
+async def set_conditions_mode(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:
+    mode = conditionutil.canonical_condition_mode(strip_quotes(value or ""))
     if not mode:
-        supported = ", ".join(f"`{m}`" for m in sorted(CONDITION_MATCHES))
-        await messaging.send_message(app, channel, user, f"Invalid *conditions match*. Must be one of {supported}.", thread_ts)
+        supported = ", ".join(f"`{m}`" for m in sorted(CONDITION_MODES))
+        await messaging.send_message(app, channel, user, f"Invalid *condition mode*. Must be one of {supported}.", thread_ts)
         return
     config = _ensure_config(channel, config_name)
-    config['conditions_match'] = mode
+    config['conditions_mode'] = mode
     await persistence.save_configuration()
-    explanation = "every condition must apply" if mode == CONDITION_MATCH_ALL else "any one condition is enough"
-    await messaging.send_message(app, channel, user, f"*Conditions match* set to `{mode}` in configuration `{config_name}`: {explanation}.", thread_ts)
+    explanation = "every condition must apply" if mode == CONDITION_MODE_ALL else "any one condition is enough"
+    await messaging.send_message(app, channel, user, f"*Condition mode* set to `{mode}` in configuration `{config_name}`: {explanation}.", thread_ts)
 
 
 async def set_calendar_url(app: AsyncApp, channel, config_name: str, url: str, user, thread_ts: str = "") -> None:

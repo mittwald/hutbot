@@ -1,7 +1,7 @@
 from tests._common import *  # noqa: F401,F403
 
 from hutbot.conditionutil import (
-    canonical_match_mode,
+    canonical_condition_mode,
     canonical_operator,
     condition_variables,
     describe_condition,
@@ -27,7 +27,7 @@ def _c(variable, operator, value="", case_sensitive=False):
 
 def _ev(conditions, mode="all", variables=None):
     return evaluate_conditions(
-        {"conditions": conditions, "conditions_match": mode},
+        {"conditions": conditions, "conditions_mode": mode},
         VARIABLES if variables is None else variables,
     )
 
@@ -58,8 +58,8 @@ def test_canonical_operator(typed, expected):
     ("all", "all"), ("any", "any"), ("and", "all"), ("or", "any"),
     ("every", "all"), ("some", "any"), ("ALL", "all"), ("nope", ""), ("", ""),
 ])
-def test_canonical_match_mode(typed, expected):
-    assert canonical_match_mode(typed) == expected
+def test_canonical_condition_mode(typed, expected):
+    assert canonical_condition_mode(typed) == expected
 
 
 @pytest.mark.parametrize("typed,expected", [
@@ -190,7 +190,7 @@ def test_value_less_operators_normalize_the_case_flag_away():
 def test_empty_chain_always_passes_under_both_modes():
     """`any` over an empty list must not mean "never"."""
     assert evaluate_conditions({"conditions": []}, VARIABLES) == (True, "")
-    assert evaluate_conditions({"conditions": [], "conditions_match": "any"}, VARIABLES) == (True, "")
+    assert evaluate_conditions({"conditions": [], "conditions_mode": "any"}, VARIABLES) == (True, "")
     assert evaluate_conditions({}, VARIABLES) == (True, "")
 
 
@@ -210,7 +210,7 @@ def test_any_requires_one_condition():
 
 def test_unknown_match_mode_falls_back_to_all():
     conditions = [_c("message", "contains", "composer"), _c("message", "contains", "zzz")]
-    assert evaluate_conditions({"conditions": conditions, "conditions_match": "bogus"}, VARIABLES)[0] is False
+    assert evaluate_conditions({"conditions": conditions, "conditions_mode": "bogus"}, VARIABLES)[0] is False
 
 
 # ----- fail closed -----
@@ -312,7 +312,7 @@ async def test_add_condition_treats_a_quoted_flag_word_as_a_value():
     ("add condition message empty something", "takes no value"),
     ("add condition message contains", "needs a value"),
     ("add condition message regex [unclosed", "Invalid pattern"),
-    ("set conditions-match sometimes", "Invalid *conditions match*"),
+    ("set condition-mode sometimes", "Invalid *condition mode*"),
 ])
 async def test_add_condition_rejections(command, expected):
     app = AsyncMock()
@@ -349,15 +349,17 @@ async def test_clear_conditions_and_match_mode():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.messaging.send_message'):
         await process_command(app, "add condition message not_empty", channel, user)
-        await process_command(app, "set conditions-match any", channel, user)
-        assert channel.configs["default"]["conditions_match"] == "any"
+        await process_command(app, "set condition-mode any", channel, user)
+        assert channel.configs["default"]["conditions_mode"] == "any"
         await process_command(app, "clear conditions", channel, user)
     assert channel.configs["default"]["conditions"] == []
 
 
 @pytest.mark.asyncio
 async def test_new_condition_patterns_are_recognised_as_commands():
-    for text in ("add condition message not_empty", "clear conditions", "set conditions-match any"):
+    for text in ("add condition message not_empty", "clear conditions", "set condition-mode any",
+                 # the older spellings stay accepted
+                 "set conditions-match any", "set condition-logic and", "set condition-combine any"):
         assert hutbot.commands.dispatch.matches_a_command(text), text
 
 
@@ -421,7 +423,7 @@ async def test_migration_drops_the_outlook_era_condition_fields():
     for dead in ("condition", "condition_negate", "outlook_subject_pattern", "outlook_body_pattern"):
         assert dead not in single, dead
     assert single["conditions"] == []
-    assert single["conditions_match"] == CONDITION_MATCH_ALL
+    assert single["conditions_mode"] == CONDITION_MODE_ALL
 
 
 @pytest.mark.asyncio
@@ -435,7 +437,7 @@ async def test_migration_normalizes_conditions_and_drops_junk():
             "not even a dict",
             {"variable": "message", "operator": "empty", "value": "ignored", "case_sensitive": True},
         ],
-        "conditions_match": "sometimes",
+        "conditions_mode": "sometimes",
     }}}
     migrated = await migrate_and_apply_defaults(AsyncMock(), config)
     single = migrated["C1"]["default"]
@@ -443,4 +445,4 @@ async def test_migration_normalizes_conditions_and_drops_junk():
         {"variable": "message", "operator": "contains", "value": "x", "case_sensitive": False},
         {"variable": "message", "operator": "empty", "value": "", "case_sensitive": False},
     ]
-    assert single["conditions_match"] == CONDITION_MATCH_ALL
+    assert single["conditions_mode"] == CONDITION_MODE_ALL

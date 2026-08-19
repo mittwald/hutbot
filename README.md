@@ -106,7 +106,7 @@ existing configs keep working unchanged.
   added separately, so several chain together:
   - `/hutbot [config] add condition <variable> <operator> ["value"] [0|1]` — the trailing `0|1`
     is case sensitivity (default `0`, case-**in**sensitive), exactly like `set pattern`.
-  - `/hutbot [config] set conditions-match <all|any>` — whether every condition must apply, or
+  - `/hutbot [config] set condition-mode <all|any>` — whether every condition must apply, or
     any one of them is enough. Defaults to `all`.
   - `/hutbot [config] clear conditions` — remove them all; the rule stops being gated.
   - Operators: `empty`, `not_empty`, `equals`, `not_equals`, `contains`, `not_contains`,
@@ -128,7 +128,7 @@ existing configs keep working unchanged.
   /hutbot standup set calendar https://outlook.office365.com/owa/calendar/…/calendar.ics
   /hutbot standup add condition calendar_current_summary contains composer
   /hutbot standup add condition message not_empty
-  /hutbot standup set conditions-match all
+  /hutbot standup set condition-mode all
   ```
 
 - **Actions** (`/hutbot [config] set action <action> [<target>]`) decide what the rule does, using

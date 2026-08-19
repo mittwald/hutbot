@@ -64,7 +64,7 @@ async def test_add_condition_accepts_operator_aliases():
         ("team", "equals", "Platform"),
         ("calendar_current_summary", "not_contains", "daily"),
     ]
-    assert channel.configs["default"]["conditions_match"] == "all"
+    assert channel.configs["default"]["conditions_mode"] == "all"
 
 
 

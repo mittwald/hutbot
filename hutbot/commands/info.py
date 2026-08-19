@@ -19,7 +19,7 @@ from .. import conditionutil
 from ..buttonutil import normalize_button
 from .. import targets
 from ..constants import (
-    CONDITION_MATCH_ALL,
+    CONDITION_MODE_ALL,
     ACTION_DM_USER,
     DATETIME_TEMPLATE_VARIABLES,
     TEMPLATE_DATETIME_VARIABLES,
@@ -204,8 +204,8 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         if conditions:
             condition_rows = [("Conditions", [conditionutil.describe_condition(c) for c in conditions])]
             if len(conditions) > 1:
-                mode = config.get('conditions_match') or CONDITION_MATCH_ALL
-                condition_rows.append(("Match", "all must apply" if mode == CONDITION_MATCH_ALL else "any may apply"))
+                mode = config.get('conditions_mode') or CONDITION_MODE_ALL
+                condition_rows.append(("Condition mode", "all must apply" if mode == CONDITION_MODE_ALL else "any may apply"))
             groups.append(condition_rows)
 
         if reacts_to_messages:

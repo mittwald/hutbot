@@ -50,9 +50,9 @@ DISABLE_REPLIES_PATTERN = create_command_pattern(r'disable$')
 # The cron expression belongs to the `cron` trigger, so both arrive together.
 SET_TRIGGER_PATTERN = create_command_pattern(r'(set\s+)?trigger\s+(?P<trigger>\S+)(?:\s+(?P<expression>.+))?$')
 # Conditions chain together, so they are added one at a time like buttons. `clear` and
-# `conditions-match` are matched before `add condition` in the dispatch chain.
+# `condition-mode` are matched before `add condition` in the dispatch chain.
 CLEAR_CONDITIONS_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+conditions?')
-SET_CONDITIONS_MATCH_PATTERN = create_command_pattern(r'(set\s+)?conditions?[_ -]?match\s+(?P<mode>\S+)')
+SET_CONDITION_MODE_PATTERN = create_command_pattern(r'(set\s+)?conditions?[_ -]?(mode|match|logic|combine)\s+(?P<mode>\S+)')
 ADD_CONDITION_PATTERN = create_command_pattern(r'(add\s+)?condition\s+(?P<spec>.+)')
 # The target belongs to the action, so both arrive in one command. `set` is
 # optional, like it is for `wait-time` and `message`.

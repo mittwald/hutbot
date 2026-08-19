@@ -13,10 +13,10 @@ which is exactly the race the gate exists to prevent.
 import re
 
 from .constants import (
-    CONDITION_MATCH_ALIASES,
-    CONDITION_MATCH_ALL,
-    CONDITION_MATCH_ANY,
-    CONDITION_MATCHES,
+    CONDITION_MODE_ALIASES,
+    CONDITION_MODE_ALL,
+    CONDITION_MODE_ANY,
+    CONDITION_MODES,
     CONDITION_OP_CONTAINS,
     CONDITION_OP_EMPTY,
     CONDITION_OP_ENDS_WITH,
@@ -78,11 +78,11 @@ def canonical_operator(text: str) -> str:
     return flipped if flipped in CONDITION_OPERATORS else ""
 
 
-def canonical_match_mode(text: str) -> str:
+def canonical_condition_mode(text: str) -> str:
     """`all`/`any` (with aliases) or "" when the value is not a known mode."""
     value = (text or "").strip().lower().replace('-', '_')
-    value = CONDITION_MATCH_ALIASES.get(value, value)
-    return value if value in CONDITION_MATCHES else ""
+    value = CONDITION_MODE_ALIASES.get(value, value)
+    return value if value in CONDITION_MODES else ""
 
 
 def split_case_flag(text: str) -> tuple[str, bool]:
@@ -210,7 +210,7 @@ def evaluate_conditions(config: dict | None, variables: dict[str, str]) -> tuple
     if not conditions:
         return True, ""
 
-    match_mode = canonical_match_mode(str((config or {}).get('conditions_match') or '')) or CONDITION_MATCH_ALL
+    match_mode = canonical_condition_mode(str((config or {}).get('conditions_mode') or '')) or CONDITION_MODE_ALL
     results = []
     for condition in conditions:
         variable, operator, value, case_sensitive = normalize_condition(condition)
@@ -224,7 +224,7 @@ def evaluate_conditions(config: dict | None, variables: dict[str, str]) -> tuple
         met, error = _test_condition(operator, variables.get(variable) or "", value, case_sensitive)
         results.append((met, error or ("" if met else f"{label} did not match")))
 
-    if match_mode == CONDITION_MATCH_ANY:
+    if match_mode == CONDITION_MODE_ANY:
         if any(met for met, _ in results):
             return True, ""
         reasons = "; ".join(reason for met, reason in results if not met)

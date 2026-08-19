@@ -95,8 +95,8 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.set_trigger(app, channel, config_name, match.group("trigger"), match.group("expression"), user, thread_ts)
     elif patterns.CLEAR_CONDITIONS_PATTERN.match(command_text):
         await setters.clear_conditions(app, channel, config_name, user, thread_ts)
-    elif (match := patterns.SET_CONDITIONS_MATCH_PATTERN.match(command_text)):
-        await setters.set_conditions_match(app, channel, config_name, match.group("mode"), user, thread_ts)
+    elif (match := patterns.SET_CONDITION_MODE_PATTERN.match(command_text)):
+        await setters.set_conditions_mode(app, channel, config_name, match.group("mode"), user, thread_ts)
     elif (match := patterns.ADD_CONDITION_PATTERN.match(command_text)):
         await setters.add_condition(app, channel, config_name, match.group("spec"), user, thread_ts)
     elif (match := patterns.SET_ACTION_PATTERN.match(command_text)):
