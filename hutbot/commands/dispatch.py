@@ -21,7 +21,11 @@ from . import info
 
 async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, config_name: str, user, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> bool:
     """Parses and executes a command, returns True if a command was matched."""
-    if (match := (patterns.TEST_WITH_MESSAGE_PATTERN if allow_test_message else patterns.TEST_PATTERN).match(command_text)):
+    # A bare `/hutbot` — or a lone @mention, whose text is stripped to nothing before it
+    # gets here — is someone looking for the command list, not a typo to scold.
+    if not command_text.strip():
+        await messaging.send_help_message(app, channel, user, thread_ts)
+    elif (match := (patterns.TEST_WITH_MESSAGE_PATTERN if allow_test_message else patterns.TEST_PATTERN).match(command_text)):
         test_message = match.group("message") if allow_test_message and match.groupdict().get("message") is not None else ""
         await setters.test_reply_message(app, opsgenie_token, channel, config_name, user, test_message, command_ts, thread_ts)
     elif (match := patterns.SET_WAIT_TIME_PATTERN.match(command_text)):
@@ -162,6 +166,8 @@ async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: st
 async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> None:
     text = text.replace(f"<@{state.bot_user_id}>", "").strip()
     log_debug(channel, f"Received command for channel #{channel.name}: {text}")
+    # Replies quote this back, so a mention and a slash command read the same way.
+    state.current_command.set(f"{state.slash_command} {text}".strip())
     command_ts = command_ts or thread_ts
 
     async def run(command_text: str, config_name: str) -> bool:

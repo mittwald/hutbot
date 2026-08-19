@@ -712,3 +712,39 @@ async def test_a_typo_does_not_create_a_config():
 
     assert configs["alarms"]["wait_time"] == 300
     assert sorted(configs) == ["alarms", "default"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["", "   ", "\n", "  \n  "])
+async def test_a_bare_command_prints_the_help(text):
+    """`/hutbot` with nothing after it is someone looking for the command list."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.messaging.send_message') as send:
+        await process_command(app, text, channel, user)
+    assert "Here's what I can do" in sent_messages(send)
+    assert "Huh?" not in sent_messages(send)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["<@U0BOT>", "<@U0BOT> ", "  <@U0BOT>  "])
+async def test_a_lone_mention_prints_the_help(text):
+    """A mention with no command reduces to empty text once the bot id is stripped."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    hutbot.state.bot_user_id = "U0BOT"
+    with patch('hutbot.messaging.send_message') as send:
+        await process_command(app, text, channel, user, allow_test_message=True)
+    assert "Here's what I can do" in sent_messages(send)
+
+
+@pytest.mark.asyncio
+async def test_real_nonsense_still_gets_a_hint_not_the_whole_help():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "wat is this", channel, user)
+    assert "Huh?" in send.call_args.args[3]

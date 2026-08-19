@@ -12,7 +12,8 @@ from . import datetimefmt
 from . import slackcache
 from . import actions
 from . import persistence
-from .constants import SCHEDULER_INTERVAL, TRIGGER_CRON
+from .conditionutil import snapshot_conditions
+from .constants import CONDITION_MODE_ALL, SCHEDULER_INTERVAL, TRIGGER_CRON
 from .models import ScheduledReply
 
 try:
@@ -26,7 +27,10 @@ def format_minutes(seconds: float) -> str:
     return f"{minutes} min" if minutes == 1 else f"{minutes} mins"
 
 
-async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None, original_wait_time: float | None = None) -> None:
+async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None, original_wait_time: float | None = None, conditions_snapshot: dict | None = None) -> None:
+    # Captured before the wait so an edit during it cannot retroactively cancel this
+    # reminder; a restored reply brings its original snapshot along.
+    frozen_conditions = conditions_snapshot if conditions_snapshot is not None else snapshot_conditions(config)
     opsgenie_enabled = config.get('opsgenie')
     wait_time = config.get('wait_time')
     scheduled_message_key = (channel.id, ts, config_name)
@@ -51,7 +55,10 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: di
         # Single unified send path: the reply (and any configured action/buttons)
         # goes through the action engine. The message context lets the reply thread
         # on the original message and reuse its template variables.
-        posted = await actions.run_action(app, opsgenie_token, channel, config, config_name, context={
+        # Everything except the conditions is read live, so a changed message or action
+        # still applies; the conditions are the ones this reply was scheduled with.
+        run_config = {**config, **frozen_conditions}
+        posted = await actions.run_action(app, opsgenie_token, channel, run_config, config_name, context={
             'user': user,
             'text': text,
             'ts': ts,
@@ -148,8 +155,14 @@ async def restore_scheduled_replies(app: AsyncApp, opsgenie_token: str) -> None:
         remaining = max(0.0, (send_at - datetime.datetime.now()).total_seconds())
         # Written since the cache gained the field; older entries have no original.
         original_wait_time = entry.get('wait_time')
+        # Written since the cache gained the conditions snapshot; older entries fall back
+        # to the config as it is now, which is the best that can be reconstructed.
+        cached_conditions = (
+            {'conditions': entry['conditions'], 'conditions_mode': entry.get('conditions_mode') or CONDITION_MODE_ALL}
+            if isinstance(entry.get('conditions'), list) else None
+        )
         log(f"Restoring reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, due {send_at.isoformat(timespec='seconds')}.")
-        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining, original_wait_time=original_wait_time))
+        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining, original_wait_time=original_wait_time, conditions_snapshot=cached_conditions))
         state.scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
         restored += 1
     for key in invalid_keys:

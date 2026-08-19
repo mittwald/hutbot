@@ -40,7 +40,19 @@ def pack_message_chunks(parts: list[str], separator: str = "\n\n", limit: int = 
     return chunks
 
 
-async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "") -> None:
+def command_footer() -> str:
+    """`Response to command:` plus the command being answered, or "" outside a command.
+
+    Appended by `send_message` at the API boundary rather than by each of its ~120 callers.
+    """
+    command = state.current_command.get()
+    return f"\n\nResponse to command:\n```\n{command}\n```" if command else ""
+
+
+async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "", footer: bool = True) -> None:
+    """Reply to a command. `footer` is off for all but the last part of a chunked reply."""
+    if footer:
+        text += command_footer()
     log_debug(channel, f"Attempting to send message to #{channel.name}, user @{user.name}: {text.replace(chr(10), '\\n')}")
     retries = 3
     delay = 1
@@ -312,7 +324,9 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"Supported reply variables: {supported_template_variables}.\n\n"
         f"Supported condition operators: {supported_condition_operators}. "
         "Conditions are checked when the rule fires — for a `message` rule that is after the "
-        "reminder delay, so use `set pattern` to decide which messages start the timer at all."
+        "reminder delay, judged against the conditions as they were when the message arrived. "
+        "A condition that reads only the message or its sender is checked straight away, so no "
+        "reminder is queued when it already cannot pass."
     )
     # The command table alone is well past Slack's per-message limit, and Slack
     # splits an oversized message wherever it happens to land — which cuts the code
@@ -321,5 +335,6 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"*Commands{'' if index == 0 else ' (continued)'}:*\n```\n{chunk}\n```"
         for index, chunk in enumerate(pack_message_chunks(group_blocks, limit=SLACK_MESSAGE_CHARACTER_LIMIT - 200))
     ]
-    for message in [intro, *command_messages, outro]:
-        await send_message(app, channel, user, message, thread_ts)
+    messages = [intro, *command_messages, outro]
+    for index, message in enumerate(messages):
+        await send_message(app, channel, user, message, thread_ts, footer=index == len(messages) - 1)

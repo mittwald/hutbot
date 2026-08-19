@@ -1,13 +1,17 @@
+import copy
+
 from tests._common import *  # noqa: F401,F403
 
 from hutbot.conditionutil import (
     canonical_condition_mode,
+    conditions_ruled_out,
     canonical_operator,
     condition_variables,
     describe_condition,
     evaluate_conditions,
     normalize_condition,
     normalize_variable,
+    settled_condition_variables,
     split_case_flag,
 )
 
@@ -243,10 +247,13 @@ def test_one_broken_condition_does_not_block_the_others_under_any():
 
 # ----- description and variable collection -----
 
-def test_describe_condition():
-    assert describe_condition(_c("message", "contains", "urgent")) == '{{message}} contains "urgent"'
+def test_describe_condition_always_states_the_casing():
+    """Nobody should have to remember which way the default goes."""
+    assert describe_condition(_c("message", "contains", "urgent")) == '{{message}} contains "urgent" (case-insensitive)'
     assert describe_condition(_c("message", "contains", "urgent", True)) == '{{message}} contains "urgent" (case-sensitive)'
+    # `empty`/`not_empty` compare nothing, so there is no casing to report.
     assert describe_condition(_c("message", "not_empty")) == "{{message}} not_empty"
+    assert describe_condition(_c("message", "empty")) == "{{message}} empty"
     assert describe_condition({"variable": "", "operator": ""}) == "<invalid condition>"
 
 
@@ -279,7 +286,7 @@ async def test_add_condition_defaults_to_case_insensitive():
          patch('hutbot.messaging.send_message') as send:
         await process_command(app, "add condition message contains deploy", channel, user)
     assert channel.configs["default"]["conditions"][0]["case_sensitive"] is False
-    assert "case-sensitive" not in send.call_args.args[3]
+    assert "(case-insensitive)" in send.call_args.args[3]
 
 
 @pytest.mark.asyncio
@@ -446,3 +453,109 @@ async def test_migration_normalizes_conditions_and_drops_junk():
         {"variable": "message", "operator": "empty", "value": "", "case_sensitive": False},
     ]
     assert single["conditions_mode"] == CONDITION_MODE_ALL
+
+
+# ----- deciding early, when nothing can change before the reply fires -----
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conditions,mode,scheduled", [
+    # Nothing to decide.
+    ([], "all", True),
+    # Settled variables: judged straight away.
+    ([_c("message", "contains", "look")], "all", True),
+    ([_c("message", "contains", "zzz")], "all", False),
+    ([_c("team", "equals", "Platform")], "all", True),
+    ([_c("team", "equals", "Support")], "all", False),
+    ([_c("user_name", "contains", "Dave")], "all", True),
+    ([_c("user_name", "contains", "Nobody")], "all", False),
+    # A fire-time variable can only be judged when the reply fires.
+    ([_c("calendar_current_summary", "contains", "daily")], "all", True),
+    ([_c("opsgenie_current_user", "not_empty")], "all", True),
+    # `message_link` needs a Slack call, so it is deferred too.
+    ([_c("message_link", "not_empty")], "all", True),
+    # all: one settled failure settles the chain, whatever else is in it.
+    ([_c("message", "contains", "zzz"), _c("calendar_current_summary", "contains", "x")], "all", False),
+    # any: a deferred condition could still carry it, so nothing is decided early.
+    ([_c("message", "contains", "zzz"), _c("calendar_current_summary", "contains", "x")], "any", True),
+    # any: every condition settled and none match -> it can never pass.
+    ([_c("message", "contains", "zzz"), _c("team", "equals", "Support")], "any", False),
+    ([_c("message", "contains", "zzz"), _c("team", "equals", "Platform")], "any", True),
+])
+async def test_a_reply_is_only_queued_when_the_conditions_could_still_pass(conditions, mode, scheduled):
+    app = AsyncMock()
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": conditions, "conditions_mode": mode}
+    channel = Channel(id="C1", name="general", configs={"default": cfg})
+    hutbot.state.channel_config["C1"] = channel.configs
+    user = User("U1", "dave", "Dave Grieser", "Platform")
+    with patch('hutbot.scheduling.schedule_reply', new=AsyncMock()) as sched, \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
+        await hutbot.routing.handle_channel_message(app, "token", channel, user, "please look at this", "1.1")
+    assert (sched.call_count == 1) is scheduled
+
+
+@pytest.mark.asyncio
+async def test_deciding_early_never_touches_the_network():
+    """Nothing settled can reference a provider or the permalink, so none may be fetched."""
+    app = AsyncMock()
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": [_c("message", "contains", "zzz")]}
+    channel = Channel(id="C1", name="general", configs={"default": cfg})
+    hutbot.state.channel_config["C1"] = channel.configs
+    with patch('hutbot.scheduling.schedule_reply', new=AsyncMock()), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_message_permalink', new=AsyncMock()) as permalink, \
+         patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})) as opsgenie, \
+         patch('hutbot.calendarfeed.get_calendar_template_variables', new=AsyncMock(return_value={})) as calendar:
+        await hutbot.routing.handle_channel_message(
+            app, "token", channel, User("U1", "dave", "Dave", "Platform"), "please look", "1.1")
+    permalink.assert_not_awaited()
+    opsgenie.assert_not_awaited()
+    calendar.assert_not_awaited()
+
+
+def test_conditions_ruled_out_leaves_fire_time_conditions_alone():
+    config = {"conditions": [_c("calendar_current_summary", "contains", "daily")], "conditions_mode": "all"}
+    # No calendar variable resolved at all, and it still must not be ruled out.
+    assert conditions_ruled_out(config, {"message": "hi"}) == (False, "")
+
+
+def test_settled_condition_variables_excludes_fire_time_ones():
+    config = {"conditions": [
+        _c("message", "contains", "x"),
+        _c("calendar_current_summary", "contains", "y"),
+        _c("opsgenie_current_user", "not_empty"),
+        _c("message_link", "not_empty"),
+        _c("team", "equals", "Platform"),
+    ]}
+    assert settled_condition_variables(config) == {"message", "team"}
+
+
+# ----- how a condition is written out -----
+
+def test_replies_put_the_variable_in_a_code_span():
+    """`show config` prints inside a code fence, where backticks would be literal."""
+    condition = _c("message", "contains", "urgent")
+    assert describe_condition(condition) == '{{message}} contains "urgent" (case-insensitive)'
+    assert describe_condition(condition, code=True) == '`{{message}}` contains "urgent" (case-insensitive)'
+
+
+@pytest.mark.asyncio
+async def test_add_condition_reply_uses_a_code_span():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "add condition message contains deploy", channel, user)
+    assert '`{{message}}` contains "deploy" (case-insensitive)' in send.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_show_config_leaves_the_variable_bare_inside_the_fence():
+    app = AsyncMock()
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": [_c("message", "contains", "deploy")]}
+    channel = Channel(id="C1", name="general", configs={"default": cfg})
+    with patch('hutbot.messaging.send_message') as send:
+        await show_config(app, channel, User("U1", "dave", "Dave", "T"), "")
+    block = sent_messages(send).split("```")[1]
+    assert '{{message}} contains "deploy" (case-insensitive)' in block
+    assert '`{{message}}`' not in block

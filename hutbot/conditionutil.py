@@ -32,6 +32,7 @@ from .constants import (
     CONDITION_OPERATOR_ALIASES,
     CONDITION_OPERATORS,
     CONDITION_OPERATORS_WITHOUT_VALUE,
+    FIRE_TIME_TEMPLATE_VARIABLES,
     UNKNOWN_PLACEHOLDERS,
 )
 
@@ -138,16 +139,25 @@ def condition_variables(config: dict | None) -> set[str]:
     return variables
 
 
-def describe_condition(condition) -> str:
-    """`{{message}} contains "urgent" (case-sensitive)` — for `show config` and help."""
+def describe_condition(condition, code: bool = False) -> str:
+    """`{{message}} contains "urgent" (case-insensitive)` — for `show config` and replies.
+
+    `code` wraps the variable in backticks, for a chat reply. `show config` prints inside a
+    code fence, where backticks would show up literally, so it leaves them off.
+
+    The casing is always stated, so nobody has to remember which way the default goes. The
+    wording matches how `show config` already labels `set pattern`. Operators that read the
+    variable without comparing anything (`empty`, `not_empty`) say nothing, because for them
+    there is no casing to apply.
+    """
     variable, operator, value, case_sensitive = normalize_condition(condition)
     if not variable or not operator:
         return "<invalid condition>"
-    text = f"{{{{{variable}}}}} {operator}"
+    name = f"`{{{{{variable}}}}}`" if code else f"{{{{{variable}}}}}"
+    text = f"{name} {operator}"
     if operator not in CONDITION_OPERATORS_WITHOUT_VALUE:
         text += f' "{value}"'
-    if case_sensitive:
-        text += " (case-sensitive)"
+        text += " (case-sensitive)" if case_sensitive else " (case-insensitive)"
     return text
 
 
@@ -196,6 +206,86 @@ def _test_condition(operator: str, resolved: str, value: str, case_sensitive: bo
     return False, f"unknown operator `{operator}`"
 
 
+def snapshot_conditions(config: dict) -> dict:
+    """The condition chain as it stands, frozen for work that will run later.
+
+    A reminder can wait a day before its conditions are judged, and a buttoned message can
+    sit unpressed just as long. Reading the chain live at that point would let an edit made in
+    the meantime silently cancel work that was already committed to — so the chain travels
+    with the pending record, the same way a message's buttons are snapshotted when it is
+    posted.
+
+    Only the rules are frozen. What they are judged against (the calendar, who is on call, the
+    time) is still resolved when the work runs, which is the whole point of gating on it, and
+    every other setting stays live too.
+    """
+    return {
+        'conditions': [dict(c) for c in (config.get('conditions') or []) if isinstance(c, dict)],
+        'conditions_mode': config.get('conditions_mode') or CONDITION_MODE_ALL,
+    }
+
+
+def condition_needs_fire_time(condition) -> bool:
+    """Whether this condition reads something that is only known once the rule fires."""
+    variable, operator, _, _ = normalize_condition(condition)
+    return bool(operator) and variable in FIRE_TIME_TEMPLATE_VARIABLES
+
+
+def settled_condition_variables(config: dict | None) -> set[str]:
+    """The variables of the conditions that can already be judged when a message arrives."""
+    variables = set()
+    for condition in (config or {}).get('conditions') or []:
+        if condition_needs_fire_time(condition):
+            continue
+        variable, operator, _, _ = normalize_condition(condition)
+        if variable and operator:
+            variables.add(variable)
+    return variables
+
+
+def _judge(condition, variables: dict[str, str]) -> tuple[bool, str]:
+    """One condition against resolved variables: `(met, reason_when_not_met)`."""
+    variable, operator, value, case_sensitive = normalize_condition(condition)
+    label = describe_condition(condition, code=True)
+    if not variable or not operator:
+        return False, f"{label} is not a usable condition"
+    if variable not in variables:
+        return False, f"{label} refers to an unknown variable `{{{{{variable}}}}}`"
+    met, error = _test_condition(operator, variables.get(variable) or "", value, case_sensitive)
+    return met, error or ("" if met else f"{label} did not match")
+
+
+def conditions_ruled_out(config: dict | None, variables: dict[str, str]) -> tuple[bool, str]:
+    """Whether the chain already cannot pass, judging only the settled conditions.
+
+    Lets a message-triggered rule skip queueing a reminder that could never fire. Under
+    `all`, one settled condition failing settles the whole chain. Under `any`, a condition
+    still to be resolved at fire time could carry it, so nothing is decided while one exists.
+    """
+    conditions = (config or {}).get('conditions') or []
+    if not conditions:
+        return False, ""
+    settled = [c for c in conditions if not condition_needs_fire_time(c)]
+    if not settled:
+        return False, ""
+
+    mode = canonical_condition_mode(str((config or {}).get('conditions_mode') or '')) or CONDITION_MODE_ALL
+    if mode == CONDITION_MODE_ALL:
+        for condition in settled:
+            met, reason = _judge(condition, variables)
+            if not met:
+                return True, reason
+        return False, ""
+
+    if len(settled) != len(conditions):
+        return False, ""
+    results = [_judge(condition, variables) for condition in settled]
+    if any(met for met, _ in results):
+        return False, ""
+    reasons = "; ".join(reason for met, reason in results if not met)
+    return True, f"none of the conditions matched ({reasons})"
+
+
 def evaluate_conditions(config: dict | None, variables: dict[str, str]) -> tuple[bool, str]:
     """Whether a rule's conditions allow it to run, and why not when they do not.
 
@@ -211,18 +301,7 @@ def evaluate_conditions(config: dict | None, variables: dict[str, str]) -> tuple
         return True, ""
 
     match_mode = canonical_condition_mode(str((config or {}).get('conditions_mode') or '')) or CONDITION_MODE_ALL
-    results = []
-    for condition in conditions:
-        variable, operator, value, case_sensitive = normalize_condition(condition)
-        label = describe_condition(condition)
-        if not variable or not operator:
-            results.append((False, f"{label} is not a usable condition"))
-            continue
-        if variable not in variables:
-            results.append((False, f"{label} refers to an unknown variable `{{{{{variable}}}}}`"))
-            continue
-        met, error = _test_condition(operator, variables.get(variable) or "", value, case_sensitive)
-        results.append((met, error or ("" if met else f"{label} did not match")))
+    results = [_judge(condition, variables) for condition in conditions]
 
     if match_mode == CONDITION_MODE_ANY:
         if any(met for met, _ in results):

@@ -198,6 +198,28 @@ async def evaluate_conditions(app: AsyncApp, opsgenie_token: str, channel: Chann
     return met, reason, variables
 
 
+async def conditions_ruled_out_at_arrival(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> tuple[bool, str]:
+    """Whether a message rule's conditions already fail on what is known right now.
+
+    A message reminder can sit in the queue for up to a day before its conditions are judged.
+    When a condition reads something that cannot change in the meantime — the message, its
+    sender, their team — there is no reason to wait to find out it will not pass, so the
+    reminder is never queued at all.
+
+    Only settled conditions are consulted, and resolving them touches no network: nothing
+    here can reference OpsGenie, the calendar, or the permalink (see
+    `FIRE_TIME_TEMPLATE_VARIABLES`).
+    """
+    referenced = conditionutil.settled_condition_variables(config)
+    if not referenced:
+        return False, ""
+    # An empty permalink keeps this free of a Slack round-trip; `message_link` is a fire-time
+    # variable precisely so no settled condition can ask for it.
+    context = {**(context or {}), 'permalink': (context or {}).get('permalink') or ''}
+    variables = await _build_variables(app, opsgenie_token, channel, config, config_name, context, referenced)
+    return conditionutil.conditions_ruled_out(config, variables)
+
+
 async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None, _depth: int = 0) -> tuple[dict | None, str]:
     """`run_action`, plus why nothing was sent — so callers can report it.
 

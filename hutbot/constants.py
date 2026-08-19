@@ -299,6 +299,11 @@ CALENDAR_TEMPLATE_VARIABLES = {
 # Every variable that renders an instant and therefore accepts `fmt`/`tz`/`lc`
 # arguments. Both providers store their raw ISO value under `__<variable>_raw`.
 TEMPLATE_DATETIME_VARIABLES = OPSGENIE_DATETIME_TEMPLATE_VARIABLES | CALENDAR_DATETIME_TEMPLATE_VARIABLES
+# Variables whose value is not settled until a rule actually fires: the two providers that
+# have to be fetched, plus the permalink, which would cost a Slack call per message to
+# resolve early. Everything else follows from the message, its sender, and the config, so a
+# condition on it can be judged the moment the message arrives.
+FIRE_TIME_TEMPLATE_VARIABLES = OPSGENIE_TEMPLATE_VARIABLES | CALENDAR_TEMPLATE_VARIABLES | {"message_link"}
 # Formatted renderings of ``{{timestamp}}``: the triggering message's time, or the
 # time the rule ran when there is no message behind it. Like the OpsGenie date/time
 # variables they take `fmt`/`tz`/`lc` arguments.

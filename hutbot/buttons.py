@@ -15,6 +15,7 @@ from . import messaging
 from . import persistence
 from . import actions
 from .buttonutil import normalize_button, _find_button_index
+from .conditionutil import snapshot_conditions
 from .constants import (
     BUTTON_ACTION_ACK,
     BUTTON_ACTION_CONFIG,
@@ -83,6 +84,41 @@ def _escalation_kind(config: dict) -> tuple[str, str]:
     return ESCALATION_NONE, ''
 
 
+def _reachable_config_names(config: dict) -> set[str]:
+    """Every config a buttoned message could run — from its buttons or its escalation."""
+    names = set()
+    for button in config.get('buttons') or []:
+        action, value = normalize_button(button)
+        if action == BUTTON_ACTION_CONFIG and value:
+            names.add(value)
+    kind, target = _escalation_kind(config)
+    if kind == ESCALATION_CONFIG and target:
+        names.add(target)
+    return names
+
+
+def _target_conditions(def_channel_id: str, config: dict) -> dict:
+    """The conditions of each reachable config, frozen when the message is posted.
+
+    A buttoned message can sit unpressed for as long as a reminder waits, so the same rule
+    applies: editing a target config must not retroactively change what an already-posted
+    message does when someone finally presses. Stored with the record, so it survives a
+    restart alongside the button definitions.
+    """
+    channel_configs = state.channel_config.get(def_channel_id, {})
+    return {
+        name: snapshot_conditions(channel_configs[name])
+        for name in _reachable_config_names(config)
+        if name in channel_configs
+    }
+
+
+def _with_snapshotted_conditions(config: dict, target_conditions: dict | None, name: str) -> dict:
+    """A target config judged by the conditions captured when the message was posted."""
+    snapshot = (target_conditions or {}).get(name)
+    return {**config, **snapshot} if snapshot else config
+
+
 async def register_escalation(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, def_channel_id: str, config_name: str, config: dict, context: dict | None = None, posted_text: str = '') -> None:
     """Record a buttoned message so ack/delay/timeout can act on it later.
 
@@ -108,6 +144,8 @@ async def register_escalation(app: AsyncApp, opsgenie_token: str, posted_channel
         # message can be de-buttoned once handled.
         'buttons': [dict(b) for b in (config.get('buttons') or [])],
         'posted_text': posted_text,
+        # The conditions of the configs this message can run, frozen like the buttons above.
+        'target_conditions': _target_conditions(def_channel_id, config),
         'escalation_kind': kind,
         'escalation_target': target,
         'timeout': timeout,
@@ -146,7 +184,7 @@ async def _escalation_context(app: AsyncApp, entry: dict | None, posted_channel_
     }
 
 
-async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '') -> bool:
+async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '', target_conditions: dict | None = None) -> bool:
     """Run a button's action. Shared by a real press and an auto-press on timeout.
 
     Returns whether the action actually happened. The caller has already consumed the
@@ -168,6 +206,7 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, po
             return False
         # `run_action` already logs why it declined, and the note only needs to know that
         # it did — so this stays on the plain entry point the rest of the code uses.
+        target_config = _with_snapshotted_conditions(target_config, target_conditions, value)
         return bool(await actions.run_action(app, opsgenie_token, channel, target_config, value, context=run_context))
     elif action == BUTTON_ACTION_ACK:
         # Dismissing posts the ack text when there is one. The text is a template
@@ -200,13 +239,14 @@ async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> No
             return
         buttons = snapshot if snapshot is not None else (src_config or {}).get('buttons') or []
         log(f"No button pressed on message {message_ts}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
-        ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''))
+        ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''), entry.get('target_conditions'))
         await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), _ran_config(buttons[idx]), ok))
     elif kind == ESCALATION_CONFIG:
         target = entry.get('escalation_target', '')
         target_config = channel.configs.get(target)
         if target_config:
             log(f"Escalating message {message_ts}: running '{target}' in #{channel.name}.")
+            target_config = _with_snapshotted_conditions(target_config, entry.get('target_conditions'), target)
             posted = await actions.run_action(app, opsgenie_token, channel, target_config, target, context=run_context)
             await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), target, bool(posted)))
         else:
@@ -435,5 +475,5 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
     # run is attributed to the *original* author (presser=None ⇒ orig.user_id), matching
     # the timeout-escalation path; the presser is only used for the log line above.
     run_context = await _escalation_context(app, entry, posted_channel_id, message_ts)
-    ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name)
+    ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name, entry.get('target_conditions'))
     await _strip_buttons(app, posted_channel_id, message_ts, entry, _press_note(buttons[index], presser, ok))

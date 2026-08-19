@@ -361,3 +361,143 @@ async def test_cron_falls_back_to_server_local_time():
         assert hutbot.scheduling._cron_due("0 9 * * *", config, last, now) is True
     with patch('hutbot.datetimefmt.get_local_timezone', return_value=ZoneInfo("Europe/Berlin")):
         assert hutbot.scheduling._cron_due("0 9 * * *", config, last, now) is False
+
+
+# ----- a scheduled reply keeps the conditions it was scheduled with -----
+
+def _cond(value):
+    return {"variable": "message", "operator": "contains", "value": value, "case_sensitive": False}
+
+
+async def _run_pending_reply(cfg, edit=None, snapshot=None):
+    """Schedule a reply, optionally edit the config mid-wait, return the posted text."""
+    app = AsyncMock()
+    channel = _mk_channel({"default": cfg})
+    if snapshot is None:
+        snapshot = hutbot.conditionutil.snapshot_conditions(cfg)
+    with patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})) as post:
+        task = asyncio.create_task(hutbot.scheduling.schedule_reply(
+            app, "token", channel, cfg, "default", user_dave(), "please look at this", "1.1",
+            wait_time_override=0.2, conditions_snapshot=snapshot))
+        await asyncio.sleep(0.02)
+        if edit:
+            edit(cfg)
+        await task
+        return post.await_count, (post.await_args.args[2] if post.await_count else None)
+
+
+def user_dave():
+    return User("U1", "dave", "Dave", "T")
+
+
+@pytest.mark.asyncio
+async def test_conditions_added_while_a_reply_is_pending_do_not_cancel_it():
+    """The reported bug: editing conditions retroactively killed a queued reminder.
+
+    A reminder can wait up to a day. Tightening the rule afterwards must not silently
+    swallow a reminder that was already queued for a specific message.
+    """
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": "Anybody?"}
+    count, text = await _run_pending_reply(cfg, edit=lambda c: c.update(conditions=[_cond("never-matches")]))
+    assert count == 1 and text == "Anybody?"
+
+
+@pytest.mark.asyncio
+async def test_conditions_changed_while_a_reply_is_pending_do_not_apply_to_it():
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": "Anybody?", "conditions": [_cond("look")]}
+    count, _ = await _run_pending_reply(cfg, edit=lambda c: c.update(conditions=[_cond("never-matches")]))
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_snapshotted_conditions_are_still_enforced():
+    """Freezing them must not mean ignoring them."""
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": "Anybody?", "conditions": [_cond("never-matches")]}
+    count, _ = await _run_pending_reply(cfg)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_only_the_conditions_freeze_other_settings_stay_live():
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": "Anybody?"}
+    count, text = await _run_pending_reply(cfg, edit=lambda c: c.update(reply_message="Edited while pending"))
+    assert count == 1 and text == "Edited while pending"
+
+
+@pytest.mark.asyncio
+async def test_a_frozen_condition_is_still_judged_against_the_current_world():
+    """The rules freeze; what they are judged against does not.
+
+    A calendar condition scheduled at 09:00 and fired at 09:30 has to ask the calendar about
+    09:30 — otherwise gating on it would be pointless.
+    """
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": "Anybody?"}
+    cfg["conditions"] = [{"variable": "calendar_current_summary", "operator": "contains",
+                          "value": "standup", "case_sensitive": False}]
+    cfg["calendar_url"] = "https://cal.example.com/a/b/c.ics"
+
+    # No matching event when it fires -> blocked.
+    with patch('hutbot.calendarfeed.get_calendar_template_variables',
+               new=AsyncMock(return_value={"calendar_current_summary": "Something else"})):
+        count, _ = await _run_pending_reply(cfg)
+    assert count == 0
+
+    # A matching event when it fires -> sent, same frozen condition.
+    with patch('hutbot.calendarfeed.get_calendar_template_variables',
+               new=AsyncMock(return_value={"calendar_current_summary": "Daily standup"})):
+        count, _ = await _run_pending_reply(cfg)
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_persisted_reply_carries_its_conditions_snapshot():
+    """So a restart mid-wait restores the reply under the rules it was scheduled with."""
+    app = AsyncMock()
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": [_cond("look")], "conditions_mode": "any"}
+    channel = _mk_channel({"default": cfg})
+    hutbot.state.channel_config["C12345"] = channel.configs
+    with patch('hutbot.scheduling.schedule_reply', new=AsyncMock()), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
+        await hutbot.routing.handle_channel_message(app, "token", channel, user_dave(), "please look", "1.1")
+    entry = hutbot.state._scheduled_replies_cache[("C12345", "1.1", "default")]
+    assert entry["conditions"] == [_cond("look")]
+    assert entry["conditions_mode"] == "any"
+
+
+@pytest.mark.asyncio
+async def test_restore_passes_the_cached_snapshot_not_the_live_config():
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": [_cond("edited-since")]}
+    hutbot.state.channel_config["C12345"] = {"default": cfg}
+    cached = {
+        "channel_id": "C12345", "ts": "1.1", "config_name": "default", "user_id": "U1",
+        "text": "please look", "send_at": datetime.datetime.now().isoformat(), "wait_time": 1800,
+        "conditions": [_cond("as-scheduled")], "conditions_mode": "all",
+    }
+    hutbot.state._scheduled_replies_cache[("C12345", "1.1", "default")] = cached
+    app = AsyncMock()
+    with patch('hutbot.scheduling.schedule_reply', new=AsyncMock()) as sched, \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=_mk_channel({"default": cfg}))), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=user_dave())), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
+        await hutbot.scheduling.restore_scheduled_replies(app, "token")
+    assert sched.call_args.kwargs["conditions_snapshot"] == {"conditions": [_cond("as-scheduled")], "conditions_mode": "all"}
+
+
+@pytest.mark.asyncio
+async def test_restore_falls_back_to_the_live_config_for_a_legacy_entry():
+    """Entries written before the cache carried a snapshot still restore."""
+    cfg = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": [_cond("live")]}
+    hutbot.state.channel_config["C12345"] = {"default": cfg}
+    hutbot.state._scheduled_replies_cache[("C12345", "1.1", "default")] = {
+        "channel_id": "C12345", "ts": "1.1", "config_name": "default", "user_id": "U1",
+        "text": "please look", "send_at": datetime.datetime.now().isoformat(),
+    }
+    app = AsyncMock()
+    with patch('hutbot.scheduling.schedule_reply', new=AsyncMock()) as sched, \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=_mk_channel({"default": cfg}))), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=user_dave())), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
+        await hutbot.scheduling.restore_scheduled_replies(app, "token")
+    assert sched.call_args.kwargs["conditions_snapshot"] is None

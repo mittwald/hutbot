@@ -298,7 +298,7 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
         condition_lines = []
         for condition in conditions:
             single_met, _ = conditionutil.evaluate_conditions({'conditions': [condition]}, template_variables)
-            condition_lines.append(f"{':white_check_mark:' if single_met else ':x:'} {conditionutil.describe_condition(condition)}")
+            condition_lines.append(f"{':white_check_mark:' if single_met else ':x:'} {conditionutil.describe_condition(condition, code=True)}")
         verdict = "would run" if met else f"would *not* run — {reason}"
         header = "all must apply" if mode == CONDITION_MODE_ALL else "any may apply"
         sections.append(f"*Conditions* ({header}):\n" + "\n".join(condition_lines) + f"\n\nThis rule {verdict}.")
@@ -440,7 +440,7 @@ async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, use
     config = _ensure_config(channel, config_name)
     existing = list(config.get('conditions') or [])
     if any(conditionutil.normalize_condition(c) == conditionutil.normalize_condition(condition) for c in existing):
-        await messaging.send_message(app, channel, user, f"Condition {conditionutil.describe_condition(condition)} is already set in configuration `{config_name}`.", thread_ts)
+        await messaging.send_message(app, channel, user, f"Condition {conditionutil.describe_condition(condition, code=True)} is already set in configuration `{config_name}`.", thread_ts)
         return
     # Copy-on-write so we never mutate a shared default list.
     config['conditions'] = existing + [condition]
@@ -451,7 +451,7 @@ async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, use
     note = ""
     if total > 1:
         note = f" ({'all' if mode == CONDITION_MODE_ALL else 'any'} of {total} conditions must apply)"
-    await messaging.send_message(app, channel, user, f"Added condition {conditionutil.describe_condition(condition)} in configuration `{config_name}`{note}.", thread_ts)
+    await messaging.send_message(app, channel, user, f"Added condition {conditionutil.describe_condition(condition, code=True)} in configuration `{config_name}`{note}.", thread_ts)
 
 
 async def clear_conditions(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:

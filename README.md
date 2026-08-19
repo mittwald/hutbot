@@ -2,6 +2,9 @@
 
 The hutbot is a simple Slack bot that monitors messages in a channel and automatically replies in a thread if no one reacts or responds to the message within a configurable time period (by default 30 minutes). The bot reminds channel members that a message has gone unanswered. Scheduled reminders are cancelled when someone replies in the thread or reacts in a way that does not match the config criteria that caused that reminder to be scheduled, or when the original message is deleted. Users can adjust both the waiting time and the reminder message directly within the channel, including `{{variable}}` placeholders in the reminder text.
 
+Run `/hutbot` (or just `@hutbot` on its own) with nothing after it to get the full command
+list; `/hutbot help` does the same.
+
 Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. `{{date}}`, `{{time}}`, and `{{datetime}}` render the triggering message's time — or the time the rule ran, for `cron`/`manual` triggers and for `test`/`run` — using the config's date/time format, timezone, and locale, and take the same `fmt`/`tz`/`lc` arguments as the Opsgenie date/time variables below. `{{timestamp}}` is the raw Slack timestamp of the same instant. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
 
 - `{{opsgenie_schedule_name}}` for the configured schedule
@@ -119,8 +122,18 @@ existing configs keep working unchanged.
     `add condition message contains "deploy to prod" 1`.
   - A condition that cannot be judged (an unknown variable, an invalid regex) counts as **not
     met**, whatever its operator — so a broken config stays quiet instead of paging someone.
-  - Conditions are evaluated **when the rule fires**. For a `message` rule that is *after* the
-    reminder delay, so use `set pattern` to decide which messages start the timer at all.
+  - Conditions are evaluated **when the rule fires** — for a `message` rule that is *after*
+    the reminder delay, so a calendar or on-call condition is asked about the moment the
+    reply would go out, not the moment the message arrived.
+  - Pending work is judged against **the conditions that were in place when it was
+    committed to** — when the message arrived for a reminder, and when the message was
+    posted for a button or an escalation. Editing a rule never retroactively changes what an
+    already-queued reminder or an already-posted buttoned message does, the same way a press
+    is resolved against the buttons that were posted. Both snapshots survive a restart.
+  - A condition that reads only settled values — the message, its sender, their team — is
+    checked **immediately**, and no reminder is queued at all when it already cannot pass.
+    Conditions on `{{calendar_*}}`, `{{opsgenie_*}}` or `{{message_link}}` can only be
+    answered later, so those always wait.
   - `/hutbot [config] test` prints each condition with ✓/✗ and whether the rule would run.
 
   ```bash

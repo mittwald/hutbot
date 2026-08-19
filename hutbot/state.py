@@ -11,6 +11,7 @@ never ``from .state import channel_config`` — several of these names are *rebo
 
 import asyncio
 import datetime
+from contextvars import ContextVar
 
 from . import __version__
 from .constants import DEFAULT_BOT_NAME, DEFAULT_SLASH_COMMAND, normalize_version
@@ -74,6 +75,11 @@ _calendar_cache: dict[str, tuple[float, object, str]] = {}
 # Serializes web-UI config writes (mutate channel_config + save_configuration).
 _config_write_lock = asyncio.Lock()
 
+# The command currently being handled, already normalized to its `/hutbot …` form, so every
+# reply can say what it was answering. Per-task (a ContextVar, not a global) because several
+# commands can be in flight at once.
+current_command: ContextVar[str] = ContextVar('current_command', default='')
+
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
@@ -91,6 +97,7 @@ def reset() -> None:
     team_cache.clear()
     _channel_members_cache.clear()
     _calendar_cache.clear()
+    current_command.set('')
     _scheduler_last_check = None
     bot_user_id = None
     bot_user_name = DEFAULT_BOT_NAME

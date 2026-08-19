@@ -1,4 +1,7 @@
 import copy
+import datetime
+import tempfile
+import os
 
 from tests._common import *  # noqa: F401,F403
 
@@ -946,3 +949,152 @@ async def test_an_ack_button_still_posts_when_the_source_config_is_gated():
 
     assert post.await_count == 1 and post.await_args.args[2] == "On it"
     assert app.client.chat_update.await_args.kwargs["text"] == "Incident — on it?\n\n---\n_Dave Grieser: [I've got it]_"
+
+
+# ----- a buttoned message keeps the conditions its targets had when it was posted -----
+
+_AS_POSTED = [{"variable": "message", "operator": "contains", "value": "as-posted", "case_sensitive": False}]
+_NEVER = [{"variable": "message", "operator": "contains", "value": "zzz-never", "case_sensitive": False}]
+
+
+def _buttoned_channel(alarm_conditions):
+    src = {**copy.deepcopy(DEFAULT_CONFIG),
+           "buttons": [{"label": "Page", "action": "config", "value": "alarm"}],
+           "escalation_timeout": 300, "escalation_kind": "config", "escalation_target": "alarm"}
+    alarm = {**copy.deepcopy(DEFAULT_CONFIG), "trigger": "manual", "reply_message": "PAGING",
+             "conditions": copy.deepcopy(alarm_conditions)}
+    channel = _mk_channel({"src": src, "alarm": alarm})
+    hutbot.state.channel_config["C12345"] = channel.configs
+    return channel, src, alarm
+
+
+async def _post_and_press(alarm_conditions, edit_alarm=None, escalate=False):
+    """Post a buttoned message, optionally edit the target, then press or let it escalate."""
+    app = AsyncMock()
+    channel, src, alarm = _buttoned_channel(alarm_conditions)
+    dave = User("U1", "dave", "Dave Grieser", "T")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=dave)), \
+         patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R1"})) as post:
+        await hutbot.buttons.register_escalation(
+            app, "token", "C12345", "R1", "C12345", "src", src,
+            {"user": dave, "text": "please look as-posted", "ts": "1.1"}, posted_text="Incident?")
+        task = hutbot.state.pending_buttons[("C12345", "R1")].get("task")
+        if task:
+            task.cancel()
+        if edit_alarm:
+            edit_alarm(alarm)
+        post.reset_mock()
+        if escalate:
+            await hutbot.buttons._escalation_task(app, "token", ("C12345", "R1"), 0)
+        else:
+            body = {"channel": {"id": "C12345"}, "container": {"message_ts": "R1"}, "user": {"id": "U1"}}
+            action = {"value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+            await hutbot.buttons.handle_button_press(app, "token", body, action)
+        note = app.client.chat_update.await_args.kwargs["text"].split("---\n")[-1]
+        return post.await_count, note
+
+
+@pytest.mark.asyncio
+async def test_register_escalation_snapshots_its_targets_conditions():
+    app = AsyncMock()
+    channel, src, _ = _buttoned_channel(_AS_POSTED)
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
+        await hutbot.buttons.register_escalation(app, "token", "C12345", "R1", "C12345", "src", src, {}, posted_text="Incident?")
+    entry = hutbot.state._button_states_cache[("C12345", "R1")]
+    assert entry["target_conditions"] == {"alarm": {"conditions": _AS_POSTED, "conditions_mode": "all"}}
+
+
+@pytest.mark.asyncio
+async def test_editing_a_target_after_posting_does_not_change_what_a_press_does():
+    """The record is already committed; an edit must not retroactively veto the press."""
+    ran, note = await _post_and_press(_AS_POSTED, edit_alarm=lambda a: a.update(conditions=copy.deepcopy(_NEVER)))
+    assert ran == 1
+    assert note == "_Dave Grieser: [Page] ▶︎ alarm_"
+
+
+@pytest.mark.asyncio
+async def test_editing_a_target_after_posting_does_not_change_what_an_escalation_does():
+    ran, note = await _post_and_press(_AS_POSTED, edit_alarm=lambda a: a.update(conditions=copy.deepcopy(_NEVER)), escalate=True)
+    assert ran == 1
+    assert note == "_⌛︎ 5m ▶︎ alarm_"
+
+
+@pytest.mark.asyncio
+async def test_the_snapshotted_target_conditions_are_still_enforced():
+    """Freezing them must not mean ignoring them."""
+    ran, note = await _post_and_press(_NEVER)
+    assert ran == 0
+    assert note == "_Dave Grieser: [Page] ▶︎ alarm (skipped)_"
+
+
+@pytest.mark.asyncio
+async def test_the_target_snapshot_survives_a_restart():
+    """It rides along in `button_states.json` with the button definitions."""
+    app = AsyncMock()
+    channel, src, alarm = _buttoned_channel(_AS_POSTED)
+    dave = User("U1", "dave", "Dave", "T")
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+        cache_file = handle.name
+    try:
+        with patch('hutbot.constants.BUTTON_CACHE_FILE', cache_file):
+            await hutbot.buttons.register_escalation(
+                app, "token", "C12345", "R1", "C12345", "src", src,
+                {"user": dave, "text": "please look as-posted", "ts": "1.1"}, posted_text="Incident?")
+            hutbot.state.pending_buttons[("C12345", "R1")]["task"].cancel()
+            # The escalation came due while the process was down.
+            hutbot.state._button_states_cache[("C12345", "R1")]["run_at"] = (
+                datetime.datetime.now() - datetime.timedelta(seconds=1)).isoformat()
+            await hutbot.persistence.flush_button_cache()
+
+            # Restart with nothing in memory and the target edited in the meantime.
+            hutbot.state.pending_buttons.clear()
+            hutbot.state._button_states_cache.clear()
+            alarm["conditions"] = copy.deepcopy(_NEVER)
+            await hutbot.persistence.load_button_cache()
+            assert hutbot.state._button_states_cache[("C12345", "R1")]["target_conditions"] == {
+                "alarm": {"conditions": _AS_POSTED, "conditions_mode": "all"}}
+
+            with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+                 patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+                 patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=dave)), \
+                 patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
+                 patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})) as post:
+                await hutbot.buttons.restore_pending_buttons(app, "token")
+                await hutbot.state.pending_buttons[("C12345", "R1")]["task"]
+            assert post.await_count == 1, "the escalation used the edited chain, not the posted one"
+    finally:
+        os.unlink(cache_file)
+
+
+@pytest.mark.asyncio
+async def test_a_delay_keeps_the_target_snapshot():
+    """Postponing must not drop the frozen chain and fall back to the live config."""
+    app = AsyncMock()
+    channel, src, _ = _buttoned_channel(_AS_POSTED)
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
+        await hutbot.buttons.register_escalation(app, "token", "C12345", "R1", "C12345", "src", src, {}, posted_text="Incident?")
+        hutbot.state.pending_buttons[("C12345", "R1")]["task"].cancel()
+        await hutbot.buttons.reschedule_escalation(app, "token", "C12345", "R1", 10)
+        hutbot.state.pending_buttons[("C12345", "R1")]["task"].cancel()
+    assert hutbot.state._button_states_cache[("C12345", "R1")]["target_conditions"] == {
+        "alarm": {"conditions": _AS_POSTED, "conditions_mode": "all"}}
+
+
+def test_reachable_config_names_covers_buttons_and_the_escalation():
+    config = {
+        "buttons": [{"label": "Page", "action": "config", "value": "alarm"},
+                    {"label": "Ok", "action": "ack", "value": "done"},
+                    {"label": "Later", "action": "delay", "value": "10"},
+                    {"label": "Other", "action": "config", "value": "second"}],
+        "escalation_timeout": 300, "escalation_kind": "config", "escalation_target": "third",
+    }
+    assert hutbot.buttons._reachable_config_names(config) == {"alarm", "second", "third"}
+    # An escalation that auto-presses a button adds nothing of its own.
+    assert hutbot.buttons._reachable_config_names(
+        {"buttons": [{"label": "Page", "action": "config", "value": "alarm"}],
+         "escalation_timeout": 300, "escalation_kind": "button", "escalation_target": "Page"}) == {"alarm"}

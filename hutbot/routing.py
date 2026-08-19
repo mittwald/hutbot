@@ -12,6 +12,8 @@ from employee_list import log
 from . import state
 from . import slackcache
 from . import datetimefmt
+from . import actions
+from . import conditionutil
 from . import scheduling
 from . import persistence
 from . import buttons
@@ -168,7 +170,20 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel, us
                 log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because it does not match pattern '{pattern}'.")
                 continue
 
-        task = asyncio.create_task(scheduling.schedule_reply(app, opsgenie_token, channel, config, config_name, user, text, ts))
+        # Conditions are judged when the reply fires, but the ones that read only the
+        # message and its sender cannot change before then — so if those already rule it
+        # out, skip queueing a reminder for up to a day that could never be sent.
+        ruled_out, condition_reason = await actions.conditions_ruled_out_at_arrival(
+            app, opsgenie_token, channel, config, config_name,
+            {'user': user, 'text': text, 'ts': ts, 'channel_id': channel.id, 'permalink': ''})
+        if ruled_out:
+            log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because {condition_reason}.")
+            continue
+
+        # One snapshot for the live task and the persisted entry, so a restart after a
+        # config edit restores the reply with the conditions it was scheduled under.
+        conditions_snapshot = conditionutil.snapshot_conditions(config)
+        task = asyncio.create_task(scheduling.schedule_reply(app, opsgenie_token, channel, config, config_name, user, text, ts, conditions_snapshot=conditions_snapshot))
         state.scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
         send_at = datetime.datetime.now() + datetime.timedelta(seconds=config['wait_time'])
         state._scheduled_replies_cache[(channel.id, ts, config_name)] = {
@@ -181,6 +196,7 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel, us
             # The wait this reply was scheduled with; the config may change before
             # it fires, and a restore logs both.
             'wait_time': config['wait_time'],
+            **conditions_snapshot,
         }
         await persistence.flush_replies_cache()
 

@@ -300,5 +300,6 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
     footer = "_Only the settings that apply to each configuration are shown._"
     # Slack splits an oversized message wherever the break lands, cutting the code
     # fence in half, so a channel with several configs is sent as several messages.
-    for chunk in messaging.pack_message_chunks([message, *config_sections, footer]):
-        await messaging.send_message(app, channel, user, chunk, thread_ts)
+    chunks = messaging.pack_message_chunks([message, *config_sections, footer])
+    for index, chunk in enumerate(chunks):
+        await messaging.send_message(app, channel, user, chunk, thread_ts, footer=index == len(chunks) - 1)

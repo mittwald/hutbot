@@ -73,9 +73,10 @@ async def test_handle_channel_message_multi_config_and_pattern():
 
         assert mock_schedule_reply.call_count == 2
 
+        snapshot = {"conditions": [], "conditions_mode": "all"}
         calls = [
-            call(app, "token", channel, configs["config1"], "config1", user, "This is an alarm and a report", "1234.1"),
-            call(app, "token", channel, configs["config2"], "config2", user, "This is an alarm and a report", "1234.1")
+            call(app, "token", channel, configs["config1"], "config1", user, "This is an alarm and a report", "1234.1", conditions_snapshot=snapshot),
+            call(app, "token", channel, configs["config2"], "config2", user, "This is an alarm and a report", "1234.1", conditions_snapshot=snapshot)
         ]
         mock_schedule_reply.assert_has_calls(calls, any_order=True)
 
@@ -126,7 +127,8 @@ async def test_handle_channel_message_ignores_bot_for_configs_without_include_bo
         hutbot.state.scheduled_messages.clear()
         await handle_channel_message(app, "token", channel, bot_user, "Alarm", "1234.1", actor_is_bot=True)
 
-    mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["bots"], "bots", bot_user, "Alarm", "1234.1")
+    mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["bots"], "bots", bot_user, "Alarm", "1234.1",
+                                                conditions_snapshot={"conditions": [], "conditions_mode": "all"})
 
 
 
@@ -172,7 +174,8 @@ async def test_route_message_schedules_bot_attachment_text_when_bots_included():
         hutbot.state._scheduled_replies_cache.clear()
         await route_message(app, "token", event)
 
-    mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["alerts"], "alerts", bot_user, extracted_text, "1234.1")
+    mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["alerts"], "alerts", bot_user, extracted_text, "1234.1",
+                                                conditions_snapshot={"conditions": [], "conditions_mode": "all"})
     assert hutbot.state._scheduled_replies_cache[(channel.id, "1234.1", "alerts")]["text"] == extracted_text
 
 
