@@ -24,10 +24,12 @@ from employee_list import log, log_error
 
 from . import datetimefmt
 from . import messaging
+from . import slackcache
 from . import state
 from .constants import (
     CALENDAR_DATETIME_TEMPLATE_VARIABLES,
     CALENDAR_LIST_TEMPLATE_VARIABLES,
+    UNKNOWN_USER_ONCALL_PLACEHOLDER,
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
     UNKNOWN_CALENDAR_PLACEHOLDER,
     UNKNOWN_PERIOD_PLACEHOLDER,
@@ -422,6 +424,8 @@ def get_calendar_placeholder_variables(config: dict | None = None) -> dict[str, 
         for field in ("summary", "location", "description", "organizer", "organizer_email",
                       "attendee_count", "uid", "status"):
             variables[f"calendar_{prefix}_{field}"] = UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
+        # Same placeholder OpsGenie uses for an unmapped person, so `empty` works on it.
+        variables[f"calendar_{prefix}_organizer_user"] = UNKNOWN_USER_ONCALL_PLACEHOLDER
     for variable in CALENDAR_LIST_TEMPLATE_VARIABLES:
         variables[variable] = UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
         # The items a condition matches against, beside the joined form a message renders.
@@ -459,8 +463,54 @@ def fill_calendar_event_variables(variables: dict[str, str], config: dict | None
             variables[variable] = datetimefmt.format_template_datetime(value, variable, config)
 
 
-async def get_calendar_template_variables(config: dict, now: datetime.datetime | None = None) -> dict[str, str]:
-    """The `{{calendar_*}}` values for one config. Takes no `app`: no Slack lookups."""
+async def _mention(app, email: str) -> str:
+    """`<@U…>` for an address, or "" when it maps to no Slack user."""
+    # `is None` rather than a truth test: an app object should never be asked for its
+    # truthiness (on an AsyncMock that even orphans a coroutine).
+    if app is None or not email:
+        return ""
+    try:
+        user = await slackcache.get_user_by_email(app, email)
+    except Exception as e:
+        log_error(f"Failed to map the calendar address '{email}' to a Slack user:", e)
+        return ""
+    return f"<@{user.id}>" if user and user.id else ""
+
+
+async def _mentions(app, emails: list) -> list[str]:
+    """Only the addresses that mapped, so a mention list never contains a dud.
+
+    That means the list can be shorter than the address list it came from — an attendee with
+    no Slack account simply is not in it.
+    """
+    resolved = []
+    for email in emails or []:
+        mention = await _mention(app, email)
+        if mention:
+            resolved.append(mention)
+    return resolved
+
+
+async def fill_calendar_user_variables(app, variables: dict, prefix: str, event: CalendarEvent | None) -> None:
+    """Map the event's addresses to Slack users, for @mentions and DM targets."""
+    if event is None:
+        return
+    organizer = await _mention(app, event.organizer_email)
+    if organizer:
+        variables[f"calendar_{prefix}_organizer_user"] = organizer
+    for field, emails in (("attendee_users", event.attendee_emails),
+                          ("other_attendee_users", event.other_attendee_emails)):
+        variable = f"calendar_{prefix}_{field}"
+        mentions = await _mentions(app, emails)
+        variables[variable] = ", ".join(mentions)
+        variables[f"__{variable}_items"] = mentions
+
+
+async def get_calendar_template_variables(app, config: dict, now: datetime.datetime | None = None) -> dict[str, str]:
+    """The `{{calendar_*}}` values for one config.
+
+    `app` is only used to map attendee addresses to Slack users; pass ``None`` to skip that.
+    """
     variables = get_calendar_placeholder_variables(config)
     url = (config or {}).get('calendar_url', '').strip()
     if not url:
@@ -469,8 +519,9 @@ async def get_calendar_template_variables(config: dict, now: datetime.datetime |
     context = await resolve_calendar_context(config, now)
     if context.name:
         variables["calendar_name"] = context.name
-    fill_calendar_event_variables(variables, config, "current", context.current)
-    fill_calendar_event_variables(variables, config, "next", context.next)
+    for prefix, event in (("current", context.current), ("next", context.next)):
+        fill_calendar_event_variables(variables, config, prefix, event)
+        await fill_calendar_user_variables(app, variables, prefix, event)
     return variables
 
 

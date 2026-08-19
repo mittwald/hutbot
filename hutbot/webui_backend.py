@@ -277,8 +277,11 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
         cfg['action'] = action
 
     action_target = str(get('action_target') or "").strip()
+    target_template_error = templating.validate_template_expressions(action_target) if "{{" in action_target else ""
     if action in (ACTION_DM_USER, ACTION_GROUP_DM, ACTION_POST_CHANNEL) and not action_target:
         errors['action_target'] = "This action needs a target (a user, user group, or channel)."
+    elif target_template_error:
+        errors['action_target'] = target_template_error
     else:
         cfg['action_target'] = action_target
 

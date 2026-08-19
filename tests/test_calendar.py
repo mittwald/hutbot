@@ -378,7 +378,7 @@ def test_placeholder_calendar_name_is_redacted():
 @pytest.mark.asyncio
 async def test_template_variables_from_a_fetched_feed(cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))):
-        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, NOW)
     assert variables["calendar_name"] == "Team Kalender"
     assert variables["calendar_current_summary"] == "Composerbereitstellung"
     assert variables["calendar_current_location"] == "Mario Kart"
@@ -391,12 +391,13 @@ async def test_template_variables_from_a_fetched_feed(cal):
 
 @pytest.mark.asyncio
 async def test_template_variables_without_a_url_are_all_placeholders():
-    variables = await hutbot.calendarfeed.get_calendar_template_variables({})
+    variables = await hutbot.calendarfeed.get_calendar_template_variables(None, {})
     assert variables["calendar_current_summary"] == "<no-event>"
 
 
 @pytest.mark.asyncio
 async def test_calendar_datetime_variables_accept_format_arguments(live_cal):
+    _seed_user_caches()
     config = {**CONFIG, "reply_message": "{{calendar_current_start_datetime(fmt='02.01.2006 15:04', tz='Europe/Berlin', lc=de-DE)}}"}
     app = AsyncMock()
     channel = _mk_channel({"cal": config})
@@ -716,6 +717,7 @@ async def test_calendar_is_not_fetched_when_no_variable_references_it():
 
 @pytest.mark.asyncio
 async def test_calendar_is_fetched_once_when_a_variable_references_it(live_cal):
+    _seed_user_caches()
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "Now: {{calendar_current_summary}}"}
     channel = _mk_channel({"cal": config})
@@ -729,6 +731,7 @@ async def test_calendar_is_fetched_once_when_a_variable_references_it(live_cal):
 @pytest.mark.asyncio
 async def test_calendar_condition_gates_a_rule(live_cal):
     """The whole point: a rule that only runs while a matching event is on."""
+    _seed_user_caches()
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "standup time"}
     config["conditions"] = [{"variable": "calendar_current_summary", "operator": "contains",
@@ -745,6 +748,7 @@ async def test_calendar_condition_gates_a_rule(live_cal):
 
 @pytest.mark.asyncio
 async def test_calendar_condition_blocks_when_no_event_matches(live_cal):
+    _seed_user_caches()
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "standup time"}
     config["conditions"] = [{"variable": "calendar_current_summary", "operator": "contains",
@@ -850,7 +854,7 @@ def test_an_attendee_with_an_x500_address_keeps_its_name_but_has_no_email():
 @pytest.mark.asyncio
 async def test_attendee_variables_render_as_a_comma_separated_list(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
-        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
     assert variables["calendar_current_attendees"] == "Notfallhotline, Nico Engelbrecht"
     assert variables["calendar_current_attendee_emails"] == "N@mittwald.de, N.Engelbrecht@mittwald.de"
     assert variables["calendar_current_attendee_count"] == "2"
@@ -864,7 +868,7 @@ async def test_attendee_variables_render_as_a_comma_separated_list(oncall_cal):
 async def test_conditions_on_attendee_emails(oncall_cal):
     """A list operator matches any entry; its `not_` form requires that none does."""
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
-        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
 
     def judge(operator, value, variable="calendar_current_attendee_emails", case_sensitive=False):
         condition = {"variable": variable, "operator": operator, "value": value,
@@ -974,7 +978,7 @@ def test_an_organizer_who_is_not_an_attendee_changes_nothing():
 @pytest.mark.asyncio
 async def test_other_attendee_variables_and_conditions(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
-        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
     assert variables["calendar_current_other_attendees"] == "Nico Engelbrecht"
     assert variables["calendar_current_other_attendee_emails"] == "N.Engelbrecht@mittwald.de"
     assert variables["__calendar_current_other_attendee_emails_items"] == ["N.Engelbrecht@mittwald.de"]
@@ -995,7 +999,7 @@ async def test_other_attendee_variables_and_conditions(oncall_cal):
 @pytest.mark.asyncio
 async def test_nth_picks_one_attendee(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
-        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
 
     def render(template):
         return hutbot.templating.render_reply_message_template(template, variables, CONFIG)
@@ -1015,7 +1019,7 @@ async def test_nth_picks_one_attendee(oncall_cal):
 async def test_nth_beyond_the_end_renders_empty(oncall_cal):
     """A message written for two attendees still reads when there is only one."""
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
-        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
 
     def render(template):
         return hutbot.templating.render_reply_message_template(template, variables, CONFIG)
@@ -1037,7 +1041,7 @@ def test_nth_on_an_empty_list_renders_empty():
 @pytest.mark.asyncio
 async def test_nth_reads_a_real_on_call_message(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
-        variables = await hutbot.calendarfeed.get_calendar_template_variables(CONFIG, ONCALL_NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
     template = ("On call: {{calendar_current_other_attendees(nth=1)}} "
                 "<{{calendar_current_other_attendee_emails(nth=1)}}> until {{calendar_current_end_time}}")
     assert hutbot.templating.render_reply_message_template(template, variables, CONFIG) == (
@@ -1079,3 +1083,162 @@ async def test_set_message_accepts_and_rejects_nth():
         assert channel.configs["default"]["reply_message"] == "On call: {{calendar_current_other_attendees(nth=1)}}"
         await process_command(app, "set message Nope: {{calendar_current_attendees(nth=0)}}", channel, user)
     assert "counts from 1" in send.call_args.args[3]
+
+
+# ----- mapping calendar addresses to Slack users -----
+
+# The hotline mailbox has no Slack account; Nico does. Graceful failure means the first is
+# simply absent from the mapped lists rather than breaking the rule.
+_SLACK_DIRECTORY = {"n.engelbrecht@mittwald.de": User("U777", "nico", "Nico Engelbrecht", "Platform")}
+
+
+async def _fake_by_email(app, email):
+    return _SLACK_DIRECTORY.get((email or "").lower(), User(None, email, "", "T"))
+
+
+async def _fake_by_id(app, user_id):
+    return User(user_id, "nico", "Nico Engelbrecht", "Platform")
+
+
+async def _no_such_usergroup(app, handle):
+    return Usergroup(None, handle, handle)
+
+
+def _live_oncall_ics(now=None):
+    """The rota entry, anchored to the caller's clock so it is always the current event."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    fmt = "%Y%m%dT%H%M%SZ"
+    return "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-CALNAME:N@mittwald.de",
+        "BEGIN:VEVENT", "UID:oncall-live", f"DTSTAMP:{now.strftime(fmt)}",
+        f"DTSTART:{(now - datetime.timedelta(hours=1)).strftime(fmt)}",
+        f"DTEND:{(now + datetime.timedelta(hours=13)).strftime(fmt)}",
+        "SUMMARY:Rufbereitschaft - Engelbracht\\, Nico", "LOCATION:Rufbereitschaft",
+        'ORGANIZER;CN="Notfallhotline":invalid:nomail',
+        'ATTENDEE;CN="Notfallhotline";ROLE=REQ-PARTICIPANT:mailto:N@mittwald.de',
+        'ATTENDEE;CN="Nico Engelbrecht";ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:N.Engelbrecht@mittwald.de',
+        "STATUS:CONFIRMED", "END:VEVENT", "END:VCALENDAR",
+    ])
+
+
+@pytest.fixture
+def live_oncall_cal():
+    return icalendar.Calendar.from_ical(_live_oncall_ics())
+
+
+@pytest.mark.asyncio
+async def test_attendee_addresses_are_mapped_to_slack_users(oncall_cal):
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))), \
+         patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(AsyncMock(), CONFIG, ONCALL_NOW)
+    assert variables["calendar_current_attendee_users"] == "<@U777>"
+    assert variables["calendar_current_other_attendee_users"] == "<@U777>"
+    assert variables["__calendar_current_attendee_users_items"] == ["<@U777>"]
+    # The organizer maps to nobody, so it keeps the placeholder rather than inventing a user.
+    assert variables["calendar_current_organizer_user"] == "<no-user-set>"
+
+
+@pytest.mark.asyncio
+async def test_an_unmapped_address_is_left_out_rather_than_breaking_the_list(oncall_cal):
+    """Two attendees, one Slack account: the mapped list is shorter, not broken."""
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))), \
+         patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(AsyncMock(), CONFIG, ONCALL_NOW)
+    assert len(variables["__calendar_current_attendee_emails_items"]) == 2
+    assert len(variables["__calendar_current_attendee_users_items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_app_means_no_mapping_attempted(oncall_cal):
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
+    assert variables["calendar_current_attendee_users"] == ""
+    assert variables["calendar_current_organizer_user"] == "<no-user-set>"
+
+
+@pytest.mark.asyncio
+async def test_a_mapped_user_variable_mentions_the_person(oncall_cal):
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))), \
+         patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(AsyncMock(), CONFIG, ONCALL_NOW)
+    rendered = hutbot.templating.render_reply_message_template(
+        "On call: {{calendar_current_other_attendee_users(nth=1)}}", variables, CONFIG)
+    assert rendered == "On call: <@U777>"
+
+
+# ----- sending to people named by a variable -----
+
+async def _run_with_target(action, target, calendar):
+    app = AsyncMock()
+    app.client.conversations_open = AsyncMock(return_value={"channel": {"id": "D1"}})
+    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "ping",
+              "action": action, "action_target": target}
+    channel = _mk_channel({"oncall": config})
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(calendar, "N@mittwald.de"))), \
+         patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email), \
+         patch('hutbot.slackcache.get_user_by_id', new=_fake_by_id), \
+         patch('hutbot.slackcache.get_usergroup_by_handle', new=_no_such_usergroup), \
+         patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "D1", "ts": "1"})):
+        posted, reason = await hutbot.actions.run_action_with_reason(
+            app, "token", channel, config, "oncall", context={"channel_id": "C12345"})
+    opened = (app.client.conversations_open.await_args.kwargs.get("users")
+              if app.client.conversations_open.await_count else None)
+    return bool(posted), opened
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,target", [
+    ("dm_user", "{{calendar_current_other_attendee_users(nth=1)}}"),
+    ("dm_user", "{{calendar_current_other_attendee_emails(nth=1)}}"),
+    ("group_dm", "{{calendar_current_attendee_users}}"),
+    ("group_dm", "{{calendar_current_attendee_emails}}"),
+    ("group_dm", "{{calendar_current_other_attendee_emails}}"),
+])
+async def test_a_variable_target_reaches_the_person_on_call(action, target, live_oncall_cal):
+    posted, opened = await _run_with_target(action, target, live_oncall_cal)
+    assert posted is True
+    assert opened == ["U777"]
+
+
+@pytest.mark.asyncio
+async def test_a_variable_target_that_maps_to_nobody_sends_nothing(live_oncall_cal):
+    """The organizer has no Slack account, so its placeholder must not be looked up."""
+    posted, opened = await _run_with_target("dm_user", "{{calendar_current_organizer_user}}", live_oncall_cal)
+    assert posted is False and opened is None
+
+
+@pytest.mark.asyncio
+async def test_a_variable_target_with_no_event_sends_nothing(live_oncall_cal):
+    posted, opened = await _run_with_target(
+        "dm_user", "{{calendar_next_other_attendee_users(nth=1)}}", live_oncall_cal)
+    assert posted is False and opened is None
+
+
+@pytest.mark.asyncio
+async def test_a_plain_target_still_works(live_oncall_cal):
+    posted, opened = await _run_with_target("dm_user", "<@U777>", live_oncall_cal)
+    assert posted is True and opened == ["U777"]
+
+
+@pytest.mark.asyncio
+async def test_group_dm_still_treats_a_bare_handle_as_a_usergroup(live_oncall_cal):
+    """An unresolvable handle must report itself, not quietly match a same-named user."""
+    posted, opened = await _run_with_target("group_dm", "@sre", live_oncall_cal)
+    assert posted is False and opened is None
+
+
+@pytest.mark.asyncio
+async def test_a_templated_target_is_accepted_and_validated():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        # A channel target that is a template cannot be checked now, so it is taken on trust.
+        await process_command(app, "set action dm-user {{calendar_current_other_attendee_users(nth=1)}}", channel, user)
+        assert channel.configs["default"]["action_target"] == "{{calendar_current_other_attendee_users(nth=1)}}"
+        # The template itself is still checked.
+        await process_command(app, "set action dm-user {{nope_not_a_variable}}", channel, user)
+    assert "Invalid *target*" in send.call_args.args[3]
+    assert channel.configs["default"]["action_target"] == "{{calendar_current_other_attendee_users(nth=1)}}"

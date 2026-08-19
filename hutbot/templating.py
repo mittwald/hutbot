@@ -263,7 +263,7 @@ async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, cha
     # actually references one of their variables (see `actions._build_variables`).
     calendar_template_variables = {}
     if include_calendar:
-        calendar_template_variables = await calendarfeed.get_calendar_template_variables(config)
+        calendar_template_variables = await calendarfeed.get_calendar_template_variables(app, config)
 
     # `test`, `run`, and schedule/manual triggers have no message behind them, so
     # there is no Slack timestamp to report. Stand in the current time instead of

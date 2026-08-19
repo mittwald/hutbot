@@ -518,6 +518,13 @@ async def set_action(app: AsyncApp, channel, config_name: str, value: str, targe
     elif not target:
         await messaging.send_message(app, channel, user, f"Action `{value}` needs a target: `{state.slash_command} {config_name} set action {value.replace('_', '-')} {ACTION_TARGET_HINTS[value]}`.", thread_ts)
         return
+    elif actions.target_is_templated(target):
+        # A target built from variables only names someone once the rule runs, so what can be
+        # checked now is the template itself.
+        template_error = templating.validate_template_expressions(target)
+        if template_error:
+            await messaging.send_message(app, channel, user, f"Invalid *target*: {template_error}", thread_ts)
+            return
     elif value == ACTION_POST_CHANNEL and not targets.parse_channel_ref(target):
         await messaging.send_message(app, channel, user, f"Invalid *target* `{target}` for action `{value}`. Pick the channel from Slack's autocomplete so it becomes a link, or pass its `C…` id.", thread_ts)
         return

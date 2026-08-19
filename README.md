@@ -6,6 +6,11 @@ Run `/hutbot` (or just `@hutbot` on its own) with nothing after it to get the fu
 list; `/hutbot help` does the same. Any argument may be quoted with `"`, `'` or backticks —
 handy since Slack renders a backticked value as code as you type it.
 
+A reply message can `@mention` someone by **email address** — `@d.grieser@example.com` — which
+is resolved to their Slack user when the message is set, alongside the existing `@username`
+form. An address that maps to nobody is reported there and then rather than rendering wrongly
+later.
+
 Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. `{{date}}`, `{{time}}`, and `{{datetime}}` render the triggering message's time — or the time the rule ran, for `cron`/`manual` triggers and for `test`/`run` — using the config's date/time format, timezone, and locale, and take the same `fmt`/`tz`/`lc` arguments as the Opsgenie date/time variables below. `{{timestamp}}` is the raw Slack timestamp of the same instant. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
 
 - `{{opsgenie_schedule_name}}` for the configured schedule
@@ -30,6 +35,12 @@ Hutbot reads the ICS feed and exposes the event running **now** and the **next**
   same lists **without the organizer**. A shared mailbox invites itself to the events it
   organizes, so on a rota entry organized by *Notfallhotline* these leave just the person
   actually on call
+
+- `{{calendar_current_organizer_user}}`, `{{calendar_current_attendee_users}}` and
+  `{{calendar_current_other_attendee_users}}` — the same people **mapped to Slack users**, as
+  `<@U…>` mentions. Addresses are matched against the Slack directory with the bot's usual
+  user mapping; anyone without a Slack account is simply left out, so a mapped list can be
+  shorter than the address list it came from
 
 A list variable renders comma-separated, and `nth` picks one entry out of it, counting from 1:
 `{{calendar_current_attendees(nth=2)}}` is the second (`n=2` is the short spelling). Asking for
@@ -179,9 +190,16 @@ existing configs keep working unchanged.
   `reply_message` (with the usual `{{variables}}`) as the body. The recipient is part of the same
   command, so a config can never be left with an action that has nowhere to send.
   - `set action reply` — post in the rule's channel. Takes no target.
-  - `set action dm-user <@user>` — DM a single user.
+  - `set action dm-user <@user>` — DM a single user. The target may be a mention, an email
+    address, or a `{{variable}}`, so `set action dm-user {{calendar_current_other_attendee_users(nth=1)}}`
+    DMs whoever the calendar says is on call right now.
   - `set action group-dm <@usergroup>` — open one group DM (mpim) with all members of a Slack user
-    group and post once (Slack caps a group DM at 8 members).
+    group and post once (Slack caps a group DM at 8 members). The target may instead name the
+    people directly — mentions or addresses, including from a variable:
+    `set action group-dm {{calendar_current_attendee_users}}`. A bare handle like `@sre` is
+    always taken as a user group, so nothing changes for existing configs.
+  - A target built from variables is resolved when the rule runs, and the rule simply does not
+    send when it resolves to nobody.
   - `set action post-channel <#channel>` — post to another channel. Pick the channel from Slack's
     autocomplete so it arrives as a link, or pass its `C…` id.
 

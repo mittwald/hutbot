@@ -7,7 +7,7 @@ from slack_bolt.async_app import AsyncApp
 from employee_list import normalize_id
 
 from . import slackcache
-from .constants import ID_PATTERN
+from .constants import ID_PATTERN, UNKNOWN_PLACEHOLDERS
 from .models import Usergroup, User
 
 
@@ -38,6 +38,39 @@ async def resolve_user_target(app: AsyncApp, target: str) -> User | None:
     if '@' in target:
         return await slackcache.get_user_by_email(app, target)
     return await slackcache.get_user_by_name(app, normalize_id(target))
+
+
+async def resolve_user_targets(app: AsyncApp, target: str) -> list[User]:
+    """Every user a target names, in order and without duplicates.
+
+    A target can name several people once it comes from a variable —
+    `{{calendar_current_other_attendee_users}}` renders as `<@U1>, <@U2>`. Each entry may be a
+    mention, a raw id, an address, or a name; entries that resolve to nobody are dropped, so a
+    calendar listing someone without a Slack account still works.
+    """
+    users: list[User] = []
+    seen = set()
+    for token in re.split(r'[,;\s]+', (target or "").strip()):
+        # A variable that resolved to nobody renders its placeholder (`<no-user-set>`), and an
+        # unknown one renders as itself. Neither names a person, so neither is worth a lookup.
+        if not token or token in UNKNOWN_PLACEHOLDERS or token.startswith('{{'):
+            continue
+        user = await resolve_user_target(app, token)
+        if user and user.id and user.id not in seen:
+            seen.add(user.id)
+            users.append(user)
+    return users
+
+
+# A `<@U…>` mention or an email address names a person; a bare handle like `@sre` names a
+# user group. Used to decide which of the two a `group_dm` target is, so an unresolvable
+# handle keeps reporting itself instead of quietly matching a same-named user.
+_NAMES_PEOPLE_PATTERN = re.compile(r'<@[A-Z0-9]+|[\w.%+-]+@[\w.-]+\.\w+')
+
+
+def names_people(target: str) -> bool:
+    """Whether a target spells out individual users rather than a user group."""
+    return bool(_NAMES_PEOPLE_PATTERN.search(target or ""))
 
 
 async def resolve_usergroup_target(app: AsyncApp, target: str) -> Usergroup | None:

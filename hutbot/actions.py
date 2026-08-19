@@ -42,6 +42,7 @@ def _referenced_variables(config: dict) -> set[str]:
         conditionutil.condition_variables(config)
         | templating.find_template_variables(config.get('reply_message') or '')
         | templating.find_template_variables(config.get('opsgenie_message') or '')
+        | templating.find_template_variables(config.get('action_target') or '')
     )
 
 
@@ -119,12 +120,17 @@ async def action_reply(app: AsyncApp, channel: Channel, config: dict, context: d
     return await messaging._post_message(app, channel.id, text, blocks, thread_ts)
 
 
-async def action_dm_user(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None) -> dict | None:
-    target = (config.get('action_target') or '').strip()
-    user = await targets.resolve_user_target(app, target)
-    if not user or not user.id:
+async def action_dm_user(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None, target: str | None = None) -> dict | None:
+    target = (target if target is not None else config.get('action_target') or '').strip()
+    users = await targets.resolve_user_targets(app, target)
+    if not users:
         log_error(f"Action dm_user: cannot resolve user target '{target}'.")
         return None
+    if len(users) > 1:
+        # A variable can name several people; `dm_user` is one conversation with one of them,
+        # and `group_dm` is the action for reaching all of them.
+        log_warning(f"Action dm_user: target '{target}' names {len(users)} users; DMing @{users[0].name}. Use `group-dm` to reach all of them.")
+    user = users[0]
     try:
         opened = await app.client.conversations_open(users=[user.id])
         dm_id = opened['channel']['id']
@@ -134,16 +140,24 @@ async def action_dm_user(app: AsyncApp, channel: Channel, config: dict, text: st
     return await messaging._post_message(app, dm_id, text, blocks)
 
 
-async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None) -> dict | None:
-    target = (config.get('action_target') or '').strip()
-    usergroup = await targets.resolve_usergroup_target(app, target)
-    if not usergroup or not usergroup.id:
-        log_error(f"Action group_dm: cannot resolve usergroup '{target}'.")
-        return None
-    members = await slackcache.get_usergroup_members(app, usergroup.id)
-    if not members:
-        log_error(f"Action group_dm: usergroup '{target}' has no members.")
-        return None
+async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None, target: str | None = None) -> dict | None:
+    target = (target if target is not None else config.get('action_target') or '').strip()
+    if targets.names_people(target):
+        # Mentions or addresses, so the target names the people directly — which is how
+        # `{{calendar_current_other_attendee_users}}` arrives once it is rendered.
+        members = [user.id for user in await targets.resolve_user_targets(app, target)]
+        if not members:
+            log_error(f"Action group_dm: cannot resolve any user from '{target}'.")
+            return None
+    else:
+        usergroup = await targets.resolve_usergroup_target(app, target)
+        if not usergroup or not usergroup.id:
+            log_error(f"Action group_dm: cannot resolve usergroup '{target}'.")
+            return None
+        members = await slackcache.get_usergroup_members(app, usergroup.id)
+        if not members:
+            log_error(f"Action group_dm: usergroup '{target}' has no members.")
+            return None
     # Slack multi-person DMs allow at most 8 members besides the bot.
     if len(members) > 8:
         log_warning(f"Action group_dm: usergroup '{target}' has {len(members)} members; using first 8 (Slack mpim limit).")
@@ -157,8 +171,8 @@ async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: s
     return await messaging._post_message(app, mpim_id, text, blocks)
 
 
-async def action_post_channel(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None) -> dict | None:
-    target = (config.get('action_target') or '').strip()
+async def action_post_channel(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None, target: str | None = None) -> dict | None:
+    target = (target if target is not None else config.get('action_target') or '').strip()
     channel_id = targets.parse_channel_ref(target)
     if not channel_id:
         log_error(f"Action post_channel: invalid channel target '{target}'.")
@@ -166,11 +180,19 @@ async def action_post_channel(app: AsyncApp, channel: Channel, config: dict, tex
     return await messaging._post_message(app, channel_id, text, blocks)
 
 
+def target_is_templated(target: str) -> bool:
+    """Whether a target has to be rendered before it names anything."""
+    return "{{" in (target or "")
+
+
 def missing_target_reason(config: dict) -> str:
     """Why this config's action cannot run, or "" when it can.
 
     Every action except `reply` sends somewhere else and needs a target; a config
     that has none would only fail deep inside the action with an empty target.
+
+    A target holding `{{variables}}` can only be checked once it is rendered, so it is taken
+    on trust here and reported by the action itself if it resolves to nobody.
     """
     action = config.get('action', ACTION_REPLY)
     if action not in ACTIONS_REQUIRING_TARGET:
@@ -178,6 +200,8 @@ def missing_target_reason(config: dict) -> str:
     target = (config.get('action_target') or '').strip()
     if not target:
         return f"action `{action}` has no target"
+    if target_is_templated(target):
+        return ""
     if action == ACTION_POST_CHANNEL and not targets.parse_channel_ref(target):
         return f"action `{action}` target `{target}` is not a channel"
     return ""
@@ -242,16 +266,21 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
         return None, condition_reason
 
     text = await render_action_text(app, opsgenie_token, channel, config, config_name, context, variables)
+    # A target may name people through variables — `{{calendar_current_other_attendee_users}}`
+    # for whoever is on call — so it is rendered with the same namespace as the message.
+    target = config.get('action_target') or ''
+    if target_is_templated(target):
+        target = await render_template_text(app, opsgenie_token, channel, config, config_name, context, target, variables)
     blocks = buttons.build_button_blocks(config, channel.id, config_name, text)
     log(f"Running action '{action}' for config '{config_name}' in #{channel.name}.")
     if action == ACTION_REPLY:
         posted = await action_reply(app, channel, config, context, text, blocks)
     elif action == ACTION_DM_USER:
-        posted = await action_dm_user(app, channel, config, text, blocks)
+        posted = await action_dm_user(app, channel, config, text, blocks, target)
     elif action == ACTION_GROUP_DM:
-        posted = await action_group_dm(app, channel, config, text, blocks)
+        posted = await action_group_dm(app, channel, config, text, blocks, target)
     elif action == ACTION_POST_CHANNEL:
-        posted = await action_post_channel(app, channel, config, text, blocks)
+        posted = await action_post_channel(app, channel, config, text, blocks, target)
     else:
         log_error(f"Unknown action '{action}' for config '{config_name}'.")
         return None, f"unknown action `{action}`"

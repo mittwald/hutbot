@@ -10,7 +10,7 @@ from employee_list import log_error, log_warning
 
 from . import slackcache
 from . import state
-from .constants import CONDITION_OPERATORS_ORDERED, ID_PATTERN, MENTION_PATTERN, SUPPORTED_TEMPLATE_VARIABLES
+from .constants import CONDITION_OPERATORS_ORDERED, EMAIL_MENTION_PATTERN, ID_PATTERN, MENTION_PATTERN, SUPPORTED_TEMPLATE_VARIABLES
 from .models import Channel, User
 from .textutil import log_debug
 
@@ -176,6 +176,20 @@ async def clean_slack_text(app: AsyncApp, channel: Channel, text: str):
 
 
 async def process_mentions(app: AsyncApp, message: str) -> tuple[bool, str, str]:
+    """Turn `@username` and `@someone@example.com` into Slack mentions.
+
+    Addresses are resolved first: `MENTION_PATTERN` stops at the second `@`, so it would
+    otherwise take the local part of an address for a username. An unknown mention is
+    reported here, at `set message` time, rather than rendering wrongly later.
+    """
+    for email_match in EMAIL_MENTION_PATTERN.findall(message):
+        user = await slackcache.get_user_by_email(app, email_match)
+        if user.id:
+            message = message.replace(f"@{email_match}", f"<@{user.id}>")
+        else:
+            log_error(f"Invalid *reply message*: no Slack user for `{email_match}`")
+            return False, f"no Slack user for {email_match}", ""
+
     # Regular expression to find @username patterns
     matches = MENTION_PATTERN.findall(message)
     if matches:
@@ -323,26 +337,28 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"{mention} show config```\n"
         f"Displays all configurations for `#{channel.name}`."
     )
-    outro = (
+    # Kept as separate notes so they can be packed into as many messages as they need; the
+    # whole thing outgrew Slack's per-message limit once the calendar notes were added.
+    outro_notes = [
         "`[config]` is optional; omitted commands use `default`. The leading `set`/`add` is optional too. "
-        "Any value can be quoted with `\"`, `'` or a backtick.\n\n"
-        f"Supported reply variables: {supported_template_variables}.\n\n"
+        "Any value can be quoted with `\"`, `'` or a backtick.",
+        f"Supported reply variables: {supported_template_variables}.",
+        "You can `@mention` someone by email address (`@nico@example.com`) as well as by username, "
+        "and the calendar's `{{..._users}}` variables are its people already mapped to Slack "
+        "mentions — usable in a message or as a `dm-user`/`group-dm` target.",
         "A variable holding a list — the calendar's `{{attendees}}`/`{{attendee_emails}}` and their "
         "`other_*` forms, which leave out the organizer — renders comma-separated, and `nth` picks "
         "one entry counting from 1: `{{calendar_current_attendees(nth=2)}}` is the second. Asking "
-        "for an entry that is not there renders empty.\n\n"
-        f"Supported condition operators: {supported_condition_operators}. "
-        "A few variables hold a list — the calendar's `{{calendar_current_attendees}}`, its "
-        "`{{calendar_current_attendee_emails}}`, and the `other_*` forms of both, which leave out "
-        "the organizer. An operator on one of those matches when *any* "
-        "entry matches, and its `not_` form when *none* does, so "
-        "`add condition calendar_current_attendee_emails equals nico@example.com` asks whether "
-        "that person is on the event. "
+        "for an entry that is not there renders empty.",
+        f"Supported condition operators: {supported_condition_operators}. An operator on a list "
+        "variable matches when *any* entry matches, and its `not_` form when *none* does, so "
+        "`add condition calendar_current_attendee_emails equals nico@example.com` asks whether that "
+        "person is on the event.",
         "Conditions are checked when the rule fires — for a `message` rule that is after the "
         "reminder delay, judged against the conditions as they were when the message arrived. "
         "A condition that reads only the message or its sender is checked straight away, so no "
-        "reminder is queued when it already cannot pass."
-    )
+        "reminder is queued when it already cannot pass.",
+    ]
     # The command table alone is well past Slack's per-message limit, and Slack
     # splits an oversized message wherever it happens to land — which cuts the code
     # fence in half. Send it in chunks that each close their own fence.
@@ -350,6 +366,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"*Commands{'' if index == 0 else ' (continued)'}:*\n```\n{chunk}\n```"
         for index, chunk in enumerate(pack_message_chunks(group_blocks, limit=SLACK_MESSAGE_CHARACTER_LIMIT - 200))
     ]
-    messages = [intro, *command_messages, outro]
+    outro_messages = pack_message_chunks(outro_notes, limit=SLACK_MESSAGE_CHARACTER_LIMIT - 200)
+    messages = [intro, *command_messages, *outro_messages]
     for index, message in enumerate(messages):
         await send_message(app, channel, user, message, thread_ts, footer=index == len(messages) - 1)

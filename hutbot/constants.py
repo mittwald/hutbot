@@ -246,6 +246,10 @@ def normalize_slash_command(value: str) -> str:
 
 
 MENTION_PATTERN = re.compile(r'(?<![|<])@([a-z0-9-_.]+)(?!>)')
+# `@someone@example.com` in a message: an address is mapped to its Slack user the same way a
+# `@username` is. Tried before MENTION_PATTERN, whose character class stops at the second `@`
+# and would otherwise resolve the local part as a username.
+EMAIL_MENTION_PATTERN = re.compile(r'(?<![|<\w])@([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})(?![\w>])', re.IGNORECASE)
 ID_PATTERN = re.compile(r'<([#@!][a-zA-Z0-9^]+)([|]([^>]*))?>')
 TIME_HOUR_PATTERN = re.compile(r"^[0-9]{1,2}$")
 CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-_\.:/]+$")
@@ -297,7 +301,9 @@ CALENDAR_LIST_TEMPLATE_VARIABLES = {
     for period in ("current", "next")
     # `other_*` drops the organizer, which a shared mailbox invites itself to — so a rota
     # entry organized by "Notfallhotline" leaves just the person actually on call.
-    for field in ("attendees", "attendee_emails", "other_attendees", "other_attendee_emails")
+    # `*_users` are the addresses mapped to Slack users, ready to @mention or DM.
+    for field in ("attendees", "attendee_emails", "attendee_users",
+                  "other_attendees", "other_attendee_emails", "other_attendee_users")
 }
 LIST_TEMPLATE_VARIABLES = CALENDAR_LIST_TEMPLATE_VARIABLES
 CALENDAR_TEMPLATE_VARIABLES = {
@@ -306,7 +312,7 @@ CALENDAR_TEMPLATE_VARIABLES = {
         f"calendar_{period}_{field}"
         for period in ("current", "next")
         for field in ("summary", "location", "description", "organizer", "organizer_email",
-                      "attendee_count", "uid", "status")
+                      "organizer_user", "attendee_count", "uid", "status")
     ),
     *CALENDAR_LIST_TEMPLATE_VARIABLES,
     *CALENDAR_DATETIME_TEMPLATE_VARIABLES,
