@@ -124,6 +124,8 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.delete_config(app, channel, name, user, thread_ts)
     elif patterns.SHOW_CONFIG_PATTERN.match(command_text):
         await info.show_config(app, channel, user, thread_ts)
+    elif patterns.HELP_VARIABLES_PATTERN.match(command_text):
+        await messaging.send_variables_help_message(app, channel, user, thread_ts)
     elif patterns.HELP_PATTERN.match(command_text):
         await messaging.send_help_message(app, channel, user, thread_ts)
     elif patterns.WHATSNEW_PATTERN.match(command_text):

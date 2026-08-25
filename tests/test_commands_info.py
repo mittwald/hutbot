@@ -357,6 +357,54 @@ async def test_help_is_split_into_messages_slack_will_not_cut_apart():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["help variables", "help variable", "help vars", "help var",
+                                     "help placeholders", "help template-variables"])
+async def test_help_variables_documents_every_variable_and_operator(command):
+    import hutbot
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, command, channel, user)
+
+    texts = [call.args[3] for call in mock_send_message.call_args_list]
+    sent_message = sent_messages(mock_send_message)
+    for variable in SUPPORTED_TEMPLATE_VARIABLES:
+        assert f"`{{{{{variable}}}}}`" in sent_message, variable
+    for operator in CONDITION_OPERATORS_ORDERED:
+        assert f"`{operator}`" in sent_message, operator
+    # Grouped by where the variable comes from, not one flat list.
+    for title in ("*Message, sender and config*", "*Date and time*", "*OpsGenie*", "*Calendar*"):
+        assert title in sent_message, title
+    assert "*Condition operators*" in sent_message
+    assert "`{{calendar_current_attendees(nth=2)}}` is the second" in sent_message
+    assert "`fmt`/`format`, `tz`/`timezone` and `lc`/`locale`" in sent_message
+    # The command table stays in `help`; this reply is only the variables.
+    assert "*Commands:*" not in sent_message
+    for text in texts:
+        assert len(text) <= hutbot.messaging.SLACK_MESSAGE_CHARACTER_LIMIT, len(text)
+
+
+@pytest.mark.asyncio
+async def test_help_points_at_the_variables_help_instead_of_listing_them():
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "help", channel, user)
+
+    sent_message = sent_messages(mock_send_message)
+    assert "/hutbot help variables" in sent_message
+    assert "`[config]` is optional; omitted commands use `default`." in sent_message
+    # The lists themselves moved out of the command help.
+    assert "Supported reply variables:" not in sent_message
+    assert "Supported condition operators:" not in sent_message
+    assert "{{opsgenie_current_start_datetime}}" not in sent_message
+
+
+@pytest.mark.asyncio
 async def test_show_config_splits_many_configs_into_several_messages():
     import hutbot
     app = AsyncMock()

@@ -10,7 +10,18 @@ from employee_list import log_error, log_warning
 
 from . import slackcache
 from . import state
-from .constants import CONDITION_OPERATORS_ORDERED, EMAIL_MENTION_PATTERN, ID_PATTERN, MENTION_PATTERN, SUPPORTED_TEMPLATE_VARIABLES
+from .constants import (
+    CALENDAR_TEMPLATE_VARIABLES,
+    CONDITION_OPERATORS_ORDERED,
+    DATETIME_TEMPLATE_VARIABLES,
+    EMAIL_MENTION_PATTERN,
+    ID_PATTERN,
+    LIST_TEMPLATE_VARIABLES,
+    MENTION_PATTERN,
+    OPSGENIE_TEMPLATE_VARIABLES,
+    SUPPORTED_TEMPLATE_VARIABLES,
+    TEMPLATE_DATETIME_VARIABLES,
+)
 from .models import Channel, User
 from .textutil import log_debug
 
@@ -236,8 +247,6 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
 
 
 async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
-    supported_template_variables = ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES))
-    supported_condition_operators = ", ".join(f"`{operator}`" for operator in CONDITION_OPERATORS_ORDERED)
     command = state.slash_command
     name = state.bot_name
     version = state.version
@@ -322,6 +331,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ("Help", [
             (f"{command} news", "Show what's new."),
             (f"{command} help", "Show this help."),
+            (f"{command} help variables", "List all {{variables}} and condition operators."),
         ]),
     ]
     command_width = max(len(command) for _, rows in command_groups for command, _ in rows)
@@ -337,27 +347,13 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"{mention} show config```\n"
         f"Displays all configurations for `#{channel.name}`."
     )
-    # Kept as separate notes so they can be packed into as many messages as they need; the
-    # whole thing outgrew Slack's per-message limit once the calendar notes were added.
+    # The variable and operator lists ran longer than the command table itself, so they
+    # live behind `help variables` now; what is left is the syntax every command shares.
     outro_notes = [
         "`[config]` is optional; omitted commands use `default`. The leading `set`/`add` is optional too. "
         "Any value can be quoted with `\"`, `'` or a backtick.",
-        f"Supported reply variables: {supported_template_variables}.",
-        "You can `@mention` someone by email address (`@nico@example.com`) as well as by username, "
-        "and the calendar's `{{..._users}}` variables are its people already mapped to Slack "
-        "mentions — usable in a message or as a `dm-user`/`group-dm` target.",
-        "A variable holding a list — the calendar's `{{attendees}}`/`{{attendee_emails}}` and their "
-        "`other_*` forms, which leave out the organizer — renders comma-separated, and `nth` picks "
-        "one entry counting from 1: `{{calendar_current_attendees(nth=2)}}` is the second. Asking "
-        "for an entry that is not there renders empty.",
-        f"Supported condition operators: {supported_condition_operators}. An operator on a list "
-        "variable matches when *any* entry matches, and its `not_` form when *none* does, so "
-        "`add condition calendar_current_attendee_emails equals nico@example.com` asks whether that "
-        "person is on the event.",
-        "Conditions are checked when the rule fires — for a `message` rule that is after the "
-        "reminder delay, judged against the conditions as they were when the message arrived. "
-        "A condition that reads only the message or its sender is checked straight away, so no "
-        "reminder is queued when it already cannot pass.",
+        f"`{command} help variables` lists every `{{{{variable}}}}` you can put in a message or a "
+        "condition, and every condition operator.",
     ]
     # The command table alone is well past Slack's per-message limit, and Slack
     # splits an oversized message wherever it happens to land — which cuts the code
@@ -368,5 +364,59 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     ]
     outro_messages = pack_message_chunks(outro_notes, limit=SLACK_MESSAGE_CHARACTER_LIMIT - 200)
     messages = [intro, *command_messages, *outro_messages]
+    for index, message in enumerate(messages):
+        await send_message(app, channel, user, message, thread_ts, footer=index == len(messages) - 1)
+
+
+async def send_variables_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
+    """The `{{variable}}` and condition-operator reference, split out of the command help.
+
+    Grouped from the same sets the renderer resolves, so a new variable appears here
+    without anyone having to remember this file.
+    """
+    command = state.slash_command
+    name = state.bot_name
+    version = state.version
+    general_variables = SUPPORTED_TEMPLATE_VARIABLES - DATETIME_TEMPLATE_VARIABLES - OPSGENIE_TEMPLATE_VARIABLES - CALENDAR_TEMPLATE_VARIABLES
+    variable_groups = [
+        ("Message, sender and config", general_variables),
+        ("Date and time", DATETIME_TEMPLATE_VARIABLES),
+        ("OpsGenie", OPSGENIE_TEMPLATE_VARIABLES),
+        ("Calendar", CALENDAR_TEMPLATE_VARIABLES),
+    ]
+    intro = (
+        f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here are all the variables I know:\n\n"
+        f"Write one as `{{{{variable}}}}` in a reply `message`, an `opsgenie-message`, a `dm-user`/`group-dm` "
+        f"target or a `condition`. `{command} [config] test` renders every one of them for this channel, and "
+        "a variable nothing has resolved renders a `<placeholder>` such as `<no-event>`."
+    )
+    # One note per group, each its own part so a group ends up whole in whichever
+    # message it lands in — the full list is several times Slack's per-message limit.
+    group_notes = [
+        f"*{title}*\n" + ", ".join(f"`{{{{{variable}}}}}`" for variable in sorted(variables))
+        for title, variables in variable_groups
+    ]
+    detail_notes = [
+        "Every date/time variable takes `fmt`/`format`, `tz`/`timezone` and `lc`/`locale` arguments, e.g. "
+        "`{{opsgenie_next_start_datetime(fmt=\"%d.%m.%Y %H:%M\", tz=\"Europe/Berlin\", lc=\"de_DE\")}}`. "
+        f"Without them the config's `{command} [config] set datetime-format` values are used.",
+        "A variable holding a list — the calendar's `{{..._attendees}}`/`{{..._attendee_emails}}` and their "
+        "`other_*` forms, which leave out the organizer — renders comma-separated, and `nth` picks "
+        "one entry counting from 1: `{{calendar_current_attendees(nth=2)}}` is the second. Asking "
+        "for an entry that is not there renders empty.",
+        "You can `@mention` someone by email address (`@nico@example.com`) as well as by username, "
+        "and the calendar's `{{..._users}}` variables are its people already mapped to Slack "
+        "mentions — usable in a message or as a `dm-user`/`group-dm` target.",
+        f"*Condition operators*\n{', '.join(f'`{operator}`' for operator in CONDITION_OPERATORS_ORDERED)}\n"
+        f"`{command} [config] add condition <variable> <operator> [value] [0|1]` gates the rule; `1` makes "
+        "the comparison case sensitive. An operator on a list variable matches when *any* entry matches, "
+        "and its `not_` form when *none* does, so `add condition calendar_current_attendee_emails equals "
+        "nico@example.com` asks whether that person is on the event.",
+        "Conditions are checked when the rule fires — for a `message` rule that is after the "
+        "reminder delay, judged against the conditions as they were when the message arrived. "
+        "A condition that reads only the message or its sender is checked straight away, so no "
+        "reminder is queued when it already cannot pass.",
+    ]
+    messages = pack_message_chunks([intro, *group_notes, *detail_notes], limit=SLACK_MESSAGE_CHARACTER_LIMIT - 200)
     for index, message in enumerate(messages):
         await send_message(app, channel, user, message, thread_ts, footer=index == len(messages) - 1)

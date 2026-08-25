@@ -11,6 +11,8 @@ def create_command_pattern(command_regex: str) -> re.Pattern:
 # `set wait-time 5` and `wait-time 5` are the same command.
 
 
+# Matched before HELP_PATTERN in the dispatch chain, which accepts any `help …`.
+HELP_VARIABLES_PATTERN = re.compile(r'^help\s+(template[_ -]?)?(variables?|vars?|placeholders?)$', re.IGNORECASE)
 HELP_PATTERN = re.compile(r'help', re.IGNORECASE)
 WHATSNEW_PATTERN = re.compile(r'news', re.IGNORECASE)
 TEST_PATTERN = re.compile(r'^test$', re.IGNORECASE)
