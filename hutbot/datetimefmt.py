@@ -80,6 +80,19 @@ def validate_timezone_name(value: str) -> str:
 
 
 def get_local_timezone() -> datetime.tzinfo:
+    """The server's timezone, transition-aware where possible.
+
+    `astimezone().tzinfo` is only the offset in force *right now* (a fixed `CEST` +02:00),
+    so formatting a January instant with it while the process runs in August would be an
+    hour late. Resolving the IANA name to a ZoneInfo keeps the DST rules; the fixed offset
+    remains the fallback for a host that exposes no zone name.
+    """
+    name = get_local_timezone_name()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
     return datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
 
 

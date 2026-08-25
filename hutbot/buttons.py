@@ -236,6 +236,10 @@ async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> No
         idx = _find_button_index(lookup, entry.get('escalation_target', ''))
         if idx is None:
             log_warning(f"Default button '{entry.get('escalation_target')}' not found in #{channel.name}.")
+            # The pending record is already consumed, so a later press would be ignored.
+            # Take the buttons away rather than leave dead ones on the message.
+            await _strip_buttons(app, posted_channel_id, message_ts, entry,
+                                 _timeout_note(entry.get('timeout', 0), entry.get('escalation_target', ''), ok=False))
             return
         buttons = snapshot if snapshot is not None else (src_config or {}).get('buttons') or []
         log(f"No button pressed on message {message_ts}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
@@ -251,6 +255,8 @@ async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> No
             await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), target, bool(posted)))
         else:
             log_warning(f"Escalation target '{target}' not found in #{channel.name}.")
+            await _strip_buttons(app, posted_channel_id, message_ts, entry,
+                                 _timeout_note(entry.get('timeout', 0), target, ok=False))
 
 
 async def _escalation_task(app: AsyncApp, opsgenie_token: str, key: tuple, timeout: float) -> None:

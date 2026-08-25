@@ -50,6 +50,7 @@ from hutbot.routing import (
 )
 from hutbot.webui_backend import (
     validate_config_payload, list_user_config_channels, ui_create_config, ui_delete_config, ui_meta,
+    ui_snapshot_configs,
 )
 from hutbot.commands.dispatch import process_command
 from hutbot.commands.setters import (

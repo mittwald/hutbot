@@ -1,3 +1,5 @@
+import copy
+
 from tests._common import *  # noqa: F401,F403
 
 
@@ -390,3 +392,119 @@ def test_ui_meta_ships_condition_operators_in_declared_order():
     assert CALENDAR_TEMPLATE_VARIABLES <= set(meta["template_variables"])
     assert meta["default_config"]["conditions"] == []
     assert "conditions" not in meta
+
+
+# ----- invariants the slash commands already enforce -----
+
+@pytest.mark.asyncio
+async def test_a_cron_trigger_needs_its_expression():
+    """Otherwise the rule looks active in the UI and the scheduler silently skips it."""
+    _seed_user_caches()
+    cfg, errors = await validate_config_payload(
+        {"reply_message": "Hi", "wait_time": 600, "trigger": "cron", "cron": ""}, _ui_app())
+    assert cfg is None
+    assert "cron expression" in errors["cron"]
+
+
+@pytest.mark.asyncio
+async def test_a_cron_trigger_with_an_expression_is_fine():
+    _seed_user_caches()
+    cfg, errors = await validate_config_payload(
+        {"reply_message": "Hi", "wait_time": 600, "trigger": "cron", "cron": "0 9 * * 1-5"}, _ui_app())
+    assert errors == {} and cfg["trigger"] == "cron"
+
+
+@pytest.mark.asyncio
+async def test_a_delay_button_needs_an_escalation_to_postpone():
+    _seed_user_caches()
+    payload = {"reply_message": "Hi", "wait_time": 600,
+               "buttons": [{"label": "Later", "action": "delay", "value": "10"}],
+               "escalation_kind": "none", "escalation_timeout": 0}
+    cfg, errors = await validate_config_payload(payload, _ui_app())
+    assert cfg is None
+    assert "escalation to postpone" in errors["buttons.0"]
+
+
+@pytest.mark.asyncio
+async def test_a_button_escalation_must_name_a_button_that_exists():
+    _seed_user_caches()
+    payload = {"reply_message": "Hi", "wait_time": 600,
+               "buttons": [{"label": "Yes", "action": "ack", "value": ""}],
+               "escalation_kind": "button", "escalation_timeout": 300,
+               "escalation_target": "No Such Button"}
+    cfg, errors = await validate_config_payload(payload, _ui_app())
+    assert cfg is None
+    assert "button labels" in errors["escalation_target"]
+
+
+@pytest.mark.asyncio
+async def test_a_working_button_and_escalation_pair_is_accepted():
+    _seed_user_caches()
+    payload = {"reply_message": "Hi", "wait_time": 600,
+               "buttons": [{"label": "Yes", "action": "ack", "value": ""},
+                           {"label": "Later", "action": "delay", "value": "10"}],
+               "escalation_kind": "button", "escalation_timeout": 300, "escalation_target": "Yes"}
+    cfg, errors = await validate_config_payload(payload, _ui_app())
+    assert errors == {}
+    assert [b["label"] for b in cfg["buttons"]] == ["Yes", "Later"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["set", "clear", "add", "enable", "show", "delete", "run", "help", "SET"])
+async def test_the_ui_refuses_reserved_rule_names(name):
+    """A rule named after a command word would swallow that command."""
+    ok, error = await ui_create_config(_ui_app(), "C1", name)
+    assert ok is False and "starts a command" in error
+    assert name not in hutbot.state.channel_config.get("C1", {})
+
+
+@pytest.mark.asyncio
+async def test_the_ui_still_creates_an_ordinary_rule():
+    ok, error = await ui_create_config(_ui_app(), "C1", "oncall")
+    assert ok is True and error == ""
+    assert "oncall" in hutbot.state.channel_config["C1"]
+
+
+# ----- the calendar URL is a bearer token -----
+
+_SECRET_URL = "https://outlook.office365.com/owa/calendar/secret-guid@tenant/other/calendar.ics"
+
+
+@pytest.mark.asyncio
+async def test_the_config_snapshot_redacts_the_calendar_url():
+    """Every channel member can read this; the URL grants access to the calendar."""
+    hutbot.state.channel_config["C1"] = {"cal": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": _SECRET_URL}}
+    snapshot = ui_snapshot_configs("C1")
+    assert snapshot["cal"]["calendar_url"] == "outlook.office365.com/…/calendar.ics"
+    assert "secret-guid" not in str(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_saving_the_redacted_value_back_keeps_the_stored_url():
+    """The editor never saw the real URL, so returning the redacted one means "unchanged"."""
+    _seed_user_caches()
+    hutbot.state.channel_config["C1"] = {"cal": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": _SECRET_URL}}
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": ui_snapshot_configs("C1")["cal"]["calendar_url"]}
+    ok, errors = await hutbot.webui_backend.ui_apply_config(_ui_app(), "C1", "cal", payload)
+    assert ok is True and errors == {}
+    assert hutbot.state.channel_config["C1"]["cal"]["calendar_url"] == _SECRET_URL
+
+
+@pytest.mark.asyncio
+async def test_a_new_calendar_url_still_replaces_the_stored_one():
+    _seed_user_caches()
+    hutbot.state.channel_config["C1"] = {"cal": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": _SECRET_URL}}
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": "https://cal.example.com/new.ics"}
+    ok, _ = await hutbot.webui_backend.ui_apply_config(_ui_app(), "C1", "cal", payload)
+    assert ok is True
+    assert hutbot.state.channel_config["C1"]["cal"]["calendar_url"] == "https://cal.example.com/new.ics"
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_calendar_field_clears_the_url():
+    _seed_user_caches()
+    hutbot.state.channel_config["C1"] = {"cal": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": _SECRET_URL}}
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": ""}
+    ok, _ = await hutbot.webui_backend.ui_apply_config(_ui_app(), "C1", "cal", payload)
+    assert ok is True
+    assert hutbot.state.channel_config["C1"]["cal"]["calendar_url"] == ""

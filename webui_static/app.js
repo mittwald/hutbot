@@ -605,7 +605,7 @@ function calendarSection() {
   const cfg = draft();
   const rows = [grid(field("Calendar feed URL", textInput("calendar_url", { mono: true, placeholder: "https://outlook.office365.com/owa/calendar/…/calendar.ics" }),
     { wide: true, error: fieldErr("calendar_url"),
-      hint: "Published .ics link. Treat it as a secret — it grants read access without a login. Exposes {{calendar_current_summary}}, {{calendar_next_start_time}} and more." }))];
+      hint: "Published .ics link. Treat it as a secret — it grants read access without a login, so a saved one is only ever shown shortened. Leave it as shown to keep it, paste a new link to replace it, or clear the field to remove it." }))];
   return section("Calendar", cfg.calendar_url ? "feed" : null, ...rows);
 }
 

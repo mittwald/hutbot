@@ -1,3 +1,4 @@
+import contextlib
 import copy
 
 from tests._common import *  # noqa: F401,F403
@@ -488,14 +489,30 @@ def test_unwrap_slack_link(typed):
 
 # ----- fetching and caching -----
 
-class _FakeResponse:
-    def __init__(self, status=200, text="", content_length=None):
-        self.status = status
-        self._text = text
-        self.content_length = content_length if content_length is not None else len(text)
+class _FakeContent:
+    """The chunked-read interface `_read_capped` uses."""
 
-    async def text(self):
-        return self._text
+    def __init__(self, body: bytes, chunk_size: int = 64 * 1024):
+        self._body = body
+        self._chunk_size = chunk_size
+
+    async def iter_chunked(self, size):
+        step = self._chunk_size or size
+        for offset in range(0, len(self._body), step):
+            yield self._body[offset:offset + step]
+
+
+class _FakeResponse:
+    def __init__(self, status=200, text="", content_length=None, headers=None, body=None):
+        self.status = status
+        self._body = body if body is not None else text.encode("utf-8")
+        # A feed can understate or omit this, which is why the read is capped as it streams.
+        self.content_length = content_length if content_length is not None else len(self._body)
+        self.headers = headers or {}
+        self.content = _FakeContent(self._body)
+
+    def get_encoding(self):
+        return "utf-8"
 
     async def __aenter__(self):
         return self
@@ -505,13 +522,14 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    def __init__(self, response, counter):
-        self._response = response
+    def __init__(self, responses, counter):
+        self._responses = responses if isinstance(responses, list) else [responses]
         self._counter = counter
 
     def get(self, url, **kwargs):
         self._counter.append(url)
-        return self._response
+        index = min(len(self._counter) - 1, len(self._responses) - 1)
+        return self._responses[index]
 
     async def __aenter__(self):
         return self
@@ -520,8 +538,13 @@ class _FakeSession:
         return False
 
 
-def _patch_http(response, counter):
-    return patch('hutbot.calendarfeed.aiohttp.ClientSession', lambda *a, **k: _FakeSession(response, counter))
+@contextlib.contextmanager
+def _patch_http(responses, counter, resolves=True):
+    """Fake the transport, and skip real DNS — resolution is covered on its own."""
+    problem = "" if resolves else "`evil.example.com` resolves to the internal address 10.0.0.1"
+    with patch('hutbot.calendarfeed.aiohttp.ClientSession', lambda *a, **k: _FakeSession(responses, counter)), \
+         patch('hutbot.calendarfeed._resolve_public_host', new=AsyncMock(return_value=problem)):
+        yield
 
 
 @pytest.mark.asyncio
@@ -847,8 +870,9 @@ def test_an_attendee_with_an_x500_address_keeps_its_name_but_has_no_email():
         'ATTENDEE;CN="Notfallhotline";ROLE=REQ-PARTICIPANT:mailto:N@mittwald.de',
         'ATTENDEE;CN="Room 1":mailto:/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=ABC')
     event = _oncall_event(icalendar.Calendar.from_ical(ics))
-    assert "Room 1" in event.attendees
-    assert event.attendee_emails == ["N.Engelbrecht@mittwald.de"]
+    assert event.attendees == ["Room 1", "Nico Engelbrecht"]
+    # Aligned: the room holds position 1 with a blank address, so position 2 is still Nico.
+    assert event.attendee_emails == ["", "N.Engelbrecht@mittwald.de"]
 
 
 @pytest.mark.asyncio
@@ -1131,21 +1155,38 @@ async def test_attendee_addresses_are_mapped_to_slack_users(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))), \
          patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(AsyncMock(), CONFIG, ONCALL_NOW)
+    # The joined form a message renders leaves out the mailbox that maps to nobody...
     assert variables["calendar_current_attendee_users"] == "<@U777>"
     assert variables["calendar_current_other_attendee_users"] == "<@U777>"
-    assert variables["__calendar_current_attendee_users_items"] == ["<@U777>"]
+    # ...while the entries keep its position, so `nth` lines up with the other lists.
+    assert variables["__calendar_current_attendee_users_items"] == ["", "<@U777>"]
+    assert variables["__calendar_current_attendees_items"] == ["Notfallhotline", "Nico Engelbrecht"]
     # The organizer maps to nobody, so it keeps the placeholder rather than inventing a user.
     assert variables["calendar_current_organizer_user"] == "<no-user-set>"
 
 
 @pytest.mark.asyncio
-async def test_an_unmapped_address_is_left_out_rather_than_breaking_the_list(oncall_cal):
-    """Two attendees, one Slack account: the mapped list is shorter, not broken."""
+async def test_an_unmapped_address_keeps_its_position(oncall_cal):
+    """Two attendees, one Slack account: the entry is blank, not missing.
+
+    Compacting it would shift everyone after it, so `attendees(nth=2)` and
+    `attendee_users(nth=2)` would stop describing the same participant.
+    """
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))), \
          patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(AsyncMock(), CONFIG, ONCALL_NOW)
-    assert len(variables["__calendar_current_attendee_emails_items"]) == 2
-    assert len(variables["__calendar_current_attendee_users_items"]) == 1
+    for name in ("attendees", "attendee_emails", "attendee_users"):
+        assert len(variables[f"__calendar_current_{name}_items"]) == 2, name
+    assert variables["__calendar_current_attendee_users_items"] == ["", "<@U777>"]
+    # Nico is entry 2 of every list.
+    render = lambda t: hutbot.templating.render_reply_message_template(t, variables, CONFIG)
+    assert render("{{calendar_current_attendees(nth=2)}}") == "Nico Engelbrecht"
+    assert render("{{calendar_current_attendee_emails(nth=2)}}") == "N.Engelbrecht@mittwald.de"
+    assert render("{{calendar_current_attendee_users(nth=2)}}") == "<@U777>"
+    # And a condition still ignores the blank.
+    condition = {"variable": "calendar_current_attendee_users", "operator": "not_empty",
+                 "value": "", "case_sensitive": False}
+    assert hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0] is True
 
 
 @pytest.mark.asyncio
@@ -1242,3 +1283,96 @@ async def test_a_templated_target_is_accepted_and_validated():
         await process_command(app, "set action dm-user {{nope_not_a_variable}}", channel, user)
     assert "Invalid *target*" in send.call_args.args[3]
     assert channel.configs["default"]["action_target"] == "{{calendar_current_other_attendee_users(nth=1)}}"
+
+
+# ----- fetching safely -----
+
+@pytest.mark.asyncio
+async def test_a_redirect_is_followed_only_after_the_target_is_checked():
+    """aiohttp would follow a public URL to the metadata address without a word."""
+    calls = []
+    responses = [
+        _FakeResponse(status=302, headers={"Location": "https://cal.example.com/real.ics"}),
+        _FakeResponse(text=SAMPLE_ICS),
+    ]
+    with _patch_http(responses, calls):
+        calendar, name = await fetch_calendar("https://cal.example.com/feed.ics")
+    assert calendar is not None and name == "Team Kalender"
+    assert calls == ["https://cal.example.com/feed.ics", "https://cal.example.com/real.ics"]
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_to_an_internal_address_is_refused():
+    calls = []
+    responses = [_FakeResponse(status=302, headers={"Location": "http://169.254.169.254/latest/meta-data"})]
+    with _patch_http(responses, calls):
+        assert await fetch_calendar("https://cal.example.com/feed.ics") == (None, "")
+    # The metadata address was never requested.
+    assert calls == ["https://cal.example.com/feed.ics"]
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_to_a_private_host_is_refused():
+    calls = []
+    responses = [_FakeResponse(status=302, headers={"Location": "https://10.0.0.1/feed.ics"})]
+    with _patch_http(responses, calls):
+        assert await fetch_calendar("https://cal.example.com/feed.ics") == (None, "")
+    assert calls == ["https://cal.example.com/feed.ics"]
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_loop_gives_up():
+    calls = []
+    responses = [_FakeResponse(status=302, headers={"Location": "https://cal.example.com/again.ics"})]
+    with _patch_http(responses, calls):
+        assert await fetch_calendar("https://cal.example.com/feed.ics") == (None, "")
+    assert len(calls) == 4  # the first request plus _MAX_REDIRECTS hops
+
+
+@pytest.mark.asyncio
+async def test_a_host_resolving_to_an_internal_address_is_refused():
+    """The URL text is public; what it resolves to is not."""
+    calls = []
+    with _patch_http([_FakeResponse(text=SAMPLE_ICS)], calls, resolves=False):
+        assert await fetch_calendar("https://evil.example.com/feed.ics") == (None, "")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_body_is_abandoned_while_streaming():
+    """A feed can omit Content-Length, or be a compression bomb."""
+    calls = []
+    huge = ("BEGIN:VCALENDAR\r\n" + "X-PAD:" + "a" * 1024 + "\r\n") * 8000
+    response = _FakeResponse(text=huge, content_length=None)
+    response.content_length = 10  # understated, as a hostile feed would
+    with _patch_http([response], calls):
+        assert await fetch_calendar("https://cal.example.com/feed.ics") == (None, "")
+
+
+@pytest.mark.asyncio
+async def test_a_body_within_the_cap_is_read_whole():
+    calls = []
+    with _patch_http([_FakeResponse(text=SAMPLE_ICS, content_length=None)], calls):
+        calendar, name = await fetch_calendar("https://cal.example.com/feed.ics")
+    assert calendar is not None and name == "Team Kalender"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host,expected", [
+    ("10.0.0.1", "internal"),
+    ("169.254.169.254", "internal"),
+    ("127.0.0.1", "internal"),
+    ("no-such-host.invalid", "could not resolve"),
+])
+async def test_resolve_public_host_rejects_internal_targets(host, expected):
+    assert expected in await hutbot.calendarfeed._resolve_public_host(host)
+
+
+@pytest.mark.parametrize("url", [
+    "https://0.0.0.0/feed.ics",
+    "https://224.0.0.1/feed.ics",
+    "https://192.0.0.170/feed.ics",
+])
+def test_validate_calendar_url_rejects_more_reserved_ranges(url):
+    with pytest.raises(ValueError):
+        validate_calendar_url(url)

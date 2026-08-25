@@ -402,8 +402,15 @@ is the operator's responsibility — Hutbot only consumes the resulting header.
      - `groups:read`
      - `usergroups:read`
      - `team:read`
-     - `users.read`
+     - `users:read`
+     - `users:read.email`
      - `commands`
+
+   `users:read.email` is what puts `profile.email` in the `users.list` response, and without
+   it the bot has no address for anyone: the web UI rejects every request as unauthenticated,
+   and mapping an Opsgenie recipient or a calendar attendee to a Slack user falls back to
+   guessing from the address's local part. **Adding a scope to an installed app requires
+   reinstalling it** to the workspace before the new scope takes effect.
 
 5. **Enable Event Subscriptions**
 

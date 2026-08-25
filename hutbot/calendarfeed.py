@@ -98,6 +98,20 @@ def _display_name(value) -> str:
     return _common_name(value) or _address(value)
 
 
+def _participants(values: list) -> list[tuple[str, str]]:
+    """`(display name, address)` per participant, dropping only the entries with neither.
+
+    Kept as pairs so the name and address lists stay index-aligned: an attendee with a name
+    but no usable address still occupies a position, with "" for the address.
+    """
+    pairs = []
+    for value in values:
+        name, email = _display_name(value), _address(value)
+        if name or email:
+            pairs.append((name, email))
+    return pairs
+
+
 def _is_organizer(attendee, organizer_email: str, organizer_name: str) -> bool:
     """Whether this attendee is the event's organizer, invited to their own event.
 
@@ -200,12 +214,14 @@ def build_calendar_event(event, config: dict | None = None) -> CalendarEvent:
         description=_text(event, "DESCRIPTION"),
         organizer=organizer_name,
         organizer_email=organizer_email,
-        # Independent lists: an attendee can have a name with no usable address, or the
-        # reverse, and dropping the blanks keeps both readable.
-        attendees=[name for name in (_display_name(a) for a in attendees) if name],
-        attendee_emails=[email for email in (_address(a) for a in attendees) if email],
-        other_attendees=[name for name in (_display_name(a) for a in others) if name],
-        other_attendee_emails=[email for email in (_address(a) for a in others) if email],
+        # Positionally aligned: entry *n* of every attendee list is the same participant, so
+        # `attendees(nth=2)` and `attendee_emails(nth=2)` cannot describe two different
+        # people. A participant missing one of the two contributes "" there rather than
+        # being skipped, which would shift everyone after them.
+        attendees=[name for name, _ in _participants(attendees)],
+        attendee_emails=[email for _, email in _participants(attendees)],
+        other_attendees=[name for name, _ in _participants(others)],
+        other_attendee_emails=[email for _, email in _participants(others)],
         status=_text(event, "STATUS").upper() or "CONFIRMED",
         start=start.isoformat(),
         end=end.isoformat(),
@@ -223,6 +239,11 @@ def find_current_and_next_events(calendar, config: dict | None = None, now: date
     if now.tzinfo is None:
         now = now.replace(tzinfo=datetime.timezone.utc)
     timezone = datetimefmt.get_config_timezone(config)
+    # Ask in the config's timezone. The library compares a `DTSTART;VALUE=DATE` against the
+    # date of the instant it is given, so querying in UTC would use the wrong calendar day
+    # either side of midnight: at 01:00 on the 2nd in Tokyo a whole-day event on the 2nd is
+    # still "tomorrow" in UTC, and in Los Angeles it turns current before local midnight.
+    local_now = now.astimezone(timezone)
 
     try:
         # Malformed RRULEs are common in real Outlook feeds; without skip_bad_series a
@@ -234,7 +255,7 @@ def find_current_and_next_events(calendar, config: dict | None = None, now: date
 
     current = None
     try:
-        candidates = [event for event in query.at(now) if _is_usable(event)]
+        candidates = [event for event in query.at(local_now) if _is_usable(event)]
         candidates.sort(key=lambda event: _current_rank(event, timezone))
         if candidates:
             current = build_calendar_event(candidates[0], config)
@@ -245,7 +266,7 @@ def find_current_and_next_events(calendar, config: dict | None = None, now: date
     try:
         # `after()` deliberately yields events that are *ongoing* at `now` before future
         # ones, so the start filter is what keeps "next" from echoing "current".
-        for event in itertools.islice(query.after(now), _CALENDAR_LOOKAHEAD_EVENTS):
+        for event in itertools.islice(query.after(local_now), _CALENDAR_LOOKAHEAD_EVENTS):
             if _aware(event.start, timezone) > now and _is_usable(event):
                 next_event = build_calendar_event(event, config)
                 break
@@ -256,6 +277,38 @@ def find_current_and_next_events(calendar, config: dict | None = None, now: date
 
 
 # ----- URL validation and display -----
+
+
+def _is_forbidden_address(address: ipaddress._BaseAddress) -> bool:
+    """Whether an address is one the bot must not be talked into reaching."""
+    return bool(address.is_private or address.is_loopback or address.is_link_local
+                or address.is_reserved or address.is_multicast or address.is_unspecified)
+
+
+async def _resolve_public_host(host: str) -> str:
+    """The host's addresses, or a reason it must not be fetched.
+
+    `validate_calendar_url` can only judge the text of a URL. A public name that resolves to
+    `10.0.0.1`, or to the cloud metadata address, reaches the internal target all the same —
+    so the addresses behind the name are checked too, at every redirect hop.
+
+    This narrows the window rather than closing it: the name is resolved again by the
+    connector, so a record that changes between the two lookups (DNS rebinding) is still
+    possible. The NetworkPolicy egress allow-list is the control that actually closes it.
+    """
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    except Exception as e:
+        return f"could not resolve `{host}`: {e}"
+    for info in infos:
+        raw = info[4][0]
+        try:
+            address = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if _is_forbidden_address(address):
+            return f"`{host}` resolves to the internal address {raw}"
+    return ""
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -309,7 +362,7 @@ def validate_calendar_url(url: str) -> str:
             address = ipaddress.ip_address(parts.hostname)
         except ValueError:
             address = None
-        if address is not None and (address.is_private or address.is_link_local or address.is_reserved):
+        if address is not None and _is_forbidden_address(address):
             raise ValueError("calendar URL must not point at an internal address")
     return url
 
@@ -338,6 +391,72 @@ def describe_calendar_url(url: str) -> str:
 # ----- fetching -----
 
 
+async def _read_capped(response) -> str | None:
+    """The response body, or ``None`` when it runs past ``_MAX_ICS_BYTES``.
+
+    Read in chunks rather than with `response.text()`, which would pull the whole body into
+    memory before any size check: a feed can omit `Content-Length`, use chunked transfer, or
+    be a compression bomb. `response.content` yields *decompressed* bytes, so the cap counts
+    what a gzip bomb actually expands to.
+    """
+    chunks, total = [], 0
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        total += len(chunk)
+        if total > _MAX_ICS_BYTES:
+            return None
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    try:
+        return body.decode(response.get_encoding(), errors="replace")
+    except (LookupError, RuntimeError):
+        return body.decode("utf-8", errors="replace")
+
+
+async def _get_calendar_document(url: str) -> str | None:
+    """Fetch the feed, checking every hop, or return ``None`` with the reason logged.
+
+    Redirects are followed by hand so each target is validated before it is requested —
+    aiohttp would otherwise follow a public HTTPS URL to `http://169.254.169.254` without
+    another word.
+    """
+    timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for _ in range(_MAX_REDIRECTS + 1):
+            try:
+                url = validate_calendar_url(url)
+            except ValueError as e:
+                log_error(f"Refusing to fetch the calendar feed {describe_calendar_url(url)}: {e}.")
+                return None
+            host = urllib.parse.urlsplit(url).hostname or ""
+            if not _is_loopback_host(host):
+                problem = await _resolve_public_host(host)
+                if problem:
+                    log_error(f"Refusing to fetch the calendar feed {describe_calendar_url(url)}: {problem}.")
+                    return None
+
+            async with session.get(url, allow_redirects=False) as response:
+                if response.status in (301, 302, 303, 307, 308):
+                    location = response.headers.get("Location", "")
+                    if not location:
+                        log_error(f"Calendar feed {describe_calendar_url(url)} redirected without a target.")
+                        return None
+                    url = urllib.parse.urljoin(url, location)
+                    continue
+                if response.status != 200:
+                    log_error(f"Failed to fetch the calendar feed {describe_calendar_url(url)}: {response.status}")
+                    return None
+                if response.content_length and response.content_length > _MAX_ICS_BYTES:
+                    log_error(f"Calendar feed {describe_calendar_url(url)} is too large ({response.content_length} bytes).")
+                    return None
+                text = await _read_capped(response)
+                if text is None:
+                    log_error(f"Calendar feed {describe_calendar_url(url)} is larger than {_MAX_ICS_BYTES} bytes.")
+                return text
+
+    log_error(f"Calendar feed {describe_calendar_url(url)} redirected more than {_MAX_REDIRECTS} times.")
+    return None
+
+
 async def fetch_calendar(url: str) -> tuple[object | None, str]:
     """Fetch and parse a feed, returning ``(calendar, display_name)``.
 
@@ -354,23 +473,13 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
         return cached[1], cached[2]
 
     try:
-        timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, max_redirects=_MAX_REDIRECTS) as response:
-                if response.status != 200:
-                    log_error(f"Failed to fetch the calendar feed {describe_calendar_url(url)}: {response.status}")
-                    return None, ""
-                if response.content_length and response.content_length > _MAX_ICS_BYTES:
-                    log_error(f"Calendar feed {describe_calendar_url(url)} is too large ({response.content_length} bytes).")
-                    return None, ""
-                text = await response.text()
+        text = await _get_calendar_document(url)
     except Exception as e:
         log_error(f"Failed to fetch the calendar feed {describe_calendar_url(url)}:", e)
         return None, ""
-
-    if len(text) > _MAX_ICS_BYTES:
-        log_error(f"Calendar feed {describe_calendar_url(url)} is too large ({len(text)} bytes).")
+    if text is None:
         return None, ""
+
     if "BEGIN:VCALENDAR" not in text:
         # Usually an HTML sign-in page: say so instead of reporting an empty calendar.
         log_error(f"Calendar feed {describe_calendar_url(url)} did not return an iCalendar document.")
@@ -436,6 +545,17 @@ def get_calendar_placeholder_variables(config: dict | None = None) -> dict[str, 
     return variables
 
 
+def _set_list_variable(variables: dict, variable: str, items: list) -> None:
+    """Store a list variable: the aligned entries, plus the joined form a message renders.
+
+    The joined form leaves out the blanks — a reader wants "Nico Engelbrecht", not a stray
+    comma for the room mailbox that has no address — while the entries keep them so `nth`
+    lines up across the parallel lists.
+    """
+    variables[f"__{variable}_items"] = list(items)
+    variables[variable] = ", ".join(item for item in items if item)
+
+
 def fill_calendar_event_variables(variables: dict[str, str], config: dict | None, prefix: str, event: CalendarEvent | None) -> None:
     """Overwrite one period's placeholders from a resolved event."""
     if event is None:
@@ -447,14 +567,12 @@ def fill_calendar_event_variables(variables: dict[str, str], config: dict | None
     variables[f"calendar_{prefix}_organizer_email"] = event.organizer_email
     variables[f"calendar_{prefix}_uid"] = event.uid
     variables[f"calendar_{prefix}_status"] = event.status
-    variables[f"calendar_{prefix}_attendee_count"] = str(len(event.attendees or event.attendee_emails))
+    variables[f"calendar_{prefix}_attendee_count"] = str(len(event.attendees))
     for field, items in (("attendees", event.attendees),
                          ("attendee_emails", event.attendee_emails),
                          ("other_attendees", event.other_attendees),
                          ("other_attendee_emails", event.other_attendee_emails)):
-        variable = f"calendar_{prefix}_{field}"
-        variables[variable] = ", ".join(items)
-        variables[f"__{variable}_items"] = list(items)
+        _set_list_variable(variables, f"calendar_{prefix}_{field}", items)
 
     for bound, value in (("start", event.start), ("end", event.end)):
         for part in ("date", "time", "datetime"):
@@ -478,17 +596,12 @@ async def _mention(app, email: str) -> str:
 
 
 async def _mentions(app, emails: list) -> list[str]:
-    """Only the addresses that mapped, so a mention list never contains a dud.
+    """One entry per address, "" where it maps to no Slack user.
 
-    That means the list can be shorter than the address list it came from — an attendee with
-    no Slack account simply is not in it.
+    Aligned rather than compacted so `attendees(nth=2)` and `attendee_users(nth=2)` stay the
+    same participant; the joined form a message renders drops the blanks.
     """
-    resolved = []
-    for email in emails or []:
-        mention = await _mention(app, email)
-        if mention:
-            resolved.append(mention)
-    return resolved
+    return [await _mention(app, email) for email in emails or []]
 
 
 async def fill_calendar_user_variables(app, variables: dict, prefix: str, event: CalendarEvent | None) -> None:
@@ -500,10 +613,7 @@ async def fill_calendar_user_variables(app, variables: dict, prefix: str, event:
         variables[f"calendar_{prefix}_organizer_user"] = organizer
     for field, emails in (("attendee_users", event.attendee_emails),
                           ("other_attendee_users", event.other_attendee_emails)):
-        variable = f"calendar_{prefix}_{field}"
-        mentions = await _mentions(app, emails)
-        variables[variable] = ", ".join(mentions)
-        variables[f"__{variable}_items"] = mentions
+        _set_list_variable(variables, f"calendar_{prefix}_{field}", await _mentions(app, emails))
 
 
 async def get_calendar_template_variables(app, config: dict, now: datetime.datetime | None = None) -> dict[str, str]:

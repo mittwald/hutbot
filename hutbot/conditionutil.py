@@ -264,6 +264,10 @@ def _judge_list(operator: str, items: list, value: str, case_sensitive: bool) ->
     **none** does. Negating item-by-item instead would make `not_equals` true for any list
     with two different entries, which is never what someone means by "X is not an attendee".
     """
+    # The parallel calendar lists keep a blank where a participant has no address or no
+    # Slack account, so positions line up across them. Those blanks are placeholders, not
+    # entries, so a condition never sees them.
+    items = [item for item in items if item]
     if operator == CONDITION_OP_EMPTY:
         return not items, ""
     if operator == CONDITION_OP_NOT_EMPTY:

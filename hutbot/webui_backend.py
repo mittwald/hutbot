@@ -42,6 +42,7 @@ from .constants import (
     CONFIG_NAME_PATTERN,
     DEFAULT_CONFIG,
     DEFAULT_CONFIG_NAME,
+    RESERVED_CONFIG_NAMES,
     DEFAULT_OPSGENIE_PRIORITY,
     DISABLED_REASON_REMOVED,
     OPSGENIE_PRIORITIES,
@@ -90,7 +91,7 @@ def _ui_team_list(value) -> list[str]:
     return cleaned
 
 
-async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str = "") -> tuple[dict | None, dict]:
+async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str = "", existing: dict | None = None) -> tuple[dict | None, dict]:
     """Validate a config dict from the web UI, mirroring the slash-command setters.
 
     Returns ``(clean_config, {})`` on success or ``(None, {field: message})`` on failure.
@@ -214,6 +215,11 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
         errors['trigger'] = "Trigger must be one of " + ", ".join(sorted(TRIGGERS)) + "."
     else:
         cfg['trigger'] = trigger
+        # The expression is part of choosing the cron trigger, exactly as `set trigger`
+        # requires: without it the scheduler skips the rule and it looks active but can
+        # never fire.
+        if trigger == TRIGGER_CRON and not cron_expr and 'cron' not in errors:
+            errors['cron'] = "A schedule trigger needs a cron expression, e.g. `0 9 * * 1-5`."
 
     # Conditions: a list of {variable, operator, value, case_sensitive}, validated
     # per-row like buttons so the editor can mark the offending row.
@@ -262,7 +268,12 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
         cfg['conditions_mode'] = conditions_mode
 
     calendar_url = str(get('calendar_url') or "").strip()
-    if calendar_url:
+    stored_calendar_url = str((existing or {}).get('calendar_url') or "").strip()
+    if calendar_url and stored_calendar_url and calendar_url == calendarfeed.describe_calendar_url(stored_calendar_url):
+        # The editor only ever saw the redacted form, so getting it back means "unchanged".
+        # Clearing the field still clears the URL, and a real one still replaces it.
+        cfg['calendar_url'] = stored_calendar_url
+    elif calendar_url:
         try:
             cfg['calendar_url'] = calendarfeed.validate_calendar_url(calendar_url)
         except ValueError as e:
@@ -374,7 +385,17 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
             clean_buttons.append({'label': label, 'action': button_action, 'value': value})
     if not any(key == 'buttons' or key.startswith('buttons.') for key in errors):
         cfg['buttons'] = clean_buttons
-
+        # Cross-checks the setters make, which no single field can: a `delay` button needs
+        # an escalation to postpone, and an escalation that auto-presses needs that button
+        # to exist. Either half alone leaves a press or a timeout doing nothing at all.
+        escalates = cfg.get('escalation_timeout') and cfg.get('escalation_kind') != ESCALATION_NONE
+        for i, button in enumerate(clean_buttons):
+            if button['action'] == BUTTON_ACTION_DELAY and not escalates:
+                errors[f'buttons.{i}'] = "A delay button needs an escalation to postpone."
+        if cfg.get('escalation_kind') == ESCALATION_BUTTON and escalates:
+            labels = {button['label'] for button in clean_buttons}
+            if cfg.get('escalation_target') not in labels:
+                errors['escalation_target'] = "Pick one of this rule's button labels."
 
     if errors:
         return None, errors
@@ -386,7 +407,8 @@ async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payl
     config_name = (config_name or "").strip()
     if not CONFIG_NAME_PATTERN.fullmatch(config_name):
         return False, {'name': "Names may use letters, numbers, and - _ . : / only."}
-    clean, errors = await validate_config_payload(payload, app, channel_id)
+    existing = state.channel_config.get(channel_id, {}).get(config_name)
+    clean, errors = await validate_config_payload(payload, app, channel_id, existing)
     if errors:
         return False, errors
     async with state._config_write_lock:
@@ -417,6 +439,10 @@ async def ui_create_config(app: AsyncApp, channel_id: str, config_name: str) -> 
     config_name = (config_name or "").strip()
     if not CONFIG_NAME_PATTERN.fullmatch(config_name):
         return False, "Names may use letters, numbers, and - _ . : / only."
+    if config_name.lower() in RESERVED_CONFIG_NAMES:
+        # A rule named after a command word would swallow that command: with a rule called
+        # `set`, `/hutbot set message …` addresses the rule instead of the default one.
+        return False, f"`{config_name}` cannot be a rule name; it starts a command."
     async with state._config_write_lock:
         configs = state.channel_config.setdefault(channel_id, {})
         if config_name in configs:
@@ -441,8 +467,18 @@ async def ui_delete_config(app: AsyncApp, channel_id: str, config_name: str) -> 
 
 
 def ui_snapshot_configs(channel_id: str) -> dict:
-    """A deep copy of a channel's configs for read-only display."""
-    return copy.deepcopy(state.channel_config.get(channel_id, {}))
+    """A deep copy of a channel's configs for read-only display.
+
+    The calendar URL is redacted, the same way `show config` redacts it: a published-calendar
+    link needs no login, so handing the full one to every channel member through the API
+    would give away read access to that calendar. Saving the redacted value back keeps the
+    stored URL (see `validate_config_payload`).
+    """
+    snapshot = copy.deepcopy(state.channel_config.get(channel_id, {}))
+    for config in snapshot.values():
+        if isinstance(config, dict) and config.get('calendar_url'):
+            config['calendar_url'] = calendarfeed.describe_calendar_url(config['calendar_url'])
+    return snapshot
 
 
 def ui_meta() -> dict:
