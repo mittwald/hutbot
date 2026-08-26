@@ -1617,6 +1617,25 @@ def test_a_message_may_not_name_more_moments_than_the_cap():
     assert "up to 8 different moments" in error and "names 11" in error
 
 
+@pytest.mark.asyncio
+async def test_a_gated_rule_reads_its_condition_and_its_message_at_one_moment(cal):
+    """The condition's selector must be resolved by the same build the message uses."""
+    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG,
+              "reply_message": "next: {{calendar_summary(offset=next)}}",
+              "conditions": [{"variable": "calendar_summary", "operator": "not_empty", "offset": "next"}]}
+    channel = _mk_channel({"default": config})
+    calls = []
+
+    _seed_user_caches()
+    with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
+        met, reason, variables = await hutbot.actions.evaluate_conditions(
+            _ui_app(), "", channel, config, "default", {"channel_id": channel.id})
+
+    assert met is True, reason
+    assert len(calls) == 1
+    rendered = hutbot.templating.render_reply_message_template(config["reply_message"], variables, config)
+    assert rendered.startswith("next: ") and "<no-event>" not in rendered
+
 # ----- built-in calendars -----
 
 def _current_and_next(calendar, config=None, now=None):

@@ -51,6 +51,8 @@ from .constants import (
     TRIGGER_MESSAGE,
     TRIGGER_CRON,
     TRIGGERS,
+    CALENDAR_EVENT_TEMPLATE_VARIABLES,
+    parse_event_offset,
 )
 from .models import User
 
@@ -239,9 +241,26 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
             value = condition.get('value')
             value = "" if value is None else str(value)
             case_sensitive = _ui_bool(condition.get('case_sensitive'))
+            at = str(condition.get('at') or "").strip()
+            offset = str(condition.get('offset') or "").strip()
             if variable not in SUPPORTED_TEMPLATE_VARIABLES:
                 errors[f'conditions.{i}'] = "Pick a supported template variable."
                 continue
+            if (at or offset) and variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+                errors[f'conditions.{i}'] = "Only a calendar event variable takes a moment or an offset."
+                continue
+            if at:
+                try:
+                    datetimefmt.validate_at_time(at)
+                except ValueError as e:
+                    errors[f'conditions.{i}'] = str(e)
+                    continue
+            if offset:
+                try:
+                    parse_event_offset(offset)
+                except ValueError as e:
+                    errors[f'conditions.{i}'] = str(e)
+                    continue
             if not operator:
                 errors[f'conditions.{i}'] = "Operator must be one of " + ", ".join(CONDITION_OPERATORS_ORDERED) + "."
                 continue
@@ -257,7 +276,12 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
                 except re.error as e:
                     errors[f'conditions.{i}'] = f"Invalid pattern: {e}"
                     continue
-            clean_conditions.append({'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive})
+            clean = {'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive}
+            if at:
+                clean['at'] = at
+            if offset:
+                clean['offset'] = offset
+            clean_conditions.append(clean)
     if not any(key == 'conditions' or key.startswith('conditions.') for key in errors):
         cfg['conditions'] = clean_conditions
 
@@ -513,6 +537,8 @@ def ui_meta() -> dict:
         'calendars': [{'name': calendar.name, 'title': calendar.title}
                       for calendar in sorted(state.builtin_calendars, key=lambda c: c.name)],
         'template_variables': sorted(SUPPORTED_TEMPLATE_VARIABLES),
+        # Which variables the editor may offer a moment and an offset for.
+        'template_variables_with_selector': sorted(CALENDAR_EVENT_TEMPLATE_VARIABLES),
         'opsgenie_configured': state.opsgenie_configured,
         'default_config': copy.deepcopy(DEFAULT_CONFIG),
         'default_config_name': DEFAULT_CONFIG_NAME,

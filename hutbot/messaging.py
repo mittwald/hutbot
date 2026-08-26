@@ -430,6 +430,10 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         "the comparison case sensitive. An operator on a list variable matches when *any* entry matches, "
         "and its `not_` form when *none* does, so `add condition calendar_attendee_emails equals "
         "nico@example.com` asks whether that person is on the event.",
+        "A condition on a calendar variable takes `at` and `offset` too, written on the variable: "
+        f"`{command} [config] add condition calendar_summary(at=+1d) contains Wartung` gates the rule "
+        "on tomorrow's event rather than today's. Write a date and time without a space there "
+        "(`at=2026-08-27T09:00`), because the operator is split off first.",
         "Conditions are checked when the rule fires — for a `message` rule that is after the "
         "reminder delay, judged against the conditions as they were when the message arrived. "
         "A condition that reads only the message or its sender is checked straight away, so no "

@@ -83,14 +83,22 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
             if isinstance(conditions, list):
                 normalized_conditions = []
                 for condition in conditions:
-                    variable, operator, value, case_sensitive = normalize_condition(condition)
+                    variable, operator, value, case_sensitive, at, offset = normalize_condition(condition)
                     if not variable or not operator:
                         log_warning(f"Dropping an unusable condition of config '{config_name}' in channel {channel_id}.")
                         continue
                     if variable not in SUPPORTED_TEMPLATE_VARIABLES:
                         log_warning(f"Dropping condition on unknown variable '{variable}' of config '{config_name}' in channel {channel_id}.")
                         continue
-                    normalized_conditions.append({'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive})
+                    entry = {'variable': variable, 'operator': operator, 'value': value,
+                             'case_sensitive': case_sensitive}
+                    # Only stored when set, so a config without a calendar selector keeps the
+                    # shape it had.
+                    if at:
+                        entry['at'] = at
+                    if offset:
+                        entry['offset'] = offset
+                    normalized_conditions.append(entry)
                 single_config['conditions'] = normalized_conditions
             else:
                 single_config['conditions'] = []

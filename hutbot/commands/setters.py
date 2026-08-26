@@ -44,7 +44,10 @@ from ..constants import (
     TRIGGER_CRON,
     TRIGGERS,
     event_slice_prefix,
+    CALENDAR_EVENT_TEMPLATE_VARIABLES,
+    parse_event_offset,
 )
+from ..models import TemplateExpressionError
 from ..textutil import log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
 
 try:
@@ -418,7 +421,26 @@ async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, use
     if not parts:
         await messaging.send_message(app, channel, user, f"Invalid *condition*. Use `{state.slash_command} {config_name} add condition <variable> <operator> [value]`.", thread_ts)
         return
-    variable = conditionutil.normalize_variable(parts[0])
+    # The variable may carry the calendar arguments, `calendar_summary(at=+1d,offset=next)`, so
+    # it is parsed as a template expression. The operator and value are split off first, which
+    # is why an `at` written with a space (`at=2026-08-27 09:00`) has to use the `T` form here.
+    variable_text = parts[0]
+    at, offset = "", ""
+    if "(" in variable_text:
+        try:
+            expression = templating.parse_template_expression(
+                variable_text[2:-2].strip() if variable_text.startswith("{{") else variable_text)
+        except TemplateExpressionError as e:
+            await messaging.send_message(app, channel, user, f"Invalid *condition variable*: {e}. Write a date and time as `at=2026-08-27T09:00`, without a space.", thread_ts)
+            return
+        variable = conditionutil.normalize_variable(expression.variable)
+        at, offset = expression.args.get("at", ""), expression.args.get("offset", "")
+        unsupported = sorted(set(expression.args) - {"at", "offset"})
+        if unsupported:
+            await messaging.send_message(app, channel, user, f"A *condition* takes only `at` and `offset`, not {', '.join(f'`{name}`' for name in unsupported)}.", thread_ts)
+            return
+    else:
+        variable = conditionutil.normalize_variable(variable_text)
     rest = parts[1] if len(parts) > 1 else ""
 
     operator, value, case_sensitive = "", "", False
@@ -436,6 +458,21 @@ async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, use
         supported = ", ".join(f"`{{{{{v}}}}}`" for v in sorted(SUPPORTED_TEMPLATE_VARIABLES))
         await messaging.send_message(app, channel, user, f"Unknown *condition variable* `{{{{{variable}}}}}`. Supported variables: {supported}.", thread_ts)
         return
+    if (at or offset) and variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+        await messaging.send_message(app, channel, user, f"`{{{{{variable}}}}}` does not read a calendar event, so it takes neither `at` nor `offset`.", thread_ts)
+        return
+    if at:
+        try:
+            datetimefmt.validate_at_time(at)
+        except ValueError as e:
+            await messaging.send_message(app, channel, user, f"Invalid *condition*: {e}.", thread_ts)
+            return
+    if offset:
+        try:
+            parse_event_offset(offset)
+        except ValueError as e:
+            await messaging.send_message(app, channel, user, f"Invalid *condition*: {e}.", thread_ts)
+            return
     if not operator:
         supported = ", ".join(f"`{op}`" for op in CONDITION_OPERATORS_ORDERED)
         await messaging.send_message(app, channel, user, f"Invalid *condition operator*. Must be one of {supported}.", thread_ts)
@@ -454,6 +491,11 @@ async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, use
             return
 
     condition = {'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive}
+    # Only stored when given, so a condition without a calendar selector keeps its old shape.
+    if at:
+        condition['at'] = at
+    if offset:
+        condition['offset'] = offset
     config = _ensure_config(channel, config_name)
     existing = list(config.get('conditions') or [])
     if any(conditionutil.normalize_condition(c) == conditionutil.normalize_condition(condition) for c in existing):

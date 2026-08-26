@@ -185,8 +185,8 @@ def test_missing_case_sensitive_key_defaults_to_insensitive():
 
 
 def test_value_less_operators_normalize_the_case_flag_away():
-    assert normalize_condition(_c("message", "empty", "junk", True)) == ("message", "empty", "", False)
-    assert normalize_condition(_c("message", "not_empty", "junk", True)) == ("message", "not_empty", "", False)
+    assert normalize_condition(_c("message", "empty", "junk", True)) == ("message", "empty", "", False, "", "")
+    assert normalize_condition(_c("message", "not_empty", "junk", True)) == ("message", "not_empty", "", False, "", "")
 
 
 # ----- chaining -----
@@ -559,3 +559,119 @@ async def test_show_config_leaves_the_variable_bare_inside_the_fence():
     block = sent_messages(send).split("```")[1]
     assert '{{message}} contains "deploy" (case-insensitive)' in block
     assert '`{{message}}`' not in block
+
+
+# ----- a condition may read another moment -----
+
+@pytest.mark.asyncio
+async def test_add_condition_accepts_a_calendar_selector():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "add condition calendar_summary(at=+1d,offset=next) contains Wartung", channel, user)
+
+    condition = channel.configs["default"]["conditions"][0]
+    assert condition == {"variable": "calendar_summary", "operator": "contains", "value": "Wartung",
+                         "case_sensitive": False, "at": "+1d", "offset": "next"}
+    assert 'at="+1d"' in send.call_args.args[3] and "offset=next" in send.call_args.args[3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec,expected", [
+    ("message(at=+1d) contains x", "does not read a calendar event"),
+    ("calendar_summary(at=tomorrow) contains x", "must look like"),
+    ("calendar_summary(offset=2h) contains x", "counts events"),
+    ("calendar_summary(nth=1) contains x", "takes only `at` and `offset`"),
+    ("calendar_summary(at=2026-08-27 09:00) contains x", "without a space"),
+])
+async def test_add_condition_rejects_an_unusable_selector(spec, expected):
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, f"add condition {spec}", channel, user)
+
+    assert expected in send.call_args.args[3]
+    assert not channel.configs["default"]["conditions"]
+
+
+def test_a_condition_judges_the_slice_its_selector_names():
+    """The condition and a message with the same arguments read one resolved value."""
+    from hutbot.constants import event_slice_name as slice_name
+
+    variables = {"calendar_summary": "Today",
+                 f"__{slice_name('calendar_summary', '+1d', '')}": "Wartungsfenster"}
+    tomorrow = {"variable": "calendar_summary", "operator": "contains", "value": "Wartung", "at": "+1d"}
+    today = {"variable": "calendar_summary", "operator": "contains", "value": "Wartung"}
+
+    assert hutbot.conditionutil.evaluate_conditions({"conditions": [tomorrow]}, variables)[0] is True
+    assert hutbot.conditionutil.evaluate_conditions({"conditions": [today]}, variables)[0] is False
+
+
+def test_a_condition_on_a_list_slice_matches_any_entry():
+    from hutbot.constants import event_slice_name as slice_name
+
+    stem = slice_name("calendar_attendee_emails", "", "next")
+    variables = {"calendar_attendee_emails": "ann@example.com",
+                 "__calendar_attendee_emails_items": ["ann@example.com"],
+                 f"__{stem}": "bob@example.com, cleo@example.com",
+                 f"__{stem}_items": ["bob@example.com", "cleo@example.com"]}
+    condition = {"variable": "calendar_attendee_emails", "operator": "equals",
+                 "value": "cleo@example.com", "offset": "next"}
+
+    assert hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0] is True
+
+
+def test_a_selector_is_dropped_from_a_condition_that_cannot_use_one():
+    """`at` on a non-calendar variable is meaningless, so it is not kept."""
+    condition = {"variable": "message", "operator": "contains", "value": "x", "at": "+1d"}
+
+    assert hutbot.conditionutil.normalize_condition(condition)[4:] == ("", "")
+
+
+def test_condition_calendar_selectors_are_deduped():
+    config = {"conditions": [
+        {"variable": "calendar_summary", "operator": "contains", "value": "a", "at": "+1d"},
+        {"variable": "calendar_location", "operator": "contains", "value": "b", "at": " +1D "},
+        {"variable": "calendar_summary", "operator": "contains", "value": "c", "offset": "next"},
+        {"variable": "message", "operator": "contains", "value": "d"},
+    ]}
+
+    assert hutbot.conditionutil.condition_calendar_selectors(config) == [("+1d", ""), ("", "next")]
+
+
+@pytest.mark.asyncio
+async def test_two_conditions_differing_only_in_their_moment_are_not_duplicates():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message'):
+        await process_command(app, "add condition calendar_summary(at=+1d) contains x", channel, user)
+        await process_command(app, "add condition calendar_summary(at=+2d) contains x", channel, user)
+
+    assert len(channel.configs["default"]["conditions"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_migration_keeps_a_conditions_selector():
+    app = AsyncMock()
+    config = {"C1": {"cal": {**DEFAULT_CONFIG.copy(), "conditions": [
+        {"variable": "calendar_summary", "operator": "contains", "value": "x", "at": " +1D ", "offset": "NEXT"},
+        {"variable": "calendar_next_summary", "operator": "contains", "value": "y"},
+    ]}}}
+
+    with patch('hutbot.persistence.log_warning') as log_warning:
+        migrated = await hutbot.persistence.migrate_and_apply_defaults(app, config)
+
+    conditions = migrated["C1"]["cal"]["conditions"]
+    # The selector survives, normalised; the condition on a name that no longer exists is dropped.
+    assert conditions == [{"variable": "calendar_summary", "operator": "contains", "value": "x",
+                           "case_sensitive": False, "at": "+1D", "offset": "NEXT"}]
+    assert "calendar_next_summary" in log_warning.call_args.args[0]

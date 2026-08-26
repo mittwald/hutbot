@@ -578,7 +578,15 @@ function conditionsSection() {
 }
 
 function conditionRow(cond, i) {
-  const varSel = h("select", { class: "mono", onchange: (e) => { cond.variable = e.target.value; liveRefresh(); } });
+  const varSel = h("select", { class: "mono", onchange: (e) => {
+    cond.variable = e.target.value;
+    // The moment and the offset only mean something for a calendar event.
+    if (!(state.meta.template_variables_with_selector || []).includes(cond.variable)) {
+      delete cond.at;
+      delete cond.offset;
+    }
+    structuralRefresh();
+  } });
   for (const v of state.meta.template_variables) varSel.append(h("option", { value: v, selected: cond.variable === v }, v));
 
   const opSel = h("select", { onchange: (e) => { cond.operator = e.target.value; structuralRefresh(); } });
@@ -592,6 +600,16 @@ function conditionRow(cond, i) {
     const caseBox = h("input", { type: "checkbox", checked: !!cond.case_sensitive,
       onchange: (e) => { cond.case_sensitive = e.target.checked; liveRefresh(); } });
     parts.push(h("label", { class: "case-toggle", title: "Match case exactly" }, caseBox, h("span", { text: "Aa" })));
+  }
+  // Which event a calendar condition reads: `at` moves the moment, `offset` counts events.
+  // `liveRefresh` rather than a structural one, so typing here cannot steal the focus.
+  if ((state.meta.template_variables_with_selector || []).includes(cond.variable)) {
+    parts.push(h("input", { type: "text", class: "mono cond-at", value: cond.at || "", placeholder: "at (+1d)",
+      title: "Read the calendar at another moment, e.g. +1d or 2026-08-27T09:00",
+      oninput: (e) => { cond.at = e.target.value; liveRefresh(); } }));
+    parts.push(h("input", { type: "text", class: "mono cond-offset", value: cond.offset || "", placeholder: "offset",
+      title: "Which event: next, prev, or a count like +2",
+      oninput: (e) => { cond.offset = e.target.value; liveRefresh(); } }));
   }
   parts.push(h("div", { class: "drop" }, h("button", { class: "icon-btn", type: "button", title: "Remove condition", "aria-label": "Remove condition",
     onclick: () => { draft().conditions.splice(i, 1); structuralRefresh(); } }, "×")));

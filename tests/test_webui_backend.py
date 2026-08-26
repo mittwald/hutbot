@@ -575,3 +575,57 @@ async def test_the_config_snapshot_keeps_the_builtin_name_and_still_hides_every_
         snapshot = ui_snapshot_configs("C1")
     assert snapshot["cal"]["calendar_builtin"] == "rota"
     assert "SECRETTOKEN" not in str(snapshot)
+
+
+# ----- a condition may read another moment -----
+
+@pytest.mark.asyncio
+async def test_ui_meta_names_the_variables_that_take_a_selector():
+    meta = hutbot.webui_backend.ui_meta()
+
+    assert "calendar_summary" in meta["template_variables_with_selector"]
+    assert "calendar_name" not in meta["template_variables_with_selector"]
+    assert "message" not in meta["template_variables_with_selector"]
+
+
+@pytest.mark.asyncio
+async def test_the_ui_keeps_a_conditions_moment_and_offset():
+    _seed_user_caches()
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": [
+        {"variable": "calendar_summary", "operator": "contains", "value": "Wartung",
+         "at": " +1d ", "offset": "next"}]}
+
+    cfg, errors = await validate_config_payload(payload, _ui_app(), "C1", None)
+
+    assert errors == {}
+    assert cfg["conditions"] == [{"variable": "calendar_summary", "operator": "contains",
+                                 "value": "Wartung", "case_sensitive": False,
+                                 "at": "+1d", "offset": "next"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("condition,expected", [
+    ({"variable": "message", "operator": "contains", "value": "x", "at": "+1d"},
+     "Only a calendar event variable"),
+    ({"variable": "calendar_summary", "operator": "contains", "value": "x", "at": "tomorrow"},
+     "must look like"),
+    ({"variable": "calendar_summary", "operator": "contains", "value": "x", "offset": "2h"},
+     "counts events"),
+])
+async def test_the_ui_rejects_an_unusable_condition_selector(condition, expected):
+    _seed_user_caches()
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": [condition]}
+
+    _, errors = await validate_config_payload(payload, _ui_app(), "C1", None)
+
+    assert expected in errors["conditions.0"]
+
+
+@pytest.mark.asyncio
+async def test_the_ui_rejects_a_selector_on_a_non_calendar_template_variable():
+    _seed_user_caches()
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": '{{date(at="+1d")}}'}
+
+    _, errors = await validate_config_payload(payload, _ui_app(), "C1", None)
+
+    assert "does not read a calendar event" in errors["reply_message"]

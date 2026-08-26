@@ -232,6 +232,8 @@ existing configs keep working unchanged.
     ```bash
     # is this person on the event that is running right now?
     /hutbot oncall add condition calendar_attendee_emails equals nico@example.com
+    # …and `at`/`offset` work here too, written on the variable:
+    /hutbot oncall add condition calendar_summary(at=+1d) contains Wartung
     # nobody from outside the company is on it
     /hutbot oncall add condition calendar_attendee_emails not_contains @external.com
     ```
@@ -257,6 +259,7 @@ existing configs keep working unchanged.
   # nudge only while a "Composer" meeting is actually running
   /hutbot standup set calendar https://outlook.office365.com/owa/calendar/…/calendar.ics
   /hutbot standup add condition calendar_summary contains composer
+  /hutbot standup add condition calendar_summary(offset=next) not_empty
   /hutbot standup add condition message not_empty
   /hutbot standup set condition-mode all
   ```
