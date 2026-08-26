@@ -702,6 +702,23 @@ prints the feed hosts so they can be checked against the rules.
 ### Deploy
 
 ```bash
+make deploy-dev                  # newest release tag, release hutbot-dev
+make deploy-dev ARGS='diff'      # preview first
+make deploy-prod                 # newest release tag, release hutbot
+make deploy-dev IMAGE_TAG=v1.1.0 # or pin one explicitly
+```
+
+`IMAGE_TAG` defaults to the most recently created `v*` git tag (`make tags` lists the last five) —
+an image is published per pushed tag, so that is the newest deployable one. Sorted by creation date
+rather than by version, because git's version sort ranks a prerelease against its release
+unpredictably. The target warns when that tag is unknown to your clone (`git fetch --tags`) or when
+HEAD has commits the image does not contain, and refuses to deploy with no tag at all. `make image`
+labels a local build from `git describe` instead (`BUILD_TAG`), so a dirty working tree can never
+masquerade as a release.
+
+The scripts can also be called directly:
+
+```bash
 ./deploy-prod.sh v1.1.0          # release hutbot, environment default
 ./deploy-prod.sh v1.1.0 diff     # preview first
 ./deploy-dev.sh  v1.1.0          # release hutbot-dev, environment dev

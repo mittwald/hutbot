@@ -701,3 +701,45 @@ def test_edit_calendars_show_prints_the_current_list(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "notfallhotline" in result.stdout
     assert "kv put" not in result.vault_calls
+
+
+# ----- Makefile deploy guard -----
+
+def _make(*args):
+    return subprocess.run(["make", *args], cwd=ROOT, capture_output=True, text=True, check=False)
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
+def test_the_deploy_targets_default_to_the_newest_tag():
+    """`make deploy-dev` with no IMAGE_TAG deploys the most recently cut release tag."""
+    newest = subprocess.run(["git", "tag", "-l", "v[0-9]*", "--sort=-creatordate"],
+                            cwd=ROOT, capture_output=True, text=True, check=False).stdout.split("\n")[0]
+    if not newest:
+        pytest.skip("no release tags in this clone")
+
+    result = _make("-n", "deploy-dev")
+
+    assert result.returncode == 0, result.stderr
+    assert f'./deploy-dev.sh "{newest}"' in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
+def test_the_deploy_guard_refuses_an_empty_image_tag():
+    """A clone without tags must not fall through to a deploy with no tag at all."""
+    result = _make("require-image-tag", "IMAGE_TAG=")
+
+    assert result.returncode != 0
+    assert "no v* git tag found" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
+def test_the_deploy_guard_warns_when_head_is_ahead_of_the_tag():
+    first = subprocess.run(["git", "tag", "-l", "v[0-9]*", "--sort=creatordate"],
+                           cwd=ROOT, capture_output=True, text=True, check=False).stdout.split("\n")[0]
+    if not first:
+        pytest.skip("no release tags in this clone")
+
+    result = _make("require-image-tag", f"IMAGE_TAG={first}")
+
+    assert result.returncode == 0, result.stderr
+    assert "commit(s) ahead of" in result.stderr

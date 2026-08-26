@@ -4,15 +4,25 @@ DOCKER ?= docker
 HELM ?= helm
 
 IMAGE_REPOSITORY ?= ghcr.io/mittwald/hutbot
-IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-IMAGE := $(IMAGE_REPOSITORY):$(IMAGE_TAG)
+
+# An image is published per pushed tag, so the newest tag is the newest deployable image and
+# the default for a deploy. Sorted by creation date, not by version: git's version sort ranks
+# a prerelease (v1.1.0-alpha.36) against its release (v1.1.0) in a way nobody wants to reason
+# about, and "latest" here means "the one cut most recently". Override with IMAGE_TAG=v1.2.3.
+LATEST_TAG = $(shell git tag -l 'v[0-9]*' --sort=-creatordate 2>/dev/null | head -n 1)
+IMAGE_TAG ?= $(LATEST_TAG)
+
+# What `make image` labels a local build: a tag plus the commits and dirt on top of it, which
+# is exactly what must NOT be deployed — hence a separate variable from IMAGE_TAG.
+BUILD_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+IMAGE := $(IMAGE_REPOSITORY):$(BUILD_TAG)
 ARGS ?=
 
 .DEFAULT_GOAL := help
 
 .PHONY: help install run check python-check shellcheck helm-lint test test-deployment \
 	image push seed-vault seed-vault-dev sync-secret sync-secret-dev calendars calendars-dev \
-	deploy-dev deploy-prod
+	tags require-image-tag deploy-dev deploy-prod
 
 help: ## Show available targets
 	@echo "Hutbot targets:"
@@ -20,7 +30,7 @@ help: ## Show available targets
 		| sort \
 		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2}'
 	@echo ""
-	@echo "vars: IMAGE_REPOSITORY, IMAGE_TAG, ARGS"
+	@echo "vars: IMAGE_REPOSITORY, IMAGE_TAG (default: $(if $(LATEST_TAG),$(LATEST_TAG),none found)), BUILD_TAG, ARGS"
 
 install: ## Install runtime and development dependencies
 	$(PIP) install -r requirements-dev.txt
@@ -72,8 +82,22 @@ calendars: ## Edit the production built-in calendar list in Vault [ARGS='--sync'
 calendars-dev: ## Edit the dev built-in calendar list in Vault [ARGS='--sync']
 	./scripts/edit-calendars.sh --env dev $(ARGS)
 
-deploy-dev: ## Deploy dev; pass IMAGE_TAG=v1.2.3 [ARGS='diff']
+tags: ## Show the most recent release tags
+	@git tag -l 'v[0-9]*' --sort=-creatordate | head -n 5
+
+require-image-tag:
+	@test -n "$(IMAGE_TAG)" || { \
+		echo "error: no v* git tag found and no IMAGE_TAG given" >&2; \
+		echo "       run \`git fetch --tags\`, or pass IMAGE_TAG=v1.2.3" >&2; \
+		exit 1; }
+	@git rev-parse -q --verify "refs/tags/$(IMAGE_TAG)" >/dev/null \
+		|| echo "warning: $(IMAGE_TAG) is not a tag in this clone — make sure that image exists" >&2
+	@ahead=$$(git rev-list --count "$(IMAGE_TAG)..HEAD" 2>/dev/null || echo 0); \
+		test "$$ahead" = 0 \
+		|| echo "warning: HEAD is $$ahead commit(s) ahead of $(IMAGE_TAG); that image has none of them" >&2
+
+deploy-dev: require-image-tag ## Deploy dev with the newest tag [IMAGE_TAG=v1.2.3] [ARGS='diff']
 	./deploy-dev.sh "$(IMAGE_TAG)" $(ARGS)
 
-deploy-prod: ## Deploy production; pass IMAGE_TAG=v1.2.3 [ARGS='diff']
+deploy-prod: require-image-tag ## Deploy production with the newest tag [IMAGE_TAG=v1.2.3] [ARGS='diff']
 	./deploy-prod.sh "$(IMAGE_TAG)" $(ARGS)
