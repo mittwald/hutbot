@@ -331,9 +331,6 @@ CALENDAR_EVENT_TEMPLATE_VARIABLES = CALENDAR_TEMPLATE_VARIABLES - {"calendar_nam
 # How far `offset` may count in either direction. The forward walk is bounded by the ICS
 # lookahead and the backward one by a window, so neither may be asked for an arbitrary count.
 MAX_EVENT_OFFSET = 20
-# How many distinct (moment, offset) pairs one config may ask for. Each costs a selection over
-# the already-parsed feed — cheap, but not free, and a template naming dozens is a mistake.
-MAX_CALENDAR_SELECTORS = 8
 EVENT_OFFSET_WORDS = {"next": 1, "previous": -1, "prev": -1, "current": 0}
 
 

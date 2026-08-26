@@ -1609,14 +1609,6 @@ async def test_the_placeholders_of_a_slice_are_internal_only(cal):
     assert not any(key.endswith("calendar_name") for key in with_slices if key.startswith("__event"))
 
 
-def test_a_message_may_not_name_more_moments_than_the_cap():
-    template = " ".join(f'{{{{calendar_summary(at="+{hour}h")}}}}' for hour in range(1, 12))
-
-    error = hutbot.templating.validate_template_expressions(template)
-
-    assert "up to 8 different moments" in error and "names 11" in error
-
-
 @pytest.mark.asyncio
 async def test_a_gated_rule_reads_its_condition_and_its_message_at_one_moment(cal):
     """The condition's selector must be resolved by the same build the message uses."""
@@ -1697,8 +1689,8 @@ def test_a_condition_with_an_invalid_selector_fails_closed(condition):
     assert "cannot be read" in reason
 
 
-def test_the_selector_cap_counts_the_whole_config_not_one_field():
-    """Each field is validated alone, so only the union can be too long."""
+def test_the_selectors_cover_every_field_of_the_config():
+    """Nothing is dropped: a config may read as many moments as it likes."""
     config = {
         "reply_message": " ".join(f'{{{{calendar_summary(at="+{hour}h")}}}}' for hour in range(1, 8)),
         "action_target": '{{calendar_other_attendee_users(at="+9h", nth=1)}}',
@@ -1706,15 +1698,11 @@ def test_the_selector_cap_counts_the_whole_config_not_one_field():
         "conditions": [{"variable": "calendar_summary", "operator": "not_empty", "at": "+11h"}],
     }
 
-    with patch('hutbot.templating.log_warning') as log_warning:
-        selectors = hutbot.templating.config_calendar_selectors(config)
+    selectors = hutbot.templating.config_calendar_selectors(config)
 
-    # Capped once, over the union, and it says which moments went unread.
-    # Capped once over the union, in the order the fields are scanned (message, alert, target).
-    assert len(selectors) == 8
-    assert selectors[0] == ("+1h", "") and selectors[7] == ("+10h", "")
-    warning = log_warning.call_args.args[0]
-    assert "10 different moments" in warning and "+9h" in warning and "+11h" in warning
+    # Message, then alert, then target, then the conditions — every one of them resolved.
+    assert [at for at, _ in selectors] == ["+1h", "+2h", "+3h", "+4h", "+5h", "+6h", "+7h",
+                                           "+10h", "+9h", "+11h"]
 
 
 def test_the_config_selectors_include_the_conditions():

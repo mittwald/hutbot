@@ -4,8 +4,6 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
-from employee_list import log_warning
-
 from . import calendarfeed
 from . import conditionutil
 from . import datetimefmt
@@ -14,7 +12,6 @@ from .constants import (
     CALENDAR_EVENT_TEMPLATE_VARIABLES,
     DATETIME_TEMPLATE_VARIABLES,
     LIST_TEMPLATE_VARIABLES,
-    MAX_CALENDAR_SELECTORS,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
     TEMPLATE_ARGUMENT_ALIASES,
@@ -212,13 +209,6 @@ def validate_template_expressions(message: str) -> str:
             except ValueError as e:
                 return str(e)
 
-    # Uncapped here: the count is what the user is told about, and the cap in the collector is
-    # only a backstop for a config that was edited by hand.
-    selectors = find_calendar_selectors(message, limit=None)
-    if len(selectors) > MAX_CALENDAR_SELECTORS:
-        return (f"a message may read the calendar at up to {MAX_CALENDAR_SELECTORS} different "
-                f"moments; this one names {len(selectors)}")
-
     return ""
 
 
@@ -245,13 +235,13 @@ def config_templates(config: dict | None) -> tuple[str, ...]:
             (config.get('action_target') or ''))
 
 
-def find_calendar_selectors(*messages: str, limit: int | None = MAX_CALENDAR_SELECTORS) -> list[tuple[str, str]]:
+def find_calendar_selectors(*messages: str) -> list[tuple[str, str]]:
     """The distinct `(at, offset)` pairs the calendar variables in these templates ask for.
 
     First-seen order, deduped on the normalised pair, so a message reading the same moment
-    five times costs one calendar selection. Capped, because each pair costs a selection and a
-    template naming dozens is a mistake — validation reports that; here it is a backstop for a
-    hand-edited config.
+    five times costs one calendar selection. Deliberately unbounded: the feed is fetched and
+    expanded once per run regardless, and each additional moment is one more query over that
+    index — cheap enough that a limit would only get in the way of a legitimate template.
     """
     selectors: list[tuple[str, str]] = []
     seen = set()
@@ -270,7 +260,7 @@ def find_calendar_selectors(*messages: str, limit: int | None = MAX_CALENDAR_SEL
                 continue
             seen.add(key)
             selectors.append((at, offset))
-    return selectors if limit is None else selectors[:limit]
+    return selectors
 
 
 def config_calendar_selectors(config: dict | None) -> list[tuple[str, str]]:
@@ -279,25 +269,16 @@ def config_calendar_selectors(config: dict | None) -> list[tuple[str, str]]:
     The one definition of that union, because everything that resolves a namespace has to
     agree on it — the gate, the message, the alert, the action target and the `test` preview.
     A preview that scanned fewer fields than the firing would report the opposite verdict.
-
-    The cap is applied once, here, to the complete union rather than per field: each field is
-    validated on its own, so eight moments in the message and a ninth in the target both pass
-    validation and only the union is too long. Truncating is a last resort and says so in the
-    log; the dropped slices render placeholders.
     """
-    selectors = find_calendar_selectors(*config_templates(config), limit=None)
+    selectors = find_calendar_selectors(*config_templates(config))
     seen = {normalize_selector(at, offset) for at, offset in selectors}
     for at, offset in conditionutil.condition_calendar_selectors(config):
         key = normalize_selector(at, offset)
         if key not in seen:
             seen.add(key)
             selectors.append((at, offset))
-    if len(selectors) > MAX_CALENDAR_SELECTORS:
-        dropped = ", ".join(f"at={at!r} offset={offset!r}"
-                            for at, offset in selectors[MAX_CALENDAR_SELECTORS:])
-        log_warning(f"A configuration reads the calendar at {len(selectors)} different moments; "
-                    f"only {MAX_CALENDAR_SELECTORS} are resolved. Not read: {dropped}")
-    return selectors[:MAX_CALENDAR_SELECTORS]
+    return selectors
+
 
 def find_unknown_template_variables(message: str) -> list[str]:
     try:
