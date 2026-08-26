@@ -593,3 +593,111 @@ def test_seed_vault_dry_run_writes_nothing(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "dry run: nothing was written." in result.stdout
     assert "kv put" not in result.vault_calls
+
+
+# ----- scripts/edit-calendars.sh -----
+
+EDIT_CALENDARS = ROOT / "scripts/edit-calendars.sh"
+CALENDARS_JSON = ('[{"name":"notfallhotline","title":"Notfallhotline",'
+                  '"url":"https://bridge.example.com/calendars/notfallhotline.ics?token=SECRETTOKEN"}]')
+
+
+def _run_edit_calendars(tmp_path, state, edit=CALENDARS_JSON, *args):
+    """Run the editor flow against a stub `vault` and a non-interactive $EDITOR."""
+    import json as _json
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    state_file = tmp_path / "vault-state.json"
+    state_file.write_text(_json.dumps(state))
+    calls = tmp_path / "vault-calls"
+    payload = tmp_path / "payload.json"
+    _stub(bin_dir, "vault", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$1 $2" in
+  "kv get") cat {state_file} ;;
+  "kv put") cp "${{4#@}}" {payload} ;;
+  "kv patch") cp "${{4#*=@}}" {payload} ;;
+esac
+exit 0
+''')
+    _stub(bin_dir, "fake-editor", f'''
+cat > "$1" <<'JSON'
+{edit}
+JSON
+''')
+    result = subprocess.run([str(EDIT_CALENDARS), "--env", "dev", *args], cwd=ROOT,
+                            capture_output=True, text=True, check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                                 "EDITOR": "fake-editor"})
+    result.vault_calls = calls.read_text() if calls.exists() else ""
+    result.payload = _json.loads(payload.read_text()) if payload.exists() else None
+    return result
+
+
+def test_edit_calendars_patches_a_v2_mount(tmp_path):
+    state = {"data": {"data": {"SLACK_APP_TOKEN": "xapp-a"}, "metadata": {"version": 3}}}
+    result = _run_edit_calendars(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert "kv patch" in result.vault_calls and "kv put" not in result.vault_calls
+    # patch touches one field, so the payload is the list itself.
+    assert result.payload[0]["name"] == "notfallhotline"
+
+
+def test_edit_calendars_merges_the_other_fields_on_a_kv_v1_mount(tmp_path):
+    """v1 has no `kv patch`, so a put has to carry every sibling field back."""
+    state = {"data": {"SLACK_APP_TOKEN": "xapp-a", "SLACK_BOT_TOKEN": "xoxb-b",
+                      "OPSGENIE_TOKEN": "og"}}
+    result = _run_edit_calendars(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert "kv put" in result.vault_calls and "kv patch" not in result.vault_calls
+    assert "KV v1 mount" in result.stderr
+    assert set(result.payload) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN",
+                                   "HUTBOT_BUILTIN_CALENDARS"}
+    assert result.payload["SLACK_BOT_TOKEN"] == "xoxb-b"
+    assert "notfallhotline" in result.payload["HUTBOT_BUILTIN_CALENDARS"]
+
+
+def test_edit_calendars_never_puts_a_value_on_the_command_line(tmp_path):
+    result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}})
+
+    assert result.returncode == 0, result.stderr
+    assert "SECRETTOKEN" not in result.vault_calls
+    # The feed host is printed for the egress check; the token in its query string is not.
+    assert "bridge.example.com" in result.stdout and "SECRETTOKEN" not in result.stdout
+
+
+@pytest.mark.parametrize("edit", [
+    '{"notfallhotline": "…"}',
+    '[{"name":"Notfallhotline","title":"N","url":"https://bridge.example.com/x.ics"}]',
+    '[{"name":"rota","title":"","url":"https://bridge.example.com/x.ics"}]',
+    '[{"name":"rota","title":"R","url":"http://bridge.example.com/x.ics"}]',
+])
+def test_edit_calendars_refuses_to_write_an_invalid_list(tmp_path, edit):
+    result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}}, edit)
+
+    assert result.returncode != 0
+    assert result.payload is None
+    # The temp file is shredded on exit, so say plainly that the edit is gone.
+    assert "was NOT saved" in result.stderr
+
+
+def test_edit_calendars_writes_nothing_when_the_list_is_unchanged(tmp_path):
+    state = {"data": {"HUTBOT_BUILTIN_CALENDARS": CALENDARS_JSON, "SLACK_APP_TOKEN": "xapp-a"}}
+    result = _run_edit_calendars(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert "unchanged; nothing was written." in result.stdout
+    assert "kv put" not in result.vault_calls and "kv patch" not in result.vault_calls
+
+
+def test_edit_calendars_show_prints_the_current_list(tmp_path):
+    state = {"data": {"HUTBOT_BUILTIN_CALENDARS": CALENDARS_JSON}}
+    result = _run_edit_calendars(tmp_path, state, CALENDARS_JSON, "--show")
+
+    assert result.returncode == 0, result.stderr
+    assert "notfallhotline" in result.stdout
+    assert "kv put" not in result.vault_calls

@@ -610,8 +610,13 @@ read, validates the built-in calendar list and prints its feed hosts, and refuse
 remove a key the live Secret already has (`--allow-drop`, or `--drop KEY`, to mean it). Values move
 through files, never through a command line.
 
-> **`vault kv put` replaces the whole secret version.** Use `vault kv patch <path> KEY=…` to change
-> one field; `vault kv rollback -version=N <path>` undoes a put that dropped the others.
+> **`vault kv put` replaces every field.** Use `vault kv patch <path> KEY=…` to change one.
+> `secrets-coabkube/production` is a **KV v1** mount today, where there is no `kv patch` and no
+> version history to roll back to — so a careless put is unrecoverable and the Secret already in the
+> cluster is the only remaining copy. `scripts/edit-calendars.sh` handles that: on v1 it merges the
+> sibling fields back in explicitly, and `sync-secret.sh` refuses to write a Secret that would lose
+> a key. On a v2 mount both use `kv patch`, and `vault kv rollback -version=N <path>` undoes a bad
+> put.
 
 Because the Secret is not part of the release, changing it does not restart the bot — the bot reads
 its environment at startup, so pass `--restart` when a change has to take effect now.
@@ -640,10 +645,14 @@ the list lives in the Secret and not in a ConfigMap. The chart projects it as a 
 Create or rotate one:
 
 ```bash
-make calendars                      # $EDITOR on the list from Vault, validated, patched back
+make calendars                      # $EDITOR on the list from Vault, validated, written back
 make calendars ARGS='--sync'        # … and sync the Secret + restart in one go
 make calendars ARGS='--show'        # print the current list (it contains the feed tokens)
 ```
+
+On a KV v2 mount that write is a `kv patch` of the one field. On the v1 mount in use today there is
+no patch, so the script merges the other fields back in from the copy it read when the edit started
+— which is not atomic: nobody else should be editing that path at the same time.
 
 By hand, the shape being the part worth remembering:
 
@@ -654,6 +663,8 @@ cat > calendars.json <<'JSON'
     "url": "https://outlook.office365.com/owa/calendar/…/calendar.ics" }
 ]
 JSON
+# KV v2 only — it touches just this field. The v1 mount in use today has no `patch`, so there
+# `make calendars` is the way: a bare `put` would drop every other field.
 vault kv patch secrets-coabkube/production/hutbot HUTBOT_BUILTIN_CALENDARS=@calendars.json
 shred -u calendars.json
 make sync-secret ARGS='--restart'

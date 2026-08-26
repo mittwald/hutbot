@@ -48,6 +48,7 @@ secret_name=${SECRET_NAME:-}
 vault_path=${VAULT_PATH:-}
 restart=false
 local_mode=false
+kv_version=0
 dry_run=false
 allow_drop=false
 drop_keys=()
@@ -158,6 +159,14 @@ read_from_vault() {
     echo "       (export VAULT_ADDR=https://vault.m3.services; vault login -method=oidc)" >&2
     exit 1
   fi
+  # KV v2 wraps the fields in .data.data and carries .data.metadata; v1 has them flat under
+  # .data. Only v2 has `kv patch` and a version history, which changes the recovery advice
+  # when a put has dropped fields.
+  if jq -e '.data | has("data") and has("metadata")' "${workdir}/vault.json" >/dev/null 2>&1; then
+    kv_version=2
+  else
+    kv_version=1
+  fi
   local key
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
@@ -239,8 +248,16 @@ refuse_silent_drops() {
   [[ ${#dropped[@]} -eq 0 ]] && return 0
   echo "error: this sync would REMOVE keys that ${NAMESPACE}/${secret_name} has:" >&2
   printf '         %s\n' "${dropped[@]}" >&2
-  echo "       a \`vault kv put\` replaces the whole version — use \`vault kv patch\` to change" >&2
-  echo "       one field, or \`vault kv rollback -version=N ${vault_path:-<path>}\` to undo one." >&2
+  if [[ "$kv_version" == 2 ]]; then
+    echo "       a \`vault kv put\` replaces the whole version — use \`vault kv patch\` to change" >&2
+    echo "       one field, or \`vault kv rollback -version=N ${vault_path:-<path>}\` to undo one." >&2
+  elif [[ "$kv_version" == 1 ]]; then
+    # No patch and no version history on v1, so the Secret in the cluster is the only copy
+    # of what a bad put overwrote — which is exactly why this guard refuses before writing.
+    echo "       a \`vault kv put\` on this KV v1 mount replaces every field, and v1 keeps no" >&2
+    echo "       version to roll back to: read the values still in ${NAMESPACE}/${secret_name}" >&2
+    echo "       and put them back together with the rest." >&2
+  fi
   echo "       Pass --allow-drop (or --drop KEY) if the removal is intended." >&2
   exit 1
 }

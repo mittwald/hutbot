@@ -6,8 +6,10 @@
 # possession of a published-calendar link *is* read access — so it is secret material and
 # lives in Vault rather than in a ConfigMap the way a non-secret feed map would.
 #
-# Writes back with `vault kv patch`, never `kv put`: a put replaces the whole secret version
-# and would drop the Slack, OpsGenie and employee-list fields beside it.
+# Writes back with `vault kv patch` on a KV v2 mount, never a bare `kv put`: a put replaces the
+# whole version and would drop the Slack, OpsGenie and employee-list fields beside it. A KV v1
+# mount has no patch, so there the other fields are merged back in explicitly — see
+# `write_field`.
 set -euo pipefail
 
 readonly FIELD=HUTBOT_BUILTIN_CALENDARS
@@ -82,8 +84,35 @@ if ! vault kv get -format=json "$vault_path" > "${workdir}/vault.json"; then
   exit 1
 fi
 # `// empty` so an unset field starts as an empty list rather than the four bytes "null".
-jq -j --arg field "$FIELD" '(.data.data // .data)[$field] // empty' "${workdir}/vault.json" > "$file"
+# KV v2 wraps the fields in .data.data and carries .data.metadata; v1 has them flat under
+# .data. Which one this is decides how the edit can be written back.
+if jq -e '.data | has("data") and has("metadata")' "${workdir}/vault.json" >/dev/null 2>&1; then
+  kv_version=2
+  fields_filter='.data.data'
+else
+  kv_version=1
+  fields_filter='.data'
+fi
+
+jq -j --arg field "$FIELD" "${fields_filter}[\$field] // empty" "${workdir}/vault.json" > "$file"
 [[ -s "$file" ]] || printf '[]\n' > "$file"
+
+write_field() {
+  local source=$1
+  if [[ "$kv_version" == 2 ]]; then
+    # @file keeps the JSON off the command line, and patch keeps the sibling fields.
+    vault kv patch "$vault_path" "${FIELD}=@${source}"
+    return
+  fi
+  # KV v1 has no patch, so the sibling fields have to be carried over by hand: they are
+  # merged in from the copy read at the start of this edit. Not atomic — a change someone
+  # else made to another field in the meantime would be overwritten — and v1 keeps no
+  # version history to roll back to, so this is the moment to be sure nobody else is editing.
+  echo "==> ${VAULT_MOUNT} is a KV v1 mount: rewriting the secret with the other fields merged in" >&2
+  jq --rawfile value "$source" --arg field "$FIELD" \
+    "${fields_filter} + {(\$field): \$value}" "${workdir}/vault.json" > "${workdir}/merged.json"
+  vault kv put "$vault_path" "@${workdir}/merged.json"
+}
 
 if $show; then
   jq . "$file"
@@ -111,6 +140,14 @@ validate() {
 }
 
 before=$(jq -S . "$file" 2>/dev/null || cat "$file")
+# The file holds every feed token, so it is shredded on exit either way: say so when a write
+# fails, rather than leaving someone to wonder whether the edit landed somewhere.
+report_and_cleanup() {
+  local status=$?
+  [[ $status -ne 0 ]] && echo "the edit was NOT saved; re-run and paste it back" >&2
+  cleanup
+}
+trap report_and_cleanup EXIT
 "${EDITOR:-vi}" "$file"
 
 if ! validate "$file"; then
@@ -125,8 +162,7 @@ fi
 echo "==> built-in calendars after this edit:"
 jq -r '.[] | "      \(.name)\t\(.title)\t\(.url | sub("^https://";"") | sub("/.*$";""))"' "$file"
 
-# @file keeps the JSON off the command line and byte-exact; patch keeps the sibling fields.
-vault kv patch "$vault_path" "${FIELD}=@${file}"
+write_field "$file"
 echo "Vault field ${FIELD} of ${vault_path} updated."
 
 if $sync; then
