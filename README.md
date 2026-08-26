@@ -96,9 +96,6 @@ from when the rule runs, so a message reminder with a 30-minute delay measures `
 reminder, not from the message. `{{date}}`, `{{time}}` and `{{datetime}}` still mean the
 triggering message's time and take neither argument, and nor does `{{calendar_name}}`.
 
-A message may name as many moments as it likes: the feed is fetched and expanded once per run,
-and each additional moment is one more query over that index.
-
 Calendar date/time variables take the same `fmt`/`tz`/`lc` arguments as the Opsgenie ones. For an
 **all-day** event the end is the *inclusive* last day, not the exclusive `DTEND` the ICS file
 carries — a one-day event on the 19th reports the 19th, not the 20th. Cancelled events are skipped;
