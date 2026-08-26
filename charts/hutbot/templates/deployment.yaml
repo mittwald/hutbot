@@ -91,14 +91,18 @@ spec:
             - name: HUTBOT_CALENDAR_ALLOWED_HOSTS
               value: {{ join "," . | quote }}
             {{- end }}
-            {{- with .Values.calendar.ttlSeconds }}
+            {{- if and (not (kindIs "invalid" .Values.calendar.ttlSeconds)) (ne (printf "%v" .Values.calendar.ttlSeconds) "") }}
+            # `if` on an explicit emptiness test, not `with`: `0` is falsy to Go templates, and
+            # a zero TTL is a real setting — it disables the feed cache rather than asking for
+            # the default.
             - name: HUTBOT_CALENDAR_TTL
-              value: {{ . | quote }}
+              value: {{ .Values.calendar.ttlSeconds | quote }}
             {{- end }}
-            {{- with .Values.calendar.lookbackDays }}
+            {{- if and (not (kindIs "invalid" .Values.calendar.lookbackDays)) (ne (printf "%v" .Values.calendar.lookbackDays) "") }}
             # How far back the `offset=prev` search goes; the ICS library has no `before()`.
+            # Zero is meaningful here too: it stops the backward search entirely.
             - name: HUTBOT_CALENDAR_LOOKBACK_DAYS
-              value: {{ . | quote }}
+              value: {{ .Values.calendar.lookbackDays | quote }}
             {{- end }}
             {{- if .Values.ui.enabled }}
             - name: HUTBOT_UI_ENABLED

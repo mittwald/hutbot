@@ -274,8 +274,9 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
     config = channel.configs.get(config_name) or copy.deepcopy(DEFAULT_CONFIG)
     reply_message_template = config.get('reply_message')
     permalink = await slackcache.get_message_permalink(app, channel, ts) if ts else ""
-    # The same fields the firing scans, so the preview cannot read a different set.
-    selectors = templating.find_calendar_selectors(*templating.config_templates(config))
+    # The same union the firing resolves — templates *and* conditions — so the preview cannot
+    # judge a condition against a slice it never built.
+    selectors = templating.config_calendar_selectors(config)
     template_variables = await templating.build_reply_template_variables(
         app,
         opsgenie_token,

@@ -802,23 +802,28 @@ def test_the_deploy_guard_warns_when_head_is_ahead_of_the_tag():
     assert "commit(s) ahead of" in result.stderr
 
 
-def test_calendar_tunables_reach_the_container():
-    result = _render("v1.2.3", "--set", "calendar.ttlSeconds=600",
-                     "--set", "calendar.lookbackDays=365")
+@pytest.mark.parametrize("value", ["0", "600"])
+def test_a_calendar_tunable_reaches_the_container_including_zero(value):
+    """`0` is a real setting — no cache, no backward search — not a request for the default."""
+    result = _render("v1.2.3", "--set", f"calendar.ttlSeconds={value}",
+                     "--set", f"calendar.lookbackDays={value}")
 
     assert result.returncode == 0, result.stderr
     env = _container(result)["env"]
-    assert {"name": "HUTBOT_CALENDAR_TTL", "value": "600"} in env
-    assert {"name": "HUTBOT_CALENDAR_LOOKBACK_DAYS", "value": "365"} in env
+    assert {"name": "HUTBOT_CALENDAR_TTL", "value": value} in env
+    assert {"name": "HUTBOT_CALENDAR_LOOKBACK_DAYS", "value": value} in env
 
 
 def test_unset_calendar_tunables_leave_the_bot_defaults_alone():
     """An empty value must omit the variable, not inject an empty one the bot would parse."""
     result = _render()
+    empty = _render("v1.2.3", "--set-string", "calendar.ttlSeconds=",
+                    "--set-string", "calendar.lookbackDays=")
 
-    assert result.returncode == 0, result.stderr
-    assert "HUTBOT_CALENDAR_TTL" not in result.stdout
-    assert "HUTBOT_CALENDAR_LOOKBACK_DAYS" not in result.stdout
+    for rendered in (result, empty):
+        assert rendered.returncode == 0, rendered.stderr
+        assert "HUTBOT_CALENDAR_TTL" not in rendered.stdout
+        assert "HUTBOT_CALENDAR_LOOKBACK_DAYS" not in rendered.stdout
 
 
 # ----- the RollingUpdate → Recreate switch -----

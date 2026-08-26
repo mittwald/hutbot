@@ -1672,6 +1672,80 @@ async def test_the_test_command_says_nothing_extra_without_a_selector(cal):
     assert "Read at another moment" not in sent_messages(send)
 
 
+def test_an_invalid_selector_renders_a_placeholder_not_the_current_event():
+    """A malformed argument must never answer about now — the expression named another moment."""
+    render = hutbot.templating.render_reply_message_template
+    variables = {"calendar_summary": "Running now", "calendar_start_time": "09:00"}
+
+    assert render("{{calendar_summary(offset=soon)}}", variables) == "<no-event>"
+    assert render("{{calendar_summary(at=tomorrow)}}", variables) == "<no-event>"
+    assert render("{{calendar_start_time(offset=soon)}}", variables) == "<unknown>"
+    # The plain form is untouched.
+    assert render("{{calendar_summary}}", variables) == "Running now"
+
+
+@pytest.mark.parametrize("condition", [
+    {"variable": "calendar_summary", "operator": "contains", "value": "Running", "offset": "soon"},
+    {"variable": "calendar_summary", "operator": "empty", "at": "tomorrow"},
+])
+def test_a_condition_with_an_invalid_selector_fails_closed(condition):
+    """Including `empty`, which would otherwise pass on the missing value."""
+    met, reason = hutbot.conditionutil.evaluate_conditions(
+        {"conditions": [condition]}, {"calendar_summary": "Running now"})
+
+    assert met is False
+    assert "cannot be read" in reason
+
+
+def test_the_selector_cap_counts_the_whole_config_not_one_field():
+    """Each field is validated alone, so only the union can be too long."""
+    config = {
+        "reply_message": " ".join(f'{{{{calendar_summary(at="+{hour}h")}}}}' for hour in range(1, 8)),
+        "action_target": '{{calendar_other_attendee_users(at="+9h", nth=1)}}',
+        "opsgenie_message": '{{calendar_summary(at="+10h")}}',
+        "conditions": [{"variable": "calendar_summary", "operator": "not_empty", "at": "+11h"}],
+    }
+
+    with patch('hutbot.templating.log_warning') as log_warning:
+        selectors = hutbot.templating.config_calendar_selectors(config)
+
+    # Capped once, over the union, and it says which moments went unread.
+    # Capped once over the union, in the order the fields are scanned (message, alert, target).
+    assert len(selectors) == 8
+    assert selectors[0] == ("+1h", "") and selectors[7] == ("+10h", "")
+    warning = log_warning.call_args.args[0]
+    assert "10 different moments" in warning and "+9h" in warning and "+11h" in warning
+
+
+def test_the_config_selectors_include_the_conditions():
+    """A rule whose only selector is in a condition still gets a slice built for it."""
+    config = {"reply_message": "{{calendar_summary}}",
+              "conditions": [{"variable": "calendar_summary", "operator": "contains",
+                              "value": "x", "at": "+1d", "offset": "next"}]}
+
+    assert hutbot.templating.config_calendar_selectors(config) == [("+1d", "next")]
+
+
+@pytest.mark.asyncio
+async def test_the_test_command_judges_a_condition_against_its_own_moment(cal):
+    """The preview and the firing must reach the same verdict, selector or not."""
+    app = _ui_app()
+    _seed_user_caches()
+    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG,
+              "reply_message": "checked",
+              "conditions": [{"variable": "calendar_summary", "operator": "contains",
+                              "value": "daily", "at": "2026-08-19T11:15:00+02:00"}]}
+    channel = _mk_channel({"default": config})
+
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "test", channel, User("U1", "dave", "Dave", "T"))
+
+    text = sent_messages(send)
+    # `m3 daily` runs at 11:15 Berlin, so the gate passes — it would fail against "now".
+    assert ":white_check_mark:" in text and "would run" in text
+
+
 # ----- built-in calendars -----
 
 def _current_and_next(calendar, config=None, now=None):

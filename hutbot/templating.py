@@ -4,6 +4,8 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
+from employee_list import log_warning
+
 from . import calendarfeed
 from . import conditionutil
 from . import datetimefmt
@@ -21,6 +23,7 @@ from .constants import (
     TEMPLATE_VARIABLE_NAME_PATTERN,
     UNKNOWN_PERIOD_PLACEHOLDER,
     event_slice_name,
+    invalid_slice_name,
     normalize_selector,
     parse_event_offset,
 )
@@ -270,6 +273,32 @@ def find_calendar_selectors(*messages: str, limit: int | None = MAX_CALENDAR_SEL
     return selectors if limit is None else selectors[:limit]
 
 
+def config_calendar_selectors(config: dict | None) -> list[tuple[str, str]]:
+    """Every moment a run of this config reads the calendar at: templates and conditions.
+
+    The one definition of that union, because everything that resolves a namespace has to
+    agree on it — the gate, the message, the alert, the action target and the `test` preview.
+    A preview that scanned fewer fields than the firing would report the opposite verdict.
+
+    The cap is applied once, here, to the complete union rather than per field: each field is
+    validated on its own, so eight moments in the message and a ninth in the target both pass
+    validation and only the union is too long. Truncating is a last resort and says so in the
+    log; the dropped slices render placeholders.
+    """
+    selectors = find_calendar_selectors(*config_templates(config), limit=None)
+    seen = {normalize_selector(at, offset) for at, offset in selectors}
+    for at, offset in conditionutil.condition_calendar_selectors(config):
+        key = normalize_selector(at, offset)
+        if key not in seen:
+            seen.add(key)
+            selectors.append((at, offset))
+    if len(selectors) > MAX_CALENDAR_SELECTORS:
+        dropped = ", ".join(f"at={at!r} offset={offset!r}"
+                            for at, offset in selectors[MAX_CALENDAR_SELECTORS:])
+        log_warning(f"A configuration reads the calendar at {len(selectors)} different moments; "
+                    f"only {MAX_CALENDAR_SELECTORS} are resolved. Not read: {dropped}")
+    return selectors[:MAX_CALENDAR_SELECTORS]
+
 def find_unknown_template_variables(message: str) -> list[str]:
     try:
         variables = {expr.variable for expr in parse_template_expressions(message)}
@@ -310,7 +339,9 @@ def _expression_stem(expr: TemplateExpression) -> tuple[str, str]:
         try:
             stem = event_slice_name(expr.variable, at, offset)
         except ValueError:
-            return expr.variable, expr.variable
+            # Not the base variable: that value describes *now*, and this expression asked
+            # about something else. A key nothing writes renders the placeholder instead.
+            stem = invalid_slice_name(expr.variable)
         return stem, f"__{stem}"
     return expr.variable, expr.variable
 

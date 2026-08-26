@@ -28,7 +28,6 @@ from .constants import (
     CALENDAR_TEMPLATE_VARIABLES,
     OPSGENIE_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
-    normalize_selector,
 )
 from .models import Channel, User
 
@@ -43,24 +42,6 @@ def _referenced_variables(config: dict) -> set[str]:
     for template in templating.config_templates(config):
         referenced |= templating.find_template_variables(template)
     return referenced
-
-
-def _referenced_calendar_selectors(config: dict) -> list[tuple[str, str]]:
-    """Every distinct moment, and neighbour of it, this config reads the calendar at.
-
-    The templates and the conditions together, so one build serves the gate and the text — a
-    condition and the message it gates must describe the same moment.
-    """
-    selectors = templating.find_calendar_selectors(*templating.config_templates(config))
-    known = set()
-    for at, offset in selectors:
-        known.add(normalize_selector(at, offset))
-    for at, offset in conditionutil.condition_calendar_selectors(config):
-        key = normalize_selector(at, offset)
-        if key not in known:
-            known.add(key)
-            selectors.append((at, offset))
-    return selectors
 
 
 async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, referenced: set[str], calendar_selectors: list[tuple[str, str]] | None = None) -> dict[str, str]:
@@ -240,7 +221,7 @@ async def evaluate_conditions(app: AsyncApp, opsgenie_token: str, channel: Chann
     if variables is None:
         variables = await _build_variables(
             app, opsgenie_token, channel, config, config_name, context,
-            _referenced_variables(config), _referenced_calendar_selectors(config))
+            _referenced_variables(config), templating.config_calendar_selectors(config))
     met, reason = conditionutil.evaluate_conditions(config, variables)
     return met, reason, variables
 

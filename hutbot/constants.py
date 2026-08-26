@@ -384,6 +384,16 @@ def event_slice_name(variable: str, at: str = "", offset: str = "") -> str:
     return f"event(at={at_text};offset={offset_value:+d})_{variable}"
 
 
+def invalid_slice_name(variable: str) -> str:
+    """The stem for a selector that does not parse — a key nothing ever writes.
+
+    A malformed `at`/`offset` (only a hand-edited config can carry one) must not fall back to
+    the default selection: answering about the present when the expression named another
+    moment is worse than rendering a placeholder, so the lookup is made to miss on purpose.
+    """
+    return f"event(invalid)_{variable}"
+
+
 def event_slice_prefix(at: str = "", offset: str = "") -> str:
     """`event(at=+1d;offset=+1)_` — the namespace prefix one selector's values live under."""
     return event_slice_name("", at, offset)

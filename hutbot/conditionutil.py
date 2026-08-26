@@ -1,8 +1,9 @@
 """Normalization and evaluation of a rule's condition chain.
 
-A leaf module, like ``buttonutil``: it imports only ``re`` and ``constants``, so every
-consumer (``persistence``, ``actions``, the setters, ``info``, ``webui_backend``) can use it
-without touching the ``actions`` <-> ``buttons`` import cycle.
+Nearly a leaf, like ``buttonutil``: it imports ``re``, ``constants`` and ``datetimefmt`` —
+the last one only to judge an `at` expression, which owns that grammar — so every consumer
+(``persistence``, ``actions``, the setters, ``info``, ``webui_backend``) can use it without
+touching the ``actions`` <-> ``buttons`` import cycle.
 
 ``evaluate_conditions`` is deliberately pure and synchronous. It takes an already-resolved
 variable dict so the gate, the message render, and any OpsGenie alert all judge the same
@@ -12,6 +13,7 @@ which is exactly the race the gate exists to prevent.
 
 import re
 
+from . import datetimefmt
 from .constants import (
     CONDITION_MODE_ALIASES,
     CONDITION_MODE_ALL,
@@ -146,15 +148,22 @@ def condition_variable_stem(condition) -> str:
     """The namespace key a condition reads: the variable, or its selector slice.
 
     The same name `templating` builds for `{{calendar_summary(at="+1d")}}`, so a condition and
-    a message asking about one moment read one resolved value.
+    a message asking about one moment read one resolved value. Returns "" when the selector
+    does not parse — only a hand-edited config can carry such a condition, and it must fail
+    closed rather than quietly gate on whatever is running now.
     """
     variable, _, _, _, at, offset = normalize_condition(condition)
     if not (at or offset):
         return variable
     try:
+        if at:
+            # The `at` grammar lives in `datetimefmt`, and an unreadable one has to be caught
+            # here rather than left to the missing slice: an absent value would let `empty`
+            # pass, which is the opposite of failing closed.
+            datetimefmt.validate_at_time(at)
         return event_slice_name(variable, at, offset)
     except ValueError:
-        return variable
+        return ""
 
 
 def condition_variables(config: dict | None) -> set[str]:
@@ -341,6 +350,8 @@ def _judge(condition, variables: dict[str, str]) -> tuple[bool, str]:
     # A selector reads its own slice of the namespace, the same one the identical expression in
     # a message reads — so a condition and the text it gates describe one moment.
     stem = condition_variable_stem(condition)
+    if not stem:
+        return False, f"{label} names a moment that cannot be read"
     value_key = f"__{stem}" if stem != variable else variable
     if variable not in variables:
         return False, f"{label} refers to an unknown variable `{{{{{variable}}}}}`"
