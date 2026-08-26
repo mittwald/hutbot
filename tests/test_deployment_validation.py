@@ -488,6 +488,8 @@ exit 0
 # ----- scripts/seed-vault.sh -----
 
 SEED_VAULT = ROOT / "scripts/seed-vault.sh"
+SEEDED_KEYS = ("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME",
+               "EMPLOYEE_LIST_USERNAME", "EMPLOYEE_LIST_PASSWORD", "EMPLOYEE_LIST_MAPPINGS")
 ENV_FILE = """export SLACK_APP_TOKEN='xapp-secretapp'
 export SLACK_BOT_TOKEN='xoxb-secretbot'
 export OPSGENIE_TOKEN='og-secret'
@@ -498,8 +500,12 @@ export NETWORKPOLICY_RULES='443:192.168.0.15/32'
 """
 
 
-def _run_seed(tmp_path, *args, existing=None, env_file=ENV_FILE):
-    """Run the seeder against a stub `vault` that records its argv and the payload it got."""
+def _run_seed(tmp_path, *args, existing=None, env_file=ENV_FILE, ambient=None):
+    """Run the seeder against a stub `vault` that records its argv and the payload it got.
+
+    `ambient` fakes what an operator's shell already exports — the values in there must never
+    reach Vault, only what the env file says.
+    """
     import json as _json
     import os
 
@@ -517,9 +523,14 @@ exit 0
 ''')
     path = tmp_path / "env"
     path.write_text(env_file)
+    # The env the script inherits is scrubbed of the keys it reads, so a value exported in
+    # whatever shell runs the suite cannot decide the outcome of these tests either.
+    inherited = {key: value for key, value in os.environ.items()
+                 if key not in SEEDED_KEYS}
     result = subprocess.run([str(SEED_VAULT), "--env", "dev", "--env-file", str(path), *args],
                             cwd=ROOT, capture_output=True, text=True, check=False,
-                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+                            env={**inherited, **(ambient or {}),
+                                 "PATH": f"{bin_dir}:{os.environ['PATH']}"})
     result.vault_calls = calls.read_text() if calls.exists() else ""
     result.payload = _json.loads(payload.read_text()) if payload.exists() else None
     return result
@@ -584,6 +595,29 @@ def test_seed_vault_rejects_a_malformed_builtin_calendar_list(tmp_path):
 
     assert result.returncode != 0
     assert "must be a JSON array" in result.stderr
+    assert result.payload is None
+
+
+def test_seed_vault_ignores_what_the_shell_exports(tmp_path):
+    """`set -a; . ./.env` before `make seed-vault-dev` must not seed the dev path with prod."""
+    env_file = "export SLACK_APP_TOKEN='xapp-fromfile'\nexport SLACK_BOT_TOKEN='xoxb-fromfile'\n"
+    result = _run_seed(tmp_path, env_file=env_file,
+                       ambient={"SLACK_BOT_TOKEN": "xoxb-ambient",
+                                "OPSGENIE_TOKEN": "og-ambient",
+                                "EMPLOYEE_LIST_MAPPINGS": "ambient=leak"})
+
+    assert result.returncode == 0, result.stderr
+    assert set(result.payload) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"}
+    assert result.payload["SLACK_BOT_TOKEN"] == "xoxb-fromfile"
+
+
+def test_seed_vault_will_not_take_a_required_key_from_the_shell(tmp_path):
+    env_file = "export SLACK_APP_TOKEN='xapp-fromfile'\n"
+    result = _run_seed(tmp_path, env_file=env_file,
+                       ambient={"SLACK_BOT_TOKEN": "xoxb-ambient"})
+
+    assert result.returncode != 0
+    assert "SLACK_BOT_TOKEN is not set" in result.stderr
     assert result.payload is None
 
 
@@ -738,6 +772,12 @@ def test_the_deploy_guard_warns_when_head_is_ahead_of_the_tag():
                            cwd=ROOT, capture_output=True, text=True, check=False).stdout.split("\n")[0]
     if not first:
         pytest.skip("no release tags in this clone")
+    # A clone whose oldest tag is HEAD (a shallow fetch, a fresh repo) has no drift to warn
+    # about, and the warning is what this test is for.
+    ahead = subprocess.run(["git", "rev-list", "--count", f"{first}..HEAD"],
+                           cwd=ROOT, capture_output=True, text=True, check=False).stdout.strip()
+    if ahead in ("", "0"):
+        pytest.skip("HEAD is not ahead of the oldest tag")
 
     result = _make("require-image-tag", f"IMAGE_TAG={first}")
 

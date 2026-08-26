@@ -7,8 +7,8 @@
 # the sibling fields alone. The script therefore refuses to run against a path that already
 # has fields unless --force is given.
 #
-# Values never reach a command line: the env file is sourced into this process and the payload
-# is built with jq's `env` builtin, then handed to Vault as @file and shredded.
+# Values never reach a command line: the payload is built with jq's `env` builtin inside a
+# subshell that has the env file and nothing else, then handed to Vault as @file and shredded.
 set -euo pipefail
 
 readonly SECRET_KEYS=(
@@ -134,17 +134,31 @@ if vault kv get -format=json "$vault_path" > "${workdir}/existing.json" 2>/dev/n
 fi
 
 echo "==> reading ${env_file}"
+# `env -i`, so the payload is what the file says and nothing else. Sourcing into this process
+# would let whatever the operator has already exported through — and anyone who ran
+# `set -a; . ./.env` before `make seed-vault-dev` would seed the dev path with production
+# values, which is exactly the mistake this script exists to prevent. PATH and HOME survive
+# because jq has to be findable and an env file may well refer to $HOME.
+#
+# jq's `env` builtin rather than --arg: a value passed as an argument would be readable in
+# /proc/<pid>/cmdline while jq runs. `with_entries` drops what the file does not set, so a
+# missing optional field is left unset instead of stored as an empty string.
+env -i PATH="$PATH" HOME="${HOME:-/tmp}" HUTBOT_ENV_FILE="$env_file" \
+  bash --noprofile --norc -s > "$payload" <<'INNER'
+set -eo pipefail
 set -a
 # shellcheck source=/dev/null
-source "$env_file"
+. "$HUTBOT_ENV_FILE"
 set +a
-
-# jq's `env` builtin rather than --arg: a value passed as an argument would be readable in
-# /proc/<pid>/cmdline while jq runs. `with_entries` drops what the env file does not set, so a
-# missing optional field is left unset instead of stored as an empty string.
 jq -n '$ENV | {SLACK_APP_TOKEN, SLACK_BOT_TOKEN, OPSGENIE_TOKEN, OPSGENIE_HEARTBEAT_NAME,
                EMPLOYEE_LIST_USERNAME, EMPLOYEE_LIST_PASSWORD, EMPLOYEE_LIST_MAPPINGS}
-        | with_entries(select(.value != null and .value != ""))' > "$payload"
+        | with_entries(select(.value != null and .value != ""))'
+INNER
+
+if [[ ! -s "$payload" ]]; then
+  echo "error: could not read any fields out of ${env_file}" >&2
+  exit 1
+fi
 
 if [[ -n "$calendars_file" ]]; then
   [[ -f "$calendars_file" ]] || { echo "error: ${calendars_file} not found" >&2; exit 1; }
