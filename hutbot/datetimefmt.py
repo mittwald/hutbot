@@ -356,6 +356,168 @@ def parse_slack_timestamp(value: str) -> datetime.datetime | None:
         return None
 
 
+# ----- the `at` template argument -----
+
+# Only the spellings the help text names. Bare `fromisoformat` would also swallow `20260827`,
+# `2026-W35-4` and `2026-08-27T09`; nobody means any of those, so the shape is fixed here and
+# only the field values are left to the stdlib.
+AT_ABSOLUTE_PATTERN = re.compile(
+    r"(?P<date>\d{4}-\d{2}-\d{2})"
+    r"(?:[Tt ]\s?(?P<time>\d{2}:\d{2}(?::\d{2})?)"
+    r"\s?(?P<offset>[Zz]|[+-]\d{2}:?\d{2})?)?")
+AT_OFFSET_PATTERN = re.compile(r"(?P<sign>[+-])(?P<count>\d{1,6})\s?(?P<unit>[A-Za-z]+)")
+# `2h` is the likeliest slip, so it gets its own message rather than the generic shape error.
+AT_UNSIGNED_OFFSET_PATTERN = re.compile(r"\d{1,6}\s?[A-Za-z]+")
+AT_TIME_OF_DAY_PATTERN = re.compile(r"\d{1,2}(?::\d{2})?")
+AT_OFFSET_UNITS = {
+    "m": "m", "min": "m", "mins": "m", "minute": "m", "minutes": "m",
+    "h": "h", "hr": "h", "hrs": "h", "hour": "h", "hours": "h",
+    "d": "d", "day": "d", "days": "d",
+    "w": "w", "week": "w", "weeks": "w",
+}
+AT_OFFSET_MINUTES = {"m": 1, "h": 60, "d": 1440, "w": 10080}
+# Clock-free and zone-free bounds, so a template that validates today validates forever. Wide
+# enough to refuse nothing anyone means, tight enough that the ICS query is never asked to
+# expand centuries of recurrences.
+AT_MIN_YEAR, AT_MAX_YEAR = 1970, 2100
+AT_MAX_OFFSET_MINUTES = 3653 * 1440
+
+
+def _at_shape_error(value: str, text: str) -> str:
+    """The shape message, with a nudge for the two near-misses people actually type."""
+    if AT_UNSIGNED_OFFSET_PATTERN.fullmatch(text):
+        return f"`at` offsets need a sign, so write `+{text}` or `-{text}`, not `{value}`"
+    return ("`at` must look like `2026-08-27 09:00`, `2026-08-27`, `09:00`, "
+            f"or an offset such as `+2h`, not `{value}`")
+
+
+def _parse_at_value(value: str) -> tuple[str, object]:
+    """What kind of `at=` expression this is and its parts, or a ``ValueError`` saying why not.
+
+    ``("absolute", datetime)`` — naive when the text carried no offset, aware when it did —
+    ``("time", time)`` for a bare time of day, or ``("offset", (unit, count))``. Deliberately
+    clock-free and zone-free, so `templating.validate_template_expressions` can judge a value
+    at set time, where there is neither a config nor a meaningful "now".
+    """
+    text = " ".join((value or "").split())
+    if not text:
+        raise ValueError("`at` must be non-empty")
+    # A slice key is built from this text, and those characters are what keep the encoding
+    # unambiguous (see `constants.event_slice_name`). No legal spelling needs them.
+    if any(character in text for character in "();"):
+        raise ValueError(f"`at` must not contain `(`, `)` or `;`, so `{value}` cannot be used")
+
+    match = AT_ABSOLUTE_PATTERN.fullmatch(text)
+    if match:
+        offset = (match.group("offset") or "").upper()
+        # Canonicalized before `fromisoformat` because the pattern is deliberately kinder than
+        # it is: a space separator, a lower-case `t` and a lower-case `z` are all things people
+        # type, and only the first two would survive untouched.
+        canonical = f"{match.group('date')}T{match.group('time') or '00:00'}"
+        canonical += "+00:00" if offset == "Z" else offset
+        try:
+            parsed = datetime.datetime.fromisoformat(canonical)
+        except ValueError:
+            raise ValueError(f"`at` must be a real date and time, not `{value}`")
+        if not AT_MIN_YEAR <= parsed.year <= AT_MAX_YEAR:
+            raise ValueError(f"`at` must name a year between {AT_MIN_YEAR} and {AT_MAX_YEAR}, not `{value}`")
+        return "absolute", parsed
+
+    match = AT_OFFSET_PATTERN.fullmatch(text)
+    if match:
+        unit = AT_OFFSET_UNITS.get(match.group("unit").lower())
+        if not unit:
+            raise ValueError("`at` offsets are counted in `m`, `h`, `d` or `w`, "
+                             f"not `{match.group('unit')}`")
+        count = int(match.group("count")) * (-1 if match.group("sign") == "-" else 1)
+        if abs(count) * AT_OFFSET_MINUTES[unit] > AT_MAX_OFFSET_MINUTES:
+            raise ValueError(f"`at` must stay within 10 years of now, not `{value}`")
+        return "offset", (unit, count)
+
+    if AT_TIME_OF_DAY_PATTERN.fullmatch(text):
+        # The `set work-hours` spelling: `9` and `09:00` both mean today at that hour.
+        parsed_time = parse_time(text)
+        if parsed_time is None:
+            raise ValueError(f"`at` must be a real date and time, not `{value}`")
+        return "time", parsed_time
+
+    raise ValueError(_at_shape_error(value, text))
+
+
+def validate_at_time(value: str) -> str:
+    """The canonical form of an `at=` value, or a ``ValueError`` explaining why it is not one.
+
+    Shaped like `validate_timezone_name` so a caller can report `str(e)` unchanged. What it
+    cannot judge without a clock and a config: whether the instant exists in the config's
+    timezone (a skipped or repeated hour needs the zone), whether it is in the past, and
+    whether the calendar reaches that far.
+    """
+    _parse_at_value(value)
+    return " ".join((value or "").split())
+
+
+def resolve_at_time(
+    value: str,
+    config: dict | None = None,
+    now: datetime.datetime | None = None,
+    local_tz: datetime.tzinfo | None = None,
+) -> datetime.datetime | None:
+    """The instant an `at=` expression names, aware and in the config's timezone.
+
+    In the config's timezone because that is what the calendar query needs: the ICS library
+    anchors an all-day `DATE` in the tzinfo of the instant it is handed, so a naive or UTC
+    instant picks the wrong calendar day either side of midnight (see
+    `calendarfeed.select_event`). A value carrying no offset is therefore a wall clock *here*,
+    which is the one place this deliberately disagrees with `parse_opsgenie_datetime`: that one
+    reads machine-generated OpsGenie values, documented UTC, while this one is typed by a
+    person who means their own clock.
+
+    `now` is a parameter rather than a call to the clock, so one render resolves every `at` in
+    a message — and the default selection — against a single instant. Returns ``None`` for a
+    value that does not parse; callers must **not** fall back to "now", because silently
+    answering about the present when someone named a time is the worst thing this can do.
+    """
+    timezone = get_config_timezone(config, "", local_tz)
+    try:
+        kind, parts = _parse_at_value(value)
+    except ValueError:
+        return None
+
+    if now is None:
+        now = datetime.datetime.now(timezone)
+    elif now.tzinfo is None:
+        # Same convention as the calendar selection: a naive instant is UTC.
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    try:
+        anchor = now.astimezone(timezone)
+    except (OverflowError, ValueError, OSError):
+        # An instant so far out that moving it into the config's zone leaves the range
+        # `datetime` can hold. No instant to report, and nothing to fall back to.
+        return None
+
+    if kind == "absolute":
+        # An hour the clock skipped resolves to the instant it would have been; an hour that
+        # happens twice takes `fold=0`, the earlier pass, which is what "02:30" means to a
+        # reader.
+        return parts.replace(tzinfo=timezone) if parts.tzinfo is None else parts.astimezone(timezone)
+    if kind == "time":
+        return datetime.datetime.combine(anchor.date(), parts, tzinfo=timezone)
+
+    unit, count = parts
+    try:
+        if unit in ("m", "h"):
+            # Minutes and hours are elapsed time, so they are added to the *instant*: `+2h`
+            # over a spring-forward is two real hours, 01:30+01:00 -> 04:30+02:00.
+            delta = datetime.timedelta(minutes=count) if unit == "m" else datetime.timedelta(hours=count)
+            return (anchor.astimezone(datetime.timezone.utc) + delta).astimezone(timezone)
+        # Days and weeks are wall clock: `+1d` is this time tomorrow. Aware arithmetic with one
+        # tzinfo already works in local wall time, so both the hour and the calendar day survive
+        # a transition -- where `+24h` from 23:30 would land on the day *after* the one meant.
+        return anchor + datetime.timedelta(days=count * (7 if unit == "w" else 1))
+    except (OverflowError, ValueError):
+        return None
+
+
 def format_datetime_value(
     value: str,
     part: str = "datetime",
