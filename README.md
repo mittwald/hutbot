@@ -8,6 +8,11 @@ every `{{variable}}` — grouped by message, date/time, Opsgenie and calendar �
 condition operators. Any argument may be quoted with `"`, `'` or backticks —
 handy since Slack renders a backticked value as code as you type it.
 
+A reply message can span several lines: a command arrives as a single line, so type `\n`
+where the break belongs — `/hutbot set message "First line.\nSecond line."` — and `\\n` when a
+literal backslash-n is what you want. Every other backslash is left alone. The web UI takes
+real line breaks in its text box instead.
+
 A reply message can `@mention` someone by **email address** — `@d.grieser@example.com` — which
 is resolved to their Slack user when the message is set, alongside the existing `@username`
 form. An address that maps to nobody is reported there and then rather than rendering wrongly

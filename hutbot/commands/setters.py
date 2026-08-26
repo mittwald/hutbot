@@ -48,7 +48,7 @@ from ..constants import (
     parse_event_offset,
 )
 from ..models import TemplateExpressionError
-from ..textutil import log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
+from ..textutil import decode_escaped_newlines, log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
 
 try:
     from croniter import croniter
@@ -245,6 +245,10 @@ async def set_wait_time(app: AsyncApp, channel, config_name: str, wait_time_str:
 
 async def set_reply_message(app: AsyncApp, channel, config_name: str, message: str, user, thread_ts: str = "") -> None:
     _ensure_config(channel, config_name)
+    # A command never carries a real line break, so `\n` is how a multi-line reply is typed.
+    # Decoded first, so the mention and template checks below see the message as it will be
+    # posted, and the confirmation quotes it back with its line breaks already in place.
+    message = decode_escaped_newlines(message)
     # check message
     if not message or message.strip() == "":
         await messaging.send_message(app, channel, user, "Invalid *reply message*. Must be non-empty.", thread_ts)

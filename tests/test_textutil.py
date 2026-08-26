@@ -91,6 +91,25 @@ def test_parse_quoted_tokens_accepts_backticks():
     assert parse_quoted_tokens('`a b` "c d" \'e f\' g') == (["a b", "c d", "e f", "g"], "")
 
 
+# ----- `\n` in a command argument -----
+
+@pytest.mark.parametrize("typed,expected", [
+    ("First.\\nSecond.", "First.\nSecond."),
+    ("a\\nb\\nc", "a\nb\nc"),
+    # `\\n` is how a literal backslash-n is typed.
+    ("literal \\\\n here", "literal \\n here"),
+    # A backslash before anything else is not an escape and stays put, so a datetime
+    # format or a regex in a template argument survives.
+    ("%Y\\%m", "%Y\\%m"),
+    ("\\t tab stays literal", "\\t tab stays literal"),
+    # A trailing backslash has nothing to escape.
+    ("ends with \\", "ends with \\"),
+    ("", ""),
+])
+def test_decode_escaped_newlines(typed, expected):
+    assert decode_escaped_newlines(typed) == expected
+
+
 _LOCAL_URL = "http://127.0.0.1:8073/calendar.ics?token=abc123"
 
 

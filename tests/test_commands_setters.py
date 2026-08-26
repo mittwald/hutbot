@@ -130,6 +130,34 @@ async def test_process_command_delete_config():
 
 
 @pytest.mark.asyncio
+async def test_set_reply_message_decodes_escaped_newlines():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+            patch('hutbot.messaging.send_message', new=AsyncMock()) as mock_send_message:
+        await process_command(app, 'set message "First line.\\nSecond line."', channel, user)
+
+    assert channel.configs["default"]["reply_message"] == "First line.\nSecond line."
+    # The confirmation quotes the message back with the break already in place.
+    assert "First line.\nSecond line." in mock_send_message.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_set_reply_message_keeps_a_literal_backslash_n():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+            patch('hutbot.messaging.send_message', new=AsyncMock()):
+        await set_reply_message(app, channel, "default", "path\\\\name and %Y\\%m", user, "")
+
+    assert channel.configs["default"]["reply_message"] == "path\\name and %Y\\%m"
+
+
+@pytest.mark.asyncio
 async def test_set_reply_message_rejects_malformed_datetime_args():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})

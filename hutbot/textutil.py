@@ -38,6 +38,26 @@ def strip_quotes(text: str) -> str:
     return text
 
 
+# A slash command arrives as a single line, and the argument regexes stop at the first
+# newline anyway, so a line break has to be typed as `\n`. Only `\n` and `\\` mean
+# anything; every other backslash is passed through untouched, so a datetime format like
+# `%Y\%m` or a regex in a template argument survives unharmed.
+ESCAPE_SEQUENCE_PATTERN = re.compile(r'\\(.)', re.DOTALL)
+
+
+def decode_escaped_newlines(text: str) -> str:
+    r"""Turn `\n` into a real line break, and `\\n` into a literal backslash-n."""
+    def replace(match: re.Match) -> str:
+        escaped = match.group(1)
+        if escaped == 'n':
+            return '\n'
+        if escaped == '\\':
+            return '\\'
+        return match.group(0)
+
+    return ESCAPE_SEQUENCE_PATTERN.sub(replace, text or "")
+
+
 # Slack turns any URL a user types into `<https://...>` or `<https://...|label>` before
 # the slash command reaches the bot. `strip_quotes` does not touch that, and
 # `messaging.clean_slack_text` would replace it with the literal string "[URL]".

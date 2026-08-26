@@ -288,7 +288,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] clear work-hours", "React at any hour."),
         ]),
         ("Message and action", [
-            (f"{command} [config] set message \"<reply message>\"", "Set reminder message."),
+            (f"{command} [config] set message \"<reply message>\"", "Set reminder message; `\\n` breaks a line."),
             (f"{command} [config] set action reply", "Reply in this channel (the default)."),
             (f"{command} [config] set action post-channel <#channel>", "Post to another channel."),
             (f"{command} [config] set action dm-user <@user>", "DM a single user."),

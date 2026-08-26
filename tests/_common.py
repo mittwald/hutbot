@@ -37,7 +37,7 @@ from hutbot.constants import (
     bot_slug,
     normalize_slash_command,
 )
-from hutbot.textutil import extract_message_text, parse_quoted_tokens, strip_quotes, unwrap_slack_link
+from hutbot.textutil import decode_escaped_newlines, extract_message_text, parse_quoted_tokens, strip_quotes, unwrap_slack_link
 from hutbot.datetimefmt import parse_time, is_work_day, is_work_time
 from hutbot.persistence import migrate_and_apply_defaults, load_replies_cache, flush_replies_cache
 from hutbot.slackcache import get_channel_members, is_user_in_channel
