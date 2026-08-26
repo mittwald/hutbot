@@ -24,8 +24,13 @@ SET_OPSGENIE_PRIORITY_PATTERN = create_command_pattern(r'(set\s+)?opsgenie[_ -]?
 CLEAR_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+opsgenie[_ -]?message')
 SET_OPSGENIE_MESSAGE_PATTERN = create_command_pattern(r'(set\s+)?opsgenie[_ -]?message\s+(?P<message>.+)')
 CLEAR_CALENDAR_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+calendar([_ -]?url)?')
-SET_CALENDAR_PATTERN = create_command_pattern(r'(set\s+)?calendar([_ -]?url)?\s+(?P<url>.+)')
+# The value is either a built-in calendar's name or a feed URL, which is why the group is no
+# longer called `url`; `set_calendar` tells the two apart.
+SET_CALENDAR_PATTERN = create_command_pattern(r'(set\s+)?calendar([_ -]?url)?\s+(?P<value>.+)')
 SHOW_CALENDAR_PATTERN = re.compile(r'^(show\s+)?calendar$', re.IGNORECASE)
+# Instance-wide, not per config. Anchored, so it neither collides with `show calendar` nor is
+# swallowed by SET_CALENDAR_PATTERN, which needs `calendar` as its first word.
+LIST_CALENDARS_PATTERN = re.compile(r'^list\s+calendars?$', re.IGNORECASE)
 SET_DATETIME_FORMAT_PATTERN = create_command_pattern(r'(set\s+)?(datetime[_ -]?format|date[_ -]?format|datefmt)\s+(?P<values>.+)')
 CLEAR_PATTERN_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+pattern')
 SET_PATTERN_PATTERN = create_command_pattern(r'(set\s+)?pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|`[^`]*`|[^\r\n\t\f\v\s"\'`]+)(?:\s+(?P<case_sensitive>true|false|1|0))?')

@@ -9,6 +9,7 @@ from employee_list import get_env_var, load_env_file, log_error
 
 from . import __version__
 from . import state
+from . import calendarfeed
 from . import datetimefmt
 from .constants import DEFAULT_BOT_NAME, normalize_slash_command, normalize_version
 from . import persistence
@@ -33,6 +34,9 @@ async def main() -> None:
     # Locale for configs that set none. The timezone counterpart is the container's
     # TZ: a config without its own timezone uses server local time anyway.
     state.default_datetime_locale = datetimefmt.resolve_default_locale(get_env_var("HUTBOT_DEFAULT_DATETIME_LOCALE"))
+    # Instance-wide ICS feeds every channel can point at by name. Parsed once, here, because
+    # the payload carries secret tokens and nothing but `calendarfeed` should see them again.
+    state.builtin_calendars = calendarfeed.load_builtin_calendars()
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)

@@ -267,9 +267,23 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     else:
         cfg['conditions_mode'] = conditions_mode
 
+    # Calendar: a built-in calendar's name or a feed URL, never both. Rejecting the
+    # combination rather than quietly preferring one means a save can never ignore what the
+    # editor showed; `resolve_calendar_feed` still has to tie-break for a hand-edited file.
+    raw_calendar_builtin = str(get('calendar_builtin') or "").strip()
+    calendar_builtin = calendarfeed.normalize_builtin_calendar_name(raw_calendar_builtin)
     calendar_url = str(get('calendar_url') or "").strip()
     stored_calendar_url = str((existing or {}).get('calendar_url') or "").strip()
-    if calendar_url and stored_calendar_url and calendar_url == calendarfeed.describe_calendar_url(stored_calendar_url):
+    if raw_calendar_builtin and calendar_url:
+        errors['calendar_builtin'] = "Pick a built-in calendar or enter a URL, not both."
+    elif raw_calendar_builtin and not calendar_builtin:
+        errors['calendar_builtin'] = "Pick one of the built-in calendars."
+    elif calendar_builtin and calendarfeed.lookup_builtin_calendar(calendar_builtin) is None:
+        errors['calendar_builtin'] = f"`{raw_calendar_builtin}` is not a built-in calendar on this instance."
+    elif calendar_builtin:
+        cfg['calendar_builtin'] = calendar_builtin
+        cfg['calendar_url'] = ""
+    elif calendar_url and stored_calendar_url and calendar_url == calendarfeed.describe_calendar_url(stored_calendar_url):
         # The editor only ever saw the redacted form, so getting it back means "unchanged".
         # Clearing the field still clears the URL, and a real one still replaces it.
         cfg['calendar_url'] = stored_calendar_url
@@ -493,6 +507,11 @@ def ui_meta() -> dict:
         'button_actions': sorted(BUTTON_ACTIONS),
         'opsgenie_priorities': sorted(OPSGENIE_PRIORITIES),
         'teams': sorted((t for t in state.team_cache if t and t != TEAM_UNKNOWN), key=lambda v: v.upper()),
+        # Name and title only, spelled out rather than handed over as the namedtuple: this
+        # dict is JSON-dumped verbatim, and a BuiltinCalendar would serialize as a
+        # three-element array *including the URL* — every feed token, to every viewer.
+        'calendars': [{'name': calendar.name, 'title': calendar.title}
+                      for calendar in sorted(state.builtin_calendars, key=lambda c: c.name)],
         'template_variables': sorted(SUPPORTED_TEMPLATE_VARIABLES),
         'opsgenie_configured': state.opsgenie_configured,
         'default_config': copy.deepcopy(DEFAULT_CONFIG),

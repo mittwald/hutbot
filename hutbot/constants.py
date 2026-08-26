@@ -161,9 +161,12 @@ DEFAULT_CONFIG = {
     "opsgenie_schedule_name": "",
     "opsgenie_priority": DEFAULT_OPSGENIE_PRIORITY,
     "opsgenie_message": "",  # optional template for the alert text; empty = original message
-    # Calendar: one ICS feed per config, the counterpart of `opsgenie_schedule_name`.
-    # The URL is a bearer capability (an Outlook published-calendar link needs no auth),
-    # so it is redacted wherever it is echoed back.
+    # Calendar: one ICS feed per config, the counterpart of `opsgenie_schedule_name`. Either
+    # `calendar_builtin` — the name of one of the instance's built-in calendars, resolved to its
+    # URL at fetch time so no token is ever stored here — or `calendar_url`, which is a bearer
+    # capability (an Outlook published-calendar link needs no auth) and is therefore redacted
+    # wherever it is echoed back. Never both: setting one clears the other.
+    "calendar_builtin": "",
     "calendar_url": "",
     "date_format": "",
     "time_format": "",
@@ -351,6 +354,10 @@ UNKNOWN_USER_ONCALL_PLACEHOLDER = "<no-user-set>"
 UNKNOWN_PERIOD_PLACEHOLDER = "<unknown>"
 UNKNOWN_OPSGENIE_SCHEDULE_PLACEHOLDER = "<no-schedule-set>"
 UNKNOWN_CALENDAR_PLACEHOLDER = "<no-calendar-set>"
+# A config naming a built-in calendar this instance does not offer, because it was renamed or
+# taken out of HUTBOT_BUILTIN_CALENDARS. Distinct from "no calendar set" so a rule that went
+# quiet for that reason says so in `test` output and in whatever it renders.
+UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER = "<unknown-calendar>"
 UNKNOWN_CALENDAR_EVENT_PLACEHOLDER = "<no-event>"
 # Every "nothing resolved" stand-in. A condition's `empty`/`not_empty` treats these as
 # empty, because the providers never hand back a bare "" and `opsgenie_current_user empty`
@@ -362,5 +369,6 @@ UNKNOWN_PLACEHOLDERS = {
     UNKNOWN_PERIOD_PLACEHOLDER,
     UNKNOWN_OPSGENIE_SCHEDULE_PLACEHOLDER,
     UNKNOWN_CALENDAR_PLACEHOLDER,
+    UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
 }

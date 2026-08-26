@@ -28,7 +28,9 @@ Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, 
 If a channel config has a calendar feed configured via `/hutbot [config] set calendar <url>`,
 Hutbot reads the ICS feed and exposes the event running **now** and the **next** one:
 
-- `{{calendar_name}}` for the feed's own name (`X-WR-CALNAME`), or its redacted URL
+- `{{calendar_name}}` for the built-in calendar's **title** when the config uses one, else the
+  feed's own name (`X-WR-CALNAME`), else its redacted URL — `<unknown-calendar>` when the
+  config names a built-in this instance no longer offers
 - `{{calendar_current_summary}}`, `{{calendar_current_location}}`, `{{calendar_current_description}}`
 - `{{calendar_current_organizer}}` (display name) and `{{calendar_current_organizer_email}}`
 - `{{calendar_current_attendees}}` (display names) and `{{calendar_current_attendee_emails}}` —
@@ -104,10 +106,13 @@ Opsgenie alert priority defaults to `P4` and can be configured per channel confi
 
 ## Calendar feeds
 
-A config can read **one** ICS calendar feed, the same way it has one Opsgenie schedule:
+A config can read **one** ICS calendar feed, the same way it has one Opsgenie schedule — either a
+**built-in calendar** the instance provides, or a published `.ics` link of your own:
 
 ```bash
-/hutbot [config] set calendar <url>     # a published .ics link
+/hutbot list calendars                  # the built-in calendars available here
+/hutbot [config] set calendar <name>    # one of them, by name
+/hutbot [config] set calendar <url>     # or a published .ics link
 /hutbot [config] clear calendar
 /hutbot [config] show calendar          # the event running now, and the next one
 ```
@@ -115,9 +120,28 @@ A config can read **one** ICS calendar feed, the same way it has one Opsgenie sc
 The event running now and the next one become `{{calendar_*}}` template variables (see above),
 so a message can name them — and a condition can gate a rule on them.
 
+### Built-in calendars
+
+Built-in calendars are curated per instance: each has a `name` (what you type), a `title` (what
+Hutbot shows) and a feed URL that only the deployment knows. There are none by default — an
+operator adds them to `HUTBOT_BUILTIN_CALENDARS`, described under
+[Built-in calendar feeds](#built-in-calendar-feeds).
+
+Pointing a config at one stores **the name**, never the URL, so `bot.json` never holds a feed
+token and rotating one takes effect without editing a single config. `show config` names the
+calendar by its title (`Calendar  Platform on-call rota (built-in: rota)`) and `{{calendar_name}}`
+renders that same title. Two configs on the same built-in share one fetch.
+
+A built-in name may hold lower-case letters, digits, `.`, `-` and `_` — never `:` or `/` — which
+is how `set calendar <value>` tells a name from a URL. If a built-in is renamed or removed while
+a config still names it, that config fetches nothing, `{{calendar_name}}` renders
+`<unknown-calendar>`, and `show config` says `built-in: rota (not available on this instance)`.
+
 **The URL is a secret.** A published-calendar link needs no login, so possession of it *is* read
 access to the calendar. Hutbot therefore only ever echoes a redacted form
-(`outlook.office365.com/…/calendar.ics`) in `show config` and in the setter's confirmation.
+(`outlook.office365.com/…/calendar.ics`) in `show config` and in the setter's confirmation — and a
+built-in calendar's URL is never printed at all, not even redacted, because it belongs to the
+instance rather than to the channel that uses it.
 The feed is cached for 5 minutes (`HUTBOT_CALENDAR_TTL`, in seconds).
 
 A remote feed must be `https://`, and URLs pointing at the private ranges or the cloud metadata
@@ -283,6 +307,11 @@ Hutbot can serve a small web UI from the **same bot process** (no separate servi
 logged-in user view and edit the Hutbot rule configuration for the Slack channels they belong to. It
 shows configuration only — there is no message log or analytics. It is **disabled by default**.
 
+The calendar section offers the instance's built-in calendars as a dropdown (hidden when there are
+none) beside the feed-URL field. The two are mutually exclusive: picking a built-in clears the URL,
+and a save carrying both is rejected. A stored built-in this instance no longer offers stays
+selected, labelled *not available on this instance*, so saving cannot silently drop it.
+
 The UI is intended to run behind a Keycloak-fronting reverse proxy (e.g. oauth2-proxy). The proxy
 authenticates the user and passes their email in a trusted HTTP header. Hutbot resolves that email to
 a Slack user (reusing the same employee-list / Slack mapping the bot already uses), determines their
@@ -325,7 +354,9 @@ Set `HUTBOT_UI_USER_HEADER` to match the header your proxy sends:
 ### Endpoints
 
 - `GET /healthz` — unauthenticated, for Kubernetes probes.
-- `GET /api/me`, `GET /api/meta`, `GET /api/channels` — require a resolvable user.
+- `GET /api/me`, `GET /api/meta`, `GET /api/channels` — require a resolvable user. `/api/meta`
+  carries the option lists the editor needs, including the built-in calendars as **name and title
+  only** — their feed URLs never leave the bot.
 - `GET`/`PUT`/`POST`/`DELETE` `/api/channels/{id}/configs[/{name}]` — require a resolvable user, and
   channel routes additionally require membership of the channel.
 

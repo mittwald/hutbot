@@ -473,26 +473,55 @@ async def set_conditions_mode(app: AsyncApp, channel, config_name: str, value: s
     await messaging.send_message(app, channel, user, f"*Condition mode* set to `{mode}` in configuration `{config_name}`: {explanation}.", thread_ts)
 
 
-async def set_calendar_url(app: AsyncApp, channel, config_name: str, url: str, user, thread_ts: str = "") -> None:
-    """`set calendar <url>` — the ICS feed this config reads, one per config.
+async def set_calendar(app: AsyncApp, channel, config_name: str, value: str, user, thread_ts: str = "") -> None:
+    """`set calendar <name|url>` — a built-in calendar, or an ICS feed URL, one per config.
 
-    Slack wraps a typed URL as `<url>` or `<url|label>`, so it is unwrapped before
-    validation. The confirmation prints the redacted form: a published-calendar link needs
-    no credentials, so anyone who can read it back has the calendar.
+    A built-in's name can hold neither `:` nor `/`, so the two readings never blur: a known
+    name wins, anything carrying either character was meant as a URL and gets the URL error,
+    and what is left is an unknown name — whose message covers both readings, because
+    `cal.example.com` is a plausible typo either way.
+
+    Slack wraps a typed URL as `<url>` or `<url|label>`, so it is unwrapped first. A built-in
+    is confirmed by its title, a URL by its redacted form: a published-calendar link needs no
+    credentials, so anyone who can read it back has the calendar.
     """
-    url = unwrap_slack_link(url or "")
+    value = unwrap_slack_link(value or "")
+    builtin = calendarfeed.lookup_builtin_calendar(value)
+    if builtin is not None:
+        config = _ensure_config(channel, config_name)
+        # Never both: whichever is set is the one that gets fetched, so the other would only
+        # sit there as a lie about what this config reads.
+        config['calendar_builtin'] = builtin.name
+        config['calendar_url'] = ""
+        await persistence.save_configuration()
+        await messaging.send_message(app, channel, user, f"*Calendar* set to the built-in calendar *{builtin.title}* (`{builtin.name}`) in configuration `{config_name}`.", thread_ts)
+        return
+
+    if not calendarfeed.looks_like_a_calendar_url(value):
+        names = calendarfeed.builtin_calendar_names()
+        if names:
+            available = ", ".join(f"`{name}`" for name in names)
+            await messaging.send_message(app, channel, user, f"Unknown *calendar* `{value}`. Available built-in calendars: {available}. A feed URL must start with `https://`.", thread_ts)
+        else:
+            await messaging.send_message(app, channel, user, f"Unknown *calendar* `{value}`. This instance has no built-in calendars, so set a published `.ics` URL: `{state.slash_command} {config_name} set calendar <url>`.", thread_ts)
+        return
+
     try:
-        url = calendarfeed.validate_calendar_url(url)
+        url = calendarfeed.validate_calendar_url(value)
     except ValueError as e:
         await messaging.send_message(app, channel, user, f"Invalid *calendar URL*: {e}.", thread_ts)
         return
-    _ensure_config(channel, config_name)['calendar_url'] = url
+    config = _ensure_config(channel, config_name)
+    config['calendar_url'] = url
+    config['calendar_builtin'] = ""
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"*Calendar* set to `{calendarfeed.describe_calendar_url(url)}` in configuration `{config_name}`.", thread_ts)
 
 
-async def clear_calendar_url(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
-    _ensure_config(channel, config_name)['calendar_url'] = ""
+async def clear_calendar(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    config = _ensure_config(channel, config_name)
+    config['calendar_builtin'] = ""
+    config['calendar_url'] = ""
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"Cleared the *calendar* in configuration `{config_name}`.", thread_ts)
 

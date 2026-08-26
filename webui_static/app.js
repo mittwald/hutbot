@@ -603,10 +603,34 @@ function conditionRow(cond, i) {
 
 function calendarSection() {
   const cfg = draft();
-  const rows = [grid(field("Calendar feed URL", textInput("calendar_url", { mono: true, placeholder: "https://outlook.office365.com/owa/calendar/…/calendar.ics" }),
-    { wide: true, error: fieldErr("calendar_url"),
-      hint: "Published .ics link. Treat it as a secret — it grants read access without a login, so a saved one is only ever shown shortened. Leave it as shown to keep it, paste a new link to replace it, or clear the field to remove it." }))];
-  return section("Calendar", cfg.calendar_url ? "feed" : null, ...rows);
+  const builtins = state.meta.calendars || [];
+  const rows = [];
+  if (builtins.length) {
+    const sel = h("select", { onchange: (e) => {
+      cfg.calendar_builtin = e.target.value;
+      // Mutually exclusive: the server rejects both at once, and whichever is set is the
+      // one that gets fetched, so the URL would only sit there as a lie.
+      if (e.target.value) cfg.calendar_url = "";
+      structuralRefresh();
+    } });
+    sel.append(h("option", { value: "", selected: !cfg.calendar_builtin }, "— none —"));
+    for (const c of builtins) sel.append(h("option", { value: c.name, selected: cfg.calendar_builtin === c.name }, `${c.title} (${c.name})`));
+    // A stored name this instance no longer offers would otherwise fall off the list and read
+    // as "none", so the next Apply would silently clear a calendar nobody touched.
+    if (cfg.calendar_builtin && !builtins.some((c) => c.name === cfg.calendar_builtin)) {
+      sel.append(h("option", { value: cfg.calendar_builtin, selected: true }, `${cfg.calendar_builtin} — not available on this instance`));
+    }
+    rows.push(grid(field("Built-in calendar", sel, { error: fieldErr("calendar_builtin"),
+      hint: "Shared feeds this instance provides — nothing to paste, and their links are never shown." })));
+  }
+  // Hidden while a built-in is picked, except when a URL is stored beside it (only a
+  // hand-edited bot.json does that), so the state the server rejects stays fixable here.
+  if (!cfg.calendar_builtin || cfg.calendar_url) {
+    rows.push(grid(field("Calendar feed URL", textInput("calendar_url", { mono: true, placeholder: "https://outlook.office365.com/owa/calendar/…/calendar.ics" }),
+      { wide: true, error: fieldErr("calendar_url"),
+        hint: "Published .ics link. Treat it as a secret — it grants read access without a login, so a saved one is only ever shown shortened. Leave it as shown to keep it, paste a new link to replace it, or clear the field to remove it." })));
+  }
+  return section("Calendar", cfg.calendar_builtin ? "built-in" : (cfg.calendar_url ? "feed" : null), ...rows);
 }
 
 function opsgenieSection() {

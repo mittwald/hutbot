@@ -135,3 +135,41 @@ async def test_migration_moves_a_schedule_timezone_into_the_datetime_timezone():
     assert any("dropping the schedule timezone Asia/Tokyo; its cron now fires in Europe/Berlin" in w for w in warnings)
     # Identical values are not worth a warning.
     assert len(warnings) == 2
+
+
+@pytest.mark.asyncio
+async def test_migration_normalizes_a_hand_edited_builtin_calendar_name():
+    app = AsyncMock()
+    config = {"C123": {"cal": {**DEFAULT_CONFIG.copy(), "calendar_builtin": "  Rota "}}}
+
+    migrated = await migrate_and_apply_defaults(app, config)
+
+    assert migrated["C123"]["cal"]["calendar_builtin"] == "rota"
+
+
+@pytest.mark.asyncio
+async def test_migration_backfills_the_builtin_calendar_key():
+    app = AsyncMock()
+    stale = {key: value for key, value in DEFAULT_CONFIG.items() if key != "calendar_builtin"}
+    config = {"C123": {"cal": stale}}
+
+    migrated = await migrate_and_apply_defaults(app, config)
+
+    assert migrated["C123"]["cal"]["calendar_builtin"] == ""
+
+
+@pytest.mark.asyncio
+async def test_migration_warns_when_a_config_names_a_builtin_calendar_and_a_url():
+    """Only a hand-edited file gets here; both values are kept, and the built-in wins."""
+    app = AsyncMock()
+    url = "https://cal.example.com/SECRETTOKEN/rota.ics"
+    config = {"C123": {"cal": {**DEFAULT_CONFIG.copy(), "calendar_builtin": "rota", "calendar_url": url}}}
+
+    with patch('hutbot.persistence.log_warning') as mock_log_warning:
+        migrated = await migrate_and_apply_defaults(app, config)
+
+    assert migrated["C123"]["cal"]["calendar_builtin"] == "rota"
+    assert migrated["C123"]["cal"]["calendar_url"] == url
+    warning = mock_log_warning.call_args.args[0]
+    assert "names both the built-in calendar 'rota'" in warning and "the built-in wins" in warning
+    assert "cal.example.com/…/rota.ics" in warning and "SECRETTOKEN" not in warning

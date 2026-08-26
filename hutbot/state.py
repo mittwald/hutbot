@@ -63,13 +63,21 @@ bot_user_name = DEFAULT_BOT_NAME
 # True once an OpsGenie token + heartbeat name are configured.
 opsgenie_configured = False
 
+# The instance's built-in calendars (models.BuiltinCalendar), parsed once from
+# HUTBOT_BUILTIN_CALENDARS at startup, empty when none are configured. Every entry's URL
+# carries a secret token: nothing outside `calendarfeed` reads `.url`, and nothing serializes
+# this list — only `name` and `title` are ever echoed or handed to the web UI.
+builtin_calendars: list = []
+
 # Slack member ids per channel, cached briefly (see slackcache.get_channel_members).
 _channel_members_cache: dict[str, tuple[float, set]] = {}
 
 # Parsed ICS calendars per feed URL, cached briefly (see calendarfeed.fetch_calendar).
 # The parsed calendar is cached rather than the raw text (parsing is the expensive part)
 # or the derived context (which would go stale at every event boundary).
-# Values are (monotonic_fetched_at, icalendar.Calendar, display_name).
+# Values are (monotonic_fetched_at, icalendar.Calendar, display_name). Keyed by the *resolved*
+# URL, which is what lets every config on the same built-in calendar share one fetch — and
+# what makes these keys secret material, since a built-in's URL is an operator's token.
 _calendar_cache: dict[str, tuple[float, object, str]] = {}
 
 # Serializes web-UI config writes (mutate channel_config + save_configuration).
@@ -83,7 +91,7 @@ current_command: ContextVar[str] = ContextVar('current_command', default='')
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, slash_command, bot_name, default_datetime_locale, version
+    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, builtin_calendars, slash_command, bot_name, default_datetime_locale, version
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -102,6 +110,7 @@ def reset() -> None:
     bot_user_id = None
     bot_user_name = DEFAULT_BOT_NAME
     opsgenie_configured = False
+    builtin_calendars = []
     slash_command = DEFAULT_SLASH_COMMAND
     bot_name = DEFAULT_BOT_NAME
     default_datetime_locale = ""

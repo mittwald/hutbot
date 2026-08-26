@@ -497,3 +497,31 @@ async def test_show_config_hides_a_condition_on_a_non_cron_trigger():
     sent_message = sent_messages(mock_send_message)
     assert "Condition" not in sent_message
     assert "Outlook subject" not in sent_message
+
+
+@pytest.mark.asyncio
+async def test_process_command_list_calendars():
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with _patch_builtin_calendars(), patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "list calendars", channel, user)
+
+    message = mock_send_message.call_args.args[3]
+    assert message.startswith("*Built-in calendars*:\n`holidays` — Company holidays\n`rota` — Platform on-call rota")
+    assert "set calendar <name>" in message
+    # Name and title only: the feed URL belongs to the instance, not to the channel.
+    assert "cal.example.com" not in message and "SECRETTOKEN" not in message
+
+
+@pytest.mark.asyncio
+async def test_process_command_list_calendars_without_any():
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "list calendars", channel, user)
+
+    assert "No built-in calendars are configured" in mock_send_message.call_args.args[3]

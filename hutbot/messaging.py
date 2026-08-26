@@ -312,7 +312,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] clear opsgenie-message", "Back to alerting with the message itself."),
         ]),
         ("Calendar", [
-            (f"{command} [config] set calendar <url>", "Read an ICS calendar feed (one per config)."),
+            (f"{command} [config] set calendar <name|url>", "Read a built-in calendar, or an ICS feed URL."),
             (f"{command} [config] clear calendar", "Stop reading a calendar feed."),
             (f"{command} [config] show calendar", "Show the event running now and the next one."),
         ]),
@@ -326,6 +326,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] on-call [opsgenie-schedule]", "Show current on-call user."),
             (f"{command} list teams", "List available teams."),
             (f"{command} list opsgenie-schedules", "List OpsGenie schedules."),
+            (f"{command} list calendars", "List the built-in calendars available here."),
             (f"{command} team of <@user>", "Show a user's team."),
         ]),
         ("Help", [
@@ -404,6 +405,8 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         "`other_*` forms, which leave out the organizer — renders comma-separated, and `nth` picks "
         "one entry counting from 1: `{{calendar_current_attendees(nth=2)}}` is the second. Asking "
         "for an entry that is not there renders empty.",
+        "`{{calendar_name}}` is the built-in calendar's title when a config uses one, and "
+        "otherwise the feed's own name — or its redacted URL, when the feed does not name itself.",
         "You can `@mention` someone by email address (`@nico@example.com`) as well as by username, "
         "and the calendar's `{{..._users}}` variables are its people already mapped to Slack "
         "mentions — usable in a message or as a `dm-user`/`group-dm` target.",

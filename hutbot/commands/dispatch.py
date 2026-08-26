@@ -46,9 +46,9 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     elif patterns.SHOW_CALENDAR_PATTERN.match(command_text):
         await calendarfeed.send_current_calendar_event(app, channel, config_name, user, thread_ts)
     elif patterns.CLEAR_CALENDAR_PATTERN.match(command_text):
-        await setters.clear_calendar_url(app, channel, config_name, user, thread_ts)
+        await setters.clear_calendar(app, channel, config_name, user, thread_ts)
     elif (match := patterns.SET_CALENDAR_PATTERN.match(command_text)):
-        await setters.set_calendar_url(app, channel, config_name, match.group("url"), user, thread_ts)
+        await setters.set_calendar(app, channel, config_name, match.group("value"), user, thread_ts)
     elif (match := patterns.SET_DATETIME_FORMAT_PATTERN.match(command_text)):
         await setters.set_datetime_format(app, channel, config_name, match.group("values"), user, thread_ts)
     elif patterns.CLEAR_PATTERN_PATTERN.match(command_text):
@@ -79,6 +79,8 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await info.list_teams(app, channel, user, thread_ts)
     elif patterns.LIST_OPSGENIE_SCHEDULES_PATTERN.match(command_text):
         await info.list_opsgenie_schedules(app, channel, user, thread_ts)
+    elif patterns.LIST_CALENDARS_PATTERN.match(command_text):
+        await info.list_calendars(app, channel, user, thread_ts)
     elif (match := patterns.ON_CALL_PATTERN.match(command_text)):
         schedule_name = strip_quotes(match.group("schedule") or "")
         await opsgenie.send_current_on_call(app, opsgenie_token, channel, config_name, schedule_name, user, thread_ts)

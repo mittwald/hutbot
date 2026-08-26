@@ -1,5 +1,7 @@
+import base64
 import contextlib
 import copy
+import json
 
 from tests._common import *  # noqa: F401,F403
 
@@ -7,13 +9,24 @@ import icalendar
 
 from hutbot.calendarfeed import (
     build_calendar_event,
+    builtin_calendar_names,
+    describe_calendar_feed,
     describe_calendar_url,
     fetch_calendar,
     find_current_and_next_events,
     get_calendar_placeholder_variables,
+    load_builtin_calendars,
+    lookup_builtin_calendar,
+    normalize_builtin_calendar_name,
+    parse_builtin_calendars,
+    resolve_calendar_feed,
     validate_calendar_url,
 )
-from hutbot.constants import CALENDAR_DATETIME_TEMPLATE_VARIABLES
+from hutbot.constants import (
+    CALENDAR_DATETIME_TEMPLATE_VARIABLES,
+    UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
+    UNKNOWN_CALENDAR_PLACEHOLDER,
+)
 
 
 # A realistic published-Outlook feed: CRLF line endings, folded UID/ORGANIZER continuation
@@ -721,7 +734,8 @@ async def test_show_config_shows_only_the_redacted_calendar_url():
 
 @pytest.mark.asyncio
 async def test_calendar_patterns_are_recognised_as_commands():
-    for text in ("set calendar https://x/y.ics", "clear calendar", "show calendar", "calendar"):
+    for text in ("set calendar https://x/y.ics", "set calendar rota", "clear calendar",
+                 "show calendar", "calendar", "list calendars", "list calendar"):
         assert hutbot.commands.dispatch.matches_a_command(text), text
 
 
@@ -1376,3 +1390,347 @@ async def test_resolve_public_host_rejects_internal_targets(host, expected):
 def test_validate_calendar_url_rejects_more_reserved_ranges(url):
     with pytest.raises(ValueError):
         validate_calendar_url(url)
+
+
+# ----- built-in calendars -----
+
+def builtin_names(calendars):
+    return [calendar.name for calendar in calendars]
+
+
+BUILTIN_JSON = json.dumps([
+    {"name": "rota", "title": "Platform on-call rota", "url": "https://cal.example.com/SECRETTOKEN/rota.ics"},
+    {"name": "holidays", "title": "Company holidays", "url": "https://cal.example.com/OTHERTOKEN/holidays.ics"},
+])
+
+
+def test_parse_builtin_calendars_reads_name_title_and_url():
+    calendars = parse_builtin_calendars(BUILTIN_JSON)
+    assert [(c.name, c.title) for c in calendars] == [
+        ("rota", "Platform on-call rota"), ("holidays", "Company holidays")]
+    assert calendars[0].url.endswith("/SECRETTOKEN/rota.ics")
+
+
+def test_load_builtin_calendars_reads_plain_json_from_the_environment(monkeypatch):
+    """`get_env_var` base64-decodes what it can; a JSON array must survive untouched."""
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS", BUILTIN_JSON)
+    assert builtin_names(load_builtin_calendars()) == ["rota", "holidays"]
+
+
+def test_load_builtin_calendars_reads_a_base64_payload(monkeypatch):
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS", base64.b64encode(BUILTIN_JSON.encode()).decode())
+    assert builtin_names(load_builtin_calendars()) == ["rota", "holidays"]
+
+
+def test_load_builtin_calendars_prefers_the_file(monkeypatch, tmp_path):
+    path = tmp_path / "builtin-calendars.json"
+    path.write_text(BUILTIN_JSON + "\n")
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS", "[]")
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS_FILE", str(path))
+    assert builtin_names(load_builtin_calendars()) == ["rota", "holidays"]
+
+
+def test_load_builtin_calendars_survives_a_missing_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS_FILE", str(tmp_path / "gone.json"))
+    with patch('hutbot.calendarfeed.log_error') as log_error:
+        assert load_builtin_calendars() == []
+    assert log_error.called
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "[]"])
+def test_parse_builtin_calendars_is_empty_by_default(raw):
+    assert parse_builtin_calendars(raw) == []
+
+
+@pytest.mark.parametrize("raw", ['{"rota": "…"}', "not json at all", '"a string"'])
+def test_parse_builtin_calendars_refuses_anything_but_an_array(raw):
+    with patch('hutbot.calendarfeed.log_error') as log_error:
+        assert parse_builtin_calendars(raw) == []
+    assert log_error.called
+
+
+@pytest.mark.parametrize("entry", [
+    {"title": "No name", "url": "https://cal.example.com/a.ics"},
+    {"name": "", "title": "Blank", "url": "https://cal.example.com/a.ics"},
+    {"name": "Has Space", "title": "Bad name", "url": "https://cal.example.com/a.ics"},
+    {"name": "-leading", "title": "Bad name", "url": "https://cal.example.com/a.ics"},
+    {"name": "a/b", "title": "URL-shaped name", "url": "https://cal.example.com/a.ics"},
+    {"name": "rota", "title": "", "url": "https://cal.example.com/a.ics"},
+    {"name": "rota", "title": "No URL"},
+    {"name": "rota", "title": "Plain http", "url": "http://cal.example.com/a.ics"},
+    {"name": "rota", "title": "Internal", "url": "https://10.0.0.1/a.ics"},
+    "not an object",
+])
+def test_parse_builtin_calendars_skips_an_unusable_entry(entry):
+    with patch('hutbot.calendarfeed.log_warning') as log_warning:
+        assert parse_builtin_calendars(json.dumps([entry])) == []
+    assert log_warning.called
+
+
+def test_parse_builtin_calendars_casefolds_the_name_and_keeps_the_first_duplicate():
+    calendars = parse_builtin_calendars(json.dumps([
+        {"name": "Rota", "title": "First", "url": "https://cal.example.com/1.ics"},
+        {"name": "rota", "title": "Second", "url": "https://cal.example.com/2.ics"},
+    ]))
+    assert [(c.name, c.title) for c in calendars] == [("rota", "First")]
+
+
+def test_parse_builtin_calendars_never_logs_a_token():
+    """Every failure path reports a name or a position, never the payload or a raw URL."""
+    payloads = [
+        '{"broken": ',
+        json.dumps({"name": "rota", "url": "https://cal.example.com/SECRETTOKEN/rota.ics"}),
+        json.dumps([{"name": "rota", "url": "http://cal.example.com/SECRETTOKEN/rota.ics"}]),
+        json.dumps([{"title": "No name", "url": "https://cal.example.com/SECRETTOKEN/rota.ics"}]),
+    ]
+    for payload in payloads:
+        with patch('hutbot.calendarfeed.log_warning') as log_warning, \
+             patch('hutbot.calendarfeed.log_error') as log_error:
+            parse_builtin_calendars(payload)
+        logged = " ".join(str(arg) for call in log_warning.call_args_list + log_error.call_args_list
+                          for arg in call.args)
+        assert "SECRETTOKEN" not in logged, payload
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("rota", "rota"), ("ROTA", "rota"), ("  Rota  ", "rota"), ("platform.rota", "platform.rota"),
+    ("a_b-c", "a_b-c"), ("", ""), ("has space", ""), ("a/b", ""), ("https://x/y.ics", ""), ("-x", ""),
+])
+def test_normalize_builtin_calendar_name(value, expected):
+    assert normalize_builtin_calendar_name(value) == expected
+
+
+def test_lookup_and_list_builtin_calendars():
+    with _patch_builtin_calendars():
+        assert lookup_builtin_calendar("ROTA").title == "Platform on-call rota"
+        assert lookup_builtin_calendar("nope") is None
+        assert lookup_builtin_calendar("https://cal.example.com/x.ics") is None
+        assert builtin_calendar_names() == ["holidays", "rota"]
+
+
+def test_state_reset_clears_the_builtin_calendars():
+    hutbot.state.builtin_calendars = list(BUILTIN_CALENDARS)
+    hutbot.state.reset()
+    assert hutbot.state.builtin_calendars == []
+
+
+def test_resolve_calendar_feed_resolves_a_builtin_and_prefers_it_over_a_stored_url():
+    with _patch_builtin_calendars():
+        feed = resolve_calendar_feed({"calendar_builtin": "Rota", "calendar_url": "https://other.example.com/x.ics"})
+    assert feed.builtin == "rota" and feed.title == "Platform on-call rota"
+    assert feed.url.endswith("/SECRETTOKEN/rota.ics") and feed.missing is False
+
+
+def test_resolve_calendar_feed_reports_a_builtin_this_instance_lost():
+    with _patch_builtin_calendars([]):
+        feed = resolve_calendar_feed({"calendar_builtin": "rota"})
+    assert feed.missing is True and feed.url == "" and feed.builtin == "rota"
+
+
+def test_resolve_calendar_feed_falls_back_to_the_url_and_to_nothing():
+    feed = resolve_calendar_feed({"calendar_url": "https://cal.example.com/a/b/feed.ics"})
+    assert feed.builtin == "" and feed.url.endswith("feed.ics")
+    assert feed.title == "cal.example.com/…/feed.ics"
+    assert resolve_calendar_feed({}) == hutbot.models.CalendarFeed("", "", "", False)
+
+
+def test_describe_calendar_feed_never_shows_a_builtin_url():
+    with _patch_builtin_calendars():
+        feed = resolve_calendar_feed({"calendar_builtin": "rota"})
+    label = describe_calendar_feed(feed)
+    assert label == "Platform on-call rota"
+    assert "cal.example.com" not in label and "SECRETTOKEN" not in label
+
+
+@pytest.mark.asyncio
+async def test_a_builtin_is_fetched_from_its_resolved_url_and_shared_between_configs():
+    calls = []
+    with _patch_builtin_calendars(), _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
+        first = await hutbot.calendarfeed.resolve_calendar_context({"calendar_builtin": "rota"}, NOW)
+        # A second config on the same built-in resolves to the same URL, so the cache keyed by
+        # URL answers it without another fetch.
+        await hutbot.calendarfeed.resolve_calendar_context({"calendar_builtin": "ROTA"}, NOW)
+    assert calls == ["https://cal.example.com/SECRETTOKEN/rota.ics"]
+    # The curated title wins over the feed's own `X-WR-CALNAME` ("Team Kalender").
+    assert first.name == "Platform on-call rota"
+    assert first.current is not None
+
+
+@pytest.mark.asyncio
+async def test_a_missing_builtin_fetches_nothing():
+    calls = []
+    with _patch_builtin_calendars([]), _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
+        context = await hutbot.calendarfeed.resolve_calendar_context({"calendar_builtin": "rota"}, NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, {"calendar_builtin": "rota"}, NOW)
+    assert calls == []
+    assert context.name == "" and context.current is None
+    assert variables["calendar_name"] == UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER
+    assert variables["calendar_current_summary"] == "<no-event>"
+
+
+def test_placeholder_variables_name_a_builtin_by_its_title():
+    with _patch_builtin_calendars():
+        variables = get_calendar_placeholder_variables({"calendar_builtin": "rota"})
+    assert variables["calendar_name"] == "Platform on-call rota"
+    assert get_calendar_placeholder_variables({})["calendar_name"] == UNKNOWN_CALENDAR_PLACEHOLDER
+
+
+@pytest.mark.asyncio
+async def test_a_builtin_never_leaks_its_url_into_the_variables():
+    calls = []
+    with _patch_builtin_calendars(), _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, {"calendar_builtin": "rota"}, NOW)
+    assert "SECRETTOKEN" not in json.dumps(variables, default=str)
+
+
+def test_the_missing_builtin_placeholder_counts_as_empty_for_a_condition():
+    assert UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER in hutbot.constants.UNKNOWN_PLACEHOLDERS
+
+
+# ----- built-in calendar commands -----
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["set calendar rota", "calendar ROTA", "set calendar  rota "])
+async def test_set_calendar_accepts_a_builtin_name(command):
+    app = AsyncMock()
+    channel = _mk_channel({"default": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": "https://old.example.com/x.ics"}})
+    user = User("U1", "dave", "Dave", "T")
+    with _patch_builtin_calendars(), patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, command, channel, user)
+    config = channel.configs["default"]
+    assert config["calendar_builtin"] == "rota"
+    # Never both: the stored URL is cleared, so what `show config` says is what gets fetched.
+    assert config["calendar_url"] == ""
+    confirmation = send.call_args.args[3]
+    assert "Platform on-call rota" in confirmation and "`rota`" in confirmation
+    assert "SECRETTOKEN" not in confirmation and "cal.example.com" not in confirmation
+
+
+@pytest.mark.asyncio
+async def test_set_calendar_with_a_url_clears_a_stored_builtin():
+    app = AsyncMock()
+    channel = _mk_channel({"default": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_builtin": "rota"}})
+    user = User("U1", "dave", "Dave", "T")
+    with _patch_builtin_calendars(), patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message'):
+        await process_command(app, "set calendar https://cal.example.com/feed.ics", channel, user)
+    config = channel.configs["default"]
+    assert config["calendar_url"] == "https://cal.example.com/feed.ics" and config["calendar_builtin"] == ""
+
+
+@pytest.mark.asyncio
+async def test_set_calendar_rejects_an_unknown_name_and_lists_the_available_ones():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with _patch_builtin_calendars(), patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set calendar rotta", channel, user)
+    text = send.call_args.args[3]
+    assert "Unknown *calendar* `rotta`" in text and "`rota`" in text and "`holidays`" in text
+    assert channel.configs["default"]["calendar_builtin"] == ""
+
+
+@pytest.mark.asyncio
+async def test_set_calendar_without_any_builtins_points_at_a_url():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set calendar rota", channel, user)
+    assert "no built-in calendars" in send.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_set_calendar_with_a_url_shaped_value_still_gets_the_url_error():
+    """`cal.example.com/x.ics` was meant as a URL, so it must not read as a bad name."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    with _patch_builtin_calendars(), patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set calendar cal.example.com/x.ics", channel, user)
+    assert "Invalid *calendar URL*" in send.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_clear_calendar_clears_both_keys():
+    app = AsyncMock()
+    channel = _mk_channel({"default": {**copy.deepcopy(DEFAULT_CONFIG),
+                                       "calendar_builtin": "rota", "calendar_url": "https://cal.example.com/x.ics"}})
+    user = User("U1", "dave", "Dave", "T")
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message'):
+        await process_command(app, "clear calendar", channel, user)
+    config = channel.configs["default"]
+    assert config["calendar_builtin"] == "" and config["calendar_url"] == ""
+
+
+@pytest.mark.asyncio
+async def test_show_calendar_labels_a_builtin_by_its_title():
+    app = AsyncMock()
+    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "calendar_url": "", "calendar_builtin": "rota"}
+    channel = _mk_channel({"default": config})
+    user = User("U1", "dave", "Dave", "T")
+    context = hutbot.models.CalendarContext("", None, None)
+    with _patch_builtin_calendars(), \
+         patch('hutbot.calendarfeed.resolve_calendar_context', new=AsyncMock(return_value=context)), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "show calendar", channel, user)
+    text = send.call_args.args[3]
+    assert "No current or upcoming events in the calendar `Platform on-call rota`" in text
+    assert "cal.example.com" not in text
+
+
+@pytest.mark.asyncio
+async def test_show_calendar_reports_a_builtin_this_instance_lost():
+    app = AsyncMock()
+    config = {**copy.deepcopy(DEFAULT_CONFIG), "calendar_builtin": "rota"}
+    channel = _mk_channel({"default": config})
+    user = User("U1", "dave", "Dave", "T")
+    with _patch_builtin_calendars([]), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "show calendar", channel, user)
+    text = send.call_args.args[3]
+    assert "built-in calendar `rota`" in text and "does not offer" in text
+
+
+@pytest.mark.asyncio
+async def test_show_config_names_a_builtin_by_its_title_not_its_host():
+    app = _ui_app()
+    _seed_user_caches()
+    channel = _mk_channel({"default": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_builtin": "rota"}})
+    user = User("U1", "dave", "Dave", "T")
+    with _patch_builtin_calendars(), patch('hutbot.messaging.send_message') as send:
+        await show_config(app, channel, user, "")
+    text = sent_messages(send)
+    assert "Platform on-call rota (built-in: rota)" in text
+    assert "cal.example.com" not in text and "SECRETTOKEN" not in text
+
+
+@pytest.mark.asyncio
+async def test_show_config_flags_a_builtin_this_instance_lost():
+    app = _ui_app()
+    _seed_user_caches()
+    channel = _mk_channel({"default": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_builtin": "rota"}})
+    user = User("U1", "dave", "Dave", "T")
+    with _patch_builtin_calendars([]), patch('hutbot.messaging.send_message') as send:
+        await show_config(app, channel, user, "")
+    assert "built-in: rota (not available on this instance)" in sent_messages(send)
+
+
+@pytest.mark.asyncio
+async def test_a_builtin_calendar_url_never_reaches_bot_json(tmp_path):
+    """The whole point of storing the name: the token stays out of the state volume."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    config_file = tmp_path / "bot.json"
+    hutbot.state.channel_config[channel.id] = channel.configs
+    with _patch_builtin_calendars(), patch('hutbot.constants.CONFIG_FILE_NAME', str(config_file)), \
+         patch('hutbot.messaging.send_message'):
+        await process_command(app, "set calendar rota", channel, user)
+    written = config_file.read_text()
+    assert '"calendar_builtin": "rota"' in written
+    assert "SECRETTOKEN" not in written and "cal.example.com" not in written

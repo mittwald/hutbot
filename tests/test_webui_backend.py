@@ -1,4 +1,5 @@
 import copy
+import json
 
 from tests._common import *  # noqa: F401,F403
 
@@ -508,3 +509,69 @@ async def test_clearing_the_calendar_field_clears_the_url():
     ok, _ = await hutbot.webui_backend.ui_apply_config(_ui_app(), "C1", "cal", payload)
     assert ok is True
     assert hutbot.state.channel_config["C1"]["cal"]["calendar_url"] == ""
+
+
+# ----- built-in calendars -----
+
+@pytest.mark.asyncio
+async def test_ui_meta_lists_the_builtin_calendars_without_their_urls():
+    """This dict is JSON-dumped to every authenticated viewer; a URL here is every token."""
+    with _patch_builtin_calendars():
+        meta = hutbot.webui_backend.ui_meta()
+    assert meta["calendars"] == [
+        {"name": "holidays", "title": "Company holidays"},
+        {"name": "rota", "title": "Platform on-call rota"},
+    ]
+    assert "SECRETTOKEN" not in json.dumps(meta) and "cal.example.com" not in json.dumps(meta)
+
+
+@pytest.mark.asyncio
+async def test_ui_meta_has_no_calendars_by_default():
+    assert hutbot.webui_backend.ui_meta()["calendars"] == []
+
+
+@pytest.mark.asyncio
+async def test_saving_a_builtin_calendar_stores_its_name_and_clears_the_url():
+    _seed_user_caches()
+    hutbot.state.channel_config["C1"] = {"cal": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": _SECRET_URL}}
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "calendar_builtin": "ROTA", "calendar_url": ""}
+    with _patch_builtin_calendars():
+        ok, errors = await hutbot.webui_backend.ui_apply_config(_ui_app(), "C1", "cal", payload)
+    assert ok is True and errors == {}
+    stored = hutbot.state.channel_config["C1"]["cal"]
+    assert stored["calendar_builtin"] == "rota" and stored["calendar_url"] == ""
+
+
+@pytest.mark.asyncio
+async def test_saving_a_url_clears_a_stored_builtin_calendar():
+    _seed_user_caches()
+    hutbot.state.channel_config["C1"] = {"cal": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_builtin": "rota"}}
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": "https://cal.example.com/new.ics"}
+    with _patch_builtin_calendars():
+        ok, _ = await hutbot.webui_backend.ui_apply_config(_ui_app(), "C1", "cal", payload)
+    assert ok is True
+    stored = hutbot.state.channel_config["C1"]["cal"]
+    assert stored["calendar_url"] == "https://cal.example.com/new.ics" and stored["calendar_builtin"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("builtin,url,message", [
+    ("rota", "https://cal.example.com/new.ics", "not both"),
+    ("has space", "", "Pick one of the built-in calendars."),
+    ("rotta", "", "is not a built-in calendar on this instance"),
+])
+async def test_the_ui_rejects_an_unusable_builtin_calendar(builtin, url, message):
+    _seed_user_caches()
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "calendar_builtin": builtin, "calendar_url": url}
+    with _patch_builtin_calendars():
+        _, errors = await validate_config_payload(payload, _ui_app(), "C1", None)
+    assert message in errors["calendar_builtin"]
+
+
+@pytest.mark.asyncio
+async def test_the_config_snapshot_keeps_the_builtin_name_and_still_hides_every_url():
+    hutbot.state.channel_config["C1"] = {"cal": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_builtin": "rota"}}
+    with _patch_builtin_calendars():
+        snapshot = ui_snapshot_configs("C1")
+    assert snapshot["cal"]["calendar_builtin"] == "rota"
+    assert "SECRETTOKEN" not in str(snapshot)

@@ -17,6 +17,13 @@ OpsGenieContext = collections.namedtuple('OpsGenieContext', ['schedule_name', 'c
 # address, or an address without a name, so the two are collected independently.
 CalendarEvent = collections.namedtuple('CalendarEvent', ['uid', 'summary', 'location', 'description', 'organizer', 'organizer_email', 'attendees', 'attendee_emails', 'other_attendees', 'other_attendee_emails', 'status', 'start', 'end', 'all_day'])
 CalendarContext = collections.namedtuple('CalendarContext', ['name', 'current', 'next'])
+# One of the instance's built-in calendars, read from HUTBOT_BUILTIN_CALENDARS. `url` carries a
+# secret token, so only `name` and `title` are ever echoed to a user or handed to the web UI.
+BuiltinCalendar = collections.namedtuple('BuiltinCalendar', ['name', 'title', 'url'])
+# The feed a config reads, resolved at fetch time. `builtin` is the built-in's name ("" for a
+# per-config URL); `url` is "" when there is nothing to fetch, and `missing` tells the two
+# reasons for that apart: nothing configured, or a built-in this instance no longer offers.
+CalendarFeed = collections.namedtuple('CalendarFeed', ['url', 'title', 'builtin', 'missing'])
 
 
 @dataclass(frozen=True)

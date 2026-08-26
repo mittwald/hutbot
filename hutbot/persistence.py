@@ -14,6 +14,7 @@ from employee_list import log, log_error, log_warning
 from . import state
 from . import constants
 from .buttonutil import normalize_button
+from .calendarfeed import describe_calendar_url, normalize_builtin_calendar_name
 from .conditionutil import canonical_condition_mode, normalize_condition
 from .constants import SUPPORTED_TEMPLATE_VARIABLES
 
@@ -105,6 +106,19 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
                     action, value = normalize_button(button)
                     normalized.append({'label': button.get('label', ''), 'action': action, 'value': value})
                 single_config['buttons'] = normalized
+            # A hand-edited built-in calendar name may carry capitals; the parsed list is
+            # casefolded, so normalize here rather than at every lookup.
+            builtin = single_config.get('calendar_builtin')
+            if builtin:
+                single_config['calendar_builtin'] = normalize_builtin_calendar_name(str(builtin))
+            if single_config.get('calendar_builtin') and single_config.get('calendar_url'):
+                # Only a hand-edited file reaches this: the setters and the web UI clear one
+                # when they set the other. Both values are kept — dropping a URL someone
+                # typed because a stray name appeared beside it would be destructive — but
+                # the built-in is what actually gets fetched.
+                log_warning(f"Config '{config_name}' in channel {channel_id} names both the built-in calendar "
+                            f"'{single_config['calendar_builtin']}' and the feed URL "
+                            f"{describe_calendar_url(single_config['calendar_url'])}; the built-in wins.")
     return config
 
 

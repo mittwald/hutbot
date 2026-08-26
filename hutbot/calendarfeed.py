@@ -12,7 +12,9 @@ import asyncio
 import datetime
 import ipaddress
 import itertools
+import json
 import os
+import re
 import time
 import urllib.parse
 
@@ -20,7 +22,7 @@ import aiohttp
 import icalendar
 import recurring_ical_events
 
-from employee_list import log, log_error
+from employee_list import get_env_var, log, log_error, log_warning
 
 from . import datetimefmt
 from . import messaging
@@ -30,11 +32,12 @@ from .constants import (
     CALENDAR_DATETIME_TEMPLATE_VARIABLES,
     CALENDAR_LIST_TEMPLATE_VARIABLES,
     UNKNOWN_USER_ONCALL_PLACEHOLDER,
+    UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
     UNKNOWN_CALENDAR_PLACEHOLDER,
     UNKNOWN_PERIOD_PLACEHOLDER,
 )
-from .models import CalendarContext, CalendarEvent
+from .models import BuiltinCalendar, CalendarContext, CalendarEvent, CalendarFeed
 
 # How long a fetched calendar stays usable. Matches slackcache's channel-member TTL, but
 # is env-tunable because it trades freshness against a host we do not control, and
@@ -49,6 +52,14 @@ _CALENDAR_LOOKAHEAD_EVENTS = 200
 _MAX_ICS_BYTES = 5 * 1024 * 1024
 _HTTP_TIMEOUT = 10
 _MAX_REDIRECTS = 3
+
+# The instance's built-in calendars: a JSON array of {name, title, url} objects, or the path to
+# a file holding the same JSON. Read once at startup (see `load_builtin_calendars`).
+BUILTIN_CALENDARS_ENV = 'HUTBOT_BUILTIN_CALENDARS'
+BUILTIN_CALENDARS_FILE_ENV = f'{BUILTIN_CALENDARS_ENV}_FILE'
+# What a built-in calendar may be called. Deliberately free of `:` and `/`, which is what lets
+# `set calendar <value>` tell a name from a URL without guessing.
+BUILTIN_CALENDAR_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
 
 # ----- pure helpers -----
@@ -388,6 +399,161 @@ def describe_calendar_url(url: str) -> str:
     return f"{host}/…/{tail}" if tail else f"{host}/…"
 
 
+# ----- built-in calendars -----
+
+
+def normalize_builtin_calendar_name(value: str) -> str:
+    """The canonical form of a built-in calendar name, or "" when it cannot be one.
+
+    Casefolded, because the name is typed by hand in `set calendar <name>` and nobody should
+    have to remember how it was capitalized in the deployment.
+    """
+    value = (value or "").strip().casefold()
+    return value if BUILTIN_CALENDAR_NAME_PATTERN.match(value) else ""
+
+
+def looks_like_a_calendar_url(value: str) -> bool:
+    """Whether a value is an attempt at a URL rather than at a built-in calendar name.
+
+    A name can hold neither `:` nor `/`, so this splits the two readings of
+    `set calendar <value>` cleanly: what carries either character can only have been meant as
+    a URL, and gets the URL error rather than "unknown calendar".
+    """
+    value = (value or "").strip()
+    return ":" in value or "/" in value
+
+
+def parse_builtin_calendars(raw: str) -> list[BuiltinCalendar]:
+    """The built-in calendars in a JSON array of {name, title, url} objects.
+
+    Never raises, and never echoes the payload: every URL in it is a bearer capability, so a
+    bad entry is reported by its name (or its position) and its redacted URL, then skipped.
+    One typo must not keep the bot from starting, which is why the list degrades entry by
+    entry the way `load_employee_mappings` and `migrate_and_apply_defaults` do. Empty by
+    default: nothing about the feature is on until the deployment sets it.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except ValueError as e:
+        # The decoder's message carries a position, never the document itself.
+        log_error(f"Ignoring {BUILTIN_CALENDARS_ENV}: it is not valid JSON:", e)
+        return []
+    if not isinstance(entries, list):
+        log_error(f"Ignoring {BUILTIN_CALENDARS_ENV}: expected a JSON array of "
+                  "{name, title, url} objects.")
+        return []
+
+    calendars: list[BuiltinCalendar] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            log_warning(f"Skipping built-in calendar #{index}: expected an object with "
+                        "`name`, `title` and `url`.")
+            continue
+        raw_name = str(entry.get('name') or "").strip()
+        name = normalize_builtin_calendar_name(raw_name)
+        if not name:
+            log_warning(f"Skipping built-in calendar #{index}: `{raw_name}` is not a usable "
+                        "name (lower-case letters, digits, `.`, `-` and `_`, starting with a "
+                        "letter or digit).")
+            continue
+        title = str(entry.get('title') or "").strip()
+        if not title:
+            log_warning(f"Skipping built-in calendar `{name}`: it has no `title`.")
+            continue
+        url = str(entry.get('url') or "").strip()
+        try:
+            url = validate_calendar_url(url)
+        except ValueError as e:
+            log_warning(f"Skipping built-in calendar `{name}`: {e} "
+                        f"({describe_calendar_url(url) or 'no URL'}).")
+            continue
+        if name in seen:
+            log_warning(f"Skipping a second built-in calendar named `{name}`; keeping the first.")
+            continue
+        seen.add(name)
+        calendars.append(BuiltinCalendar(name, title, url))
+    return calendars
+
+
+def load_builtin_calendars() -> list[BuiltinCalendar]:
+    """The instance's built-in calendars, read from the environment once at startup.
+
+    `HUTBOT_BUILTIN_CALENDARS_FILE` names a file holding the JSON, which is how a Kubernetes
+    Secret is projected in production: the value is used verbatim, it has no length limit to
+    run into, and a multi-line document survives a `.env` that cannot hold one. Without it
+    `HUTBOT_BUILTIN_CALENDARS` is read through `get_env_var`, which also accepts the JSON
+    base64-encoded — a JSON array survives that untouched, because `[` is not in the base64
+    alphabet.
+    """
+    path = os.environ.get(BUILTIN_CALENDARS_FILE_ENV, '').strip()
+    if path:
+        try:
+            with open(path, encoding='utf-8') as handle:
+                raw = handle.read()
+        except OSError as e:
+            log_error(f"Failed to read the built-in calendars from {path}:", e)
+            return []
+    else:
+        raw = get_env_var(BUILTIN_CALENDARS_ENV)
+    calendars = parse_builtin_calendars(raw)
+    if calendars:
+        # Names only: the titles are harmless but the URLs are not, and one log line that
+        # names every feed is exactly what an operator greps for.
+        log(f"Built-in calendars available: {', '.join(calendar.name for calendar in calendars)}.")
+    return calendars
+
+
+def lookup_builtin_calendar(name: str) -> BuiltinCalendar | None:
+    """The built-in calendar going by `name`, or ``None``."""
+    name = normalize_builtin_calendar_name(name)
+    if not name:
+        return None
+    for calendar in state.builtin_calendars:
+        if calendar.name == name:
+            return calendar
+    return None
+
+
+def builtin_calendar_names() -> list[str]:
+    """Every built-in calendar name, sorted — safe to print, unlike the URLs."""
+    return sorted(calendar.name for calendar in state.builtin_calendars)
+
+
+def resolve_calendar_feed(config: dict | None) -> CalendarFeed:
+    """The feed a config reads, resolved when it is about to be fetched.
+
+    A `calendar_builtin` name becomes its URL *here* rather than when it is set, so `bot.json`
+    never holds a token and a rotated one takes effect without touching a single config. A
+    config carrying both keys — only a hand-edited file can — prefers the built-in, because
+    that is the value a user can see and change. A built-in this instance no longer offers
+    yields no URL and `missing`, which is what tells "nothing configured" from "configured,
+    but gone".
+    """
+    config = config or {}
+    builtin_name = normalize_builtin_calendar_name(str(config.get('calendar_builtin') or ""))
+    if builtin_name:
+        builtin = lookup_builtin_calendar(builtin_name)
+        if builtin is None:
+            return CalendarFeed("", "", builtin_name, True)
+        return CalendarFeed(builtin.url, builtin.title, builtin.name, False)
+    url = str(config.get('calendar_url') or "").strip()
+    return CalendarFeed(url, describe_calendar_url(url), "", False)
+
+
+def describe_calendar_feed(feed: CalendarFeed) -> str:
+    """A safe-to-echo label for a resolved feed: a built-in's title, or the redacted URL.
+
+    A built-in's URL is an instance-wide secret that nobody configuring a channel needs to
+    see, not even redacted — so a built-in is named by its title alone. A per-config URL keeps
+    the redacted form it already had, since whoever set it has seen the whole thing anyway.
+    """
+    return feed.title if feed.builtin else describe_calendar_url(feed.url)
+
+
 # ----- fetching -----
 
 
@@ -505,12 +671,16 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
 
 async def resolve_calendar_context(config: dict, now: datetime.datetime | None = None) -> CalendarContext:
     """The configured feed's name plus its current and next event."""
-    url = (config or {}).get('calendar_url', '').strip()
-    if not url:
+    feed = resolve_calendar_feed(config)
+    if not feed.url:
         return CalendarContext("", None, None)
-    calendar, name = await fetch_calendar(url)
+    calendar, fetched_name = await fetch_calendar(feed.url)
     if calendar is None:
         return CalendarContext("", None, None)
+    # A built-in is named by the title an operator curated, not by whatever the feed calls
+    # itself: `X-WR-CALNAME` on a real rota feed is a bare mailbox address, which would
+    # contradict what `list calendars` and the web UI show for the same calendar.
+    name = feed.title if feed.builtin else (fetched_name or feed.title)
     current, next_event = find_current_and_next_events(calendar, config, now)
     return CalendarContext(name, current, next_event)
 
@@ -525,9 +695,12 @@ def get_calendar_placeholder_variables(config: dict | None = None) -> dict[str, 
     calendar variable renders a visible placeholder rather than an empty string when
     there is no feed, no event, or a failed fetch.
     """
-    url = (config or {}).get('calendar_url', '').strip()
+    feed = resolve_calendar_feed(config)
     variables = {
-        "calendar_name": describe_calendar_url(url) or UNKNOWN_CALENDAR_PLACEHOLDER,
+        # A named built-in this instance no longer offers gets its own placeholder: a rule
+        # going quiet because a name went away must not read like a rule with no calendar.
+        "calendar_name": (UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER if feed.missing
+                          else describe_calendar_feed(feed) or UNKNOWN_CALENDAR_PLACEHOLDER),
     }
     for prefix in ("current", "next"):
         for field in ("summary", "location", "description", "organizer", "organizer_email",
@@ -622,8 +795,7 @@ async def get_calendar_template_variables(app, config: dict, now: datetime.datet
     `app` is only used to map attendee addresses to Slack users; pass ``None`` to skip that.
     """
     variables = get_calendar_placeholder_variables(config)
-    url = (config or {}).get('calendar_url', '').strip()
-    if not url:
+    if not resolve_calendar_feed(config).url:
         return variables
 
     context = await resolve_calendar_context(config, now)
@@ -664,17 +836,21 @@ def _describe_event(config: dict, label: str, event: CalendarEvent | None) -> st
 async def send_current_calendar_event(app, channel, config_name: str, user, thread_ts: str = "") -> None:
     """`show calendar` — print the event running now and the next one."""
     config = channel.configs.get(config_name) or {}
-    url = (config.get('calendar_url') or '').strip()
-    if not url:
-        await messaging.send_message(app, channel, user, f"No calendar configured. Use `{state.slash_command} [config] set calendar <url>`.", thread_ts)
+    feed = resolve_calendar_feed(config)
+    if feed.missing:
+        await messaging.send_message(app, channel, user, f"Configuration `{config_name}` uses the built-in calendar `{feed.builtin}`, which this instance does not offer. `{state.slash_command} list calendars` shows the available ones.", thread_ts)
+        return
+    if not feed.url:
+        await messaging.send_message(app, channel, user, f"No calendar configured. Use `{state.slash_command} [config] set calendar <name|url>`; `{state.slash_command} list calendars` shows the built-in ones.", thread_ts)
         return
 
+    label = describe_calendar_feed(feed)
     context = await resolve_calendar_context(config)
     if context.current is None and context.next is None:
-        await messaging.send_message(app, channel, user, f"No current or upcoming events in the calendar `{describe_calendar_url(url)}`.", thread_ts)
+        await messaging.send_message(app, channel, user, f"No current or upcoming events in the calendar `{label}`.", thread_ts)
         return
 
-    header = f"*Calendar*: `{context.name or describe_calendar_url(url)}`"
+    header = f"*Calendar*: `{context.name or label}`"
     message = "\n\n".join([
         header,
         _describe_event(config, "Now", context.current),

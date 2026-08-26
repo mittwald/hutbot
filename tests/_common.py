@@ -1,5 +1,6 @@
 """Shared imports, helpers, and hutbot module aliases for the test suite."""
 
+import contextlib
 import os
 import re
 import json
@@ -16,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch, call
 from slack_sdk.errors import SlackApiError
 from employee_list import get_env_var
 
-from hutbot.models import Channel, User, Usergroup, ScheduledReply
+from hutbot.models import BuiltinCalendar, Channel, User, Usergroup, ScheduledReply
 from hutbot.constants import (
     ACTION_DM_USER,
     ACTION_GROUP_DM,
@@ -80,6 +81,26 @@ import hutbot.webui_backend
 import hutbot.commands.dispatch
 import hutbot.commands.setters
 import hutbot.commands.info
+
+# The instance's built-in calendars, as a test fixture. Every URL carries the marker
+# SECRETTOKEN, so a leak test can look for it by name wherever a token must not appear.
+BUILTIN_CALENDARS = [
+    BuiltinCalendar("rota", "Platform on-call rota", "https://cal.example.com/SECRETTOKEN/rota.ics"),
+    BuiltinCalendar("holidays", "Company holidays", "https://cal.example.com/OTHERTOKEN/holidays.ics"),
+]
+
+
+@contextlib.contextmanager
+def _patch_builtin_calendars(entries=None):
+    """Fake the instance's built-in calendars, the way the suite fakes every other lookup.
+
+    Without this the list is empty — the shipped default — because `state.reset()` runs
+    around every test.
+    """
+    with patch.object(hutbot.state, 'builtin_calendars',
+                      list(BUILTIN_CALENDARS if entries is None else entries)):
+        yield
+
 
 def _mk_channel(configs=None):
     return Channel(id="C12345", name="general", configs=configs if configs is not None else {"default": DEFAULT_CONFIG.copy()})

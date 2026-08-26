@@ -86,6 +86,23 @@ async def list_opsgenie_schedules(app: AsyncApp, channel, user, thread_ts: str =
     await messaging.send_message(app, channel, user, message, thread_ts)
 
 
+async def list_calendars(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
+    """`list calendars` — the built-in calendars this instance offers.
+
+    Name and title only. A built-in's URL is an instance-wide secret and this reply goes to
+    whoever asked in the channel, so it is never printed — not even in its redacted form.
+    """
+    calendars = sorted(state.builtin_calendars, key=lambda calendar: calendar.name)
+    if not calendars:
+        await messaging.send_message(app, channel, user, f"No built-in calendars are configured. Point a configuration at a published `.ics` URL with `{state.slash_command} [config] set calendar <url>`.", thread_ts)
+        return
+
+    rows = "\n".join(f"`{calendar.name}` — {calendar.title}" for calendar in calendars)
+    message = (f"*Built-in calendars*:\n{rows}\n"
+               f"Point a configuration at one with `{state.slash_command} [config] set calendar <name>`.")
+    await messaging.send_message(app, channel, user, message, thread_ts)
+
+
 async def get_team_of(app: AsyncApp, channel, username: str, user, thread_ts: str = "") -> None:
     message = None
     log_debug(channel, f"Looking up users from message `{username}`...")
@@ -246,9 +263,15 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             ]
         groups.append(opsgenie_rows)
 
-        calendar_url = config.get('calendar_url') or ''
-        if calendar_url:
-            groups.append([("Calendar", calendarfeed.describe_calendar_url(calendar_url))])
+        feed = calendarfeed.resolve_calendar_feed(config)
+        if feed.builtin:
+            # Named by its title, never by its URL: this print is readable by every channel
+            # member, and a built-in's URL belongs to the instance, not to this channel.
+            label = (f"built-in: {feed.builtin} (not available on this instance)" if feed.missing
+                     else f"{feed.title} (built-in: {feed.builtin})")
+            groups.append([("Calendar", label)])
+        elif feed.url:
+            groups.append([("Calendar", calendarfeed.describe_calendar_url(feed.url))])
 
         # The timezone also decides when a cron fires and when work hours are, so it
         # is shown for those even when nothing renders a date.
