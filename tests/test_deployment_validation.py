@@ -802,6 +802,25 @@ def test_the_deploy_guard_warns_when_head_is_ahead_of_the_tag():
     assert "commit(s) ahead of" in result.stderr
 
 
+def test_calendar_tunables_reach_the_container():
+    result = _render("v1.2.3", "--set", "calendar.ttlSeconds=600",
+                     "--set", "calendar.lookbackDays=365")
+
+    assert result.returncode == 0, result.stderr
+    env = _container(result)["env"]
+    assert {"name": "HUTBOT_CALENDAR_TTL", "value": "600"} in env
+    assert {"name": "HUTBOT_CALENDAR_LOOKBACK_DAYS", "value": "365"} in env
+
+
+def test_unset_calendar_tunables_leave_the_bot_defaults_alone():
+    """An empty value must omit the variable, not inject an empty one the bot would parse."""
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_CALENDAR_TTL" not in result.stdout
+    assert "HUTBOT_CALENDAR_LOOKBACK_DAYS" not in result.stdout
+
+
 # ----- the RollingUpdate → Recreate switch -----
 
 def _run_deploy(tmp_path, script, strategy):

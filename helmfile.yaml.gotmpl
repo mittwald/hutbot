@@ -54,6 +54,11 @@ releases:
           size: {{ env "PERSISTENCE_SIZE" | default "100Mi" | quote }}
           storageClass: {{ env "PERSISTENCE_STORAGE_CLASS" | default "" | quote }}
           mountPath: {{ env "PERSISTENCE_MOUNT_PATH" | default "/data" | quote }}
+      # Calendar tunables: the feed cache TTL and how far back `offset=prev` searches. Both
+      # empty means the bot's own defaults, 300 seconds and 90 days.
+      - calendar:
+          ttlSeconds: {{ env "HUTBOT_CALENDAR_TTL" | default "" | quote }}
+          lookbackDays: {{ env "HUTBOT_CALENDAR_LOOKBACK_DAYS" | default "" | quote }}
 {{- if env "HUTBOT_CALENDAR_ALLOWED_HOSTS" }}
       # Feed hosts the bot may fetch despite their internal address. Keep in sync with
       # NETWORKPOLICY_RULES and HOST_ALIASES: all three are needed for an internal feed.

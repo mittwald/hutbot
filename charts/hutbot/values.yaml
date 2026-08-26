@@ -32,6 +32,13 @@ calendar:
   # host name (exact match, https still required), not for a range. Every entry also needs a
   # networkPolicy rule below on its port, or the request is dropped on the way out.
   allowedHosts: []
+  # How long a fetched feed stays usable, in seconds. Empty = the bot's default (300). Trades
+  # freshness against a host nobody here controls, and conditions can make the path hot.
+  ttlSeconds: ""
+  # How far back `{{calendar_summary(offset=prev)}}` looks for the previous event, in days.
+  # Empty = the bot's default (90). Widen it for a calendar whose events are months apart; the
+  # window is searched on every such lookup, so it costs recurrence expansion.
+  lookbackDays: ""
 
 slack:
   # Slash command this instance listens on. Must match the command configured in

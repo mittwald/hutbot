@@ -91,6 +91,15 @@ spec:
             - name: HUTBOT_CALENDAR_ALLOWED_HOSTS
               value: {{ join "," . | quote }}
             {{- end }}
+            {{- with .Values.calendar.ttlSeconds }}
+            - name: HUTBOT_CALENDAR_TTL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.calendar.lookbackDays }}
+            # How far back the `offset=prev` search goes; the ICS library has no `before()`.
+            - name: HUTBOT_CALENDAR_LOOKBACK_DAYS
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.ui.enabled }}
             - name: HUTBOT_UI_ENABLED
               value: "true"

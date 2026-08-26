@@ -185,7 +185,8 @@ built-in calendar's URL is never printed at all, not even redacted, because it b
 instance rather than to the channel that uses it.
 The feed is cached for 5 minutes (`HUTBOT_CALENDAR_TTL`, in seconds), and `offset=prev` searches
 back 90 days (`HUTBOT_CALENDAR_LOOKBACK_DAYS`) — widen that for a calendar whose events are
-months apart.
+months apart. Both are chart values as well (`calendar.ttlSeconds`, `calendar.lookbackDays`), so a
+deployment can set them without touching the image.
 
 A remote feed must be `https://`, and URLs pointing at the private ranges or the cloud metadata
 address are refused — the bot fetches them from inside the cluster. The host name is resolved and
@@ -605,6 +606,9 @@ export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
 # Without an entry the bot refuses the fetch and logs the address it resolved to. Needs the
 # matching NETWORKPOLICY_RULES entry (and HOST_ALIASES, if cluster DNS does not serve the zone).
 export HUTBOT_CALENDAR_ALLOWED_HOSTS='outlook-bridge.prod.example.systems'
+# Calendar tunables; unset means the bot's own defaults, 300 seconds and 90 days.
+export HUTBOT_CALENDAR_TTL=300
+export HUTBOT_CALENDAR_LOOKBACK_DAYS=90
 ```
 
 To query the employee list locally from your terminal, you can use the standalone helper script:
@@ -935,6 +939,9 @@ export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
 # Without an entry the bot refuses the fetch and logs the address it resolved to. Needs the
 # matching NETWORKPOLICY_RULES entry (and HOST_ALIASES, if cluster DNS does not serve the zone).
 export HUTBOT_CALENDAR_ALLOWED_HOSTS='outlook-bridge.prod.example.systems'
+# Calendar tunables; unset means the bot's own defaults, 300 seconds and 90 days.
+export HUTBOT_CALENDAR_TTL=300
+export HUTBOT_CALENDAR_LOOKBACK_DAYS=90
 ./deploy-prod.sh v1.1.0
 ```
 
