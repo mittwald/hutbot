@@ -9,3 +9,7 @@ employees.json
 scheduled_replies.json
 button_states.json
 .env-dev
+
+# Editor swap files
+*.swp
+*.swo

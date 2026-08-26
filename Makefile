@@ -11,7 +11,8 @@ ARGS ?=
 .DEFAULT_GOAL := help
 
 .PHONY: help install run check python-check shellcheck helm-lint test test-deployment \
-	image push sync-secret sync-secret-dev calendars calendars-dev deploy-dev deploy-prod
+	image push seed-vault seed-vault-dev sync-secret sync-secret-dev calendars calendars-dev \
+	deploy-dev deploy-prod
 
 help: ## Show available targets
 	@echo "Hutbot targets:"
@@ -33,7 +34,8 @@ python-check: ## Compile-check the Python sources
 	$(PYTHON) -m compileall -q hutbot bot.py employee_list.py webui.py
 
 shellcheck: ## Check the deployment scripts
-	shellcheck deploy-dev.sh deploy-prod.sh scripts/sync-secret.sh scripts/edit-calendars.sh
+	shellcheck deploy-dev.sh deploy-prod.sh scripts/sync-secret.sh scripts/edit-calendars.sh \
+		scripts/seed-vault.sh
 
 helm-lint: ## Lint the Helm chart with safe placeholder values
 	$(HELM) lint charts/hutbot \
@@ -51,6 +53,12 @@ image: ## Build the container image
 
 push: image ## Build and push the container image
 	$(DOCKER) push "$(IMAGE)"
+
+seed-vault: ## Seed the production Vault path from .env, once [ARGS='--dry-run']
+	./scripts/seed-vault.sh --env prod $(ARGS)
+
+seed-vault-dev: ## Seed the dev Vault path from .env-dev, once [ARGS='--dry-run']
+	./scripts/seed-vault.sh --env dev $(ARGS)
 
 sync-secret: ## Sync the production Secret from Vault [ARGS='--restart']
 	./scripts/sync-secret.sh --env prod $(ARGS)

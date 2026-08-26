@@ -587,6 +587,23 @@ make sync-secret ARGS='--dry-run'       # key names and byte lengths only
 make sync-secret ARGS='--restart'       # sync, then roll the deployment
 ```
 
+Filling an empty Vault path the first time is `scripts/seed-vault.sh`, which reads the fields
+out of the env file that used to carry them:
+
+```bash
+make seed-vault-dev ARGS='--dry-run'    # field names and byte lengths from .env-dev
+make seed-vault-dev                     # write them to .../hutbot-dev
+make seed-vault                         # and .../hutbot from .env
+make seed-vault ARGS='--calendars ./calendars.json --sync'
+```
+
+It picks only the eight secret keys out of the file, drops the ones it does not set (an empty
+`OPSGENIE_HEARTBEAT_NAME` stays unset rather than becoming `""`), requires both Slack tokens,
+validates a `--calendars` file the way the sync script does, and hands Vault a `@file` so no value
+reaches a command line. It **refuses a path that already has fields** unless `--force`, because a
+`vault kv put` replaces the whole version: seeding is a one-shot, and everything after it is a
+`vault kv patch`.
+
 `scripts/sync-secret.sh` refuses to run against any kube-context but `coabkube-prod`, rejects keys
 that are not usable variable names, requires both Slack tokens, ignores Vault fields hutbot does not
 read, validates the built-in calendar list and prints its feed hosts, and refuses a sync that would

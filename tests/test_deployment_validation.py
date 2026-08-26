@@ -483,3 +483,113 @@ exit 0
 
     assert result.returncode != 0
     assert "not found" in result.stderr and "sync it first" in result.stderr
+
+
+# ----- scripts/seed-vault.sh -----
+
+SEED_VAULT = ROOT / "scripts/seed-vault.sh"
+ENV_FILE = """export SLACK_APP_TOKEN='xapp-secretapp'
+export SLACK_BOT_TOKEN='xoxb-secretbot'
+export OPSGENIE_TOKEN='og-secret'
+export OPSGENIE_HEARTBEAT_NAME=''
+export EMPLOYEE_LIST_USERNAME='employee-user'
+export EMPLOYEE_LIST_PASSWORD='employee-pass'
+export NETWORKPOLICY_RULES='443:192.168.0.15/32'
+"""
+
+
+def _run_seed(tmp_path, *args, existing=None, env_file=ENV_FILE):
+    """Run the seeder against a stub `vault` that records its argv and the payload it got."""
+    import json as _json
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    state = tmp_path / "vault-state.json"
+    state.write_text(_json.dumps({"data": {"data": existing or {}}}))
+    calls = tmp_path / "vault-calls"
+    payload = tmp_path / "payload.json"
+    _stub(bin_dir, "vault", f'''
+printf '%s\\n' "$*" >> {calls}
+if [[ "$1 $2" == "kv get" ]]; then cat {state}; fi
+if [[ "$1 $2" == "kv put" ]]; then cp "${{4#@}}" {payload}; fi
+exit 0
+''')
+    path = tmp_path / "env"
+    path.write_text(env_file)
+    result = subprocess.run([str(SEED_VAULT), "--env", "dev", "--env-file", str(path), *args],
+                            cwd=ROOT, capture_output=True, text=True, check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+    result.vault_calls = calls.read_text() if calls.exists() else ""
+    result.payload = _json.loads(payload.read_text()) if payload.exists() else None
+    return result
+
+
+def test_seed_vault_writes_only_the_secret_keys(tmp_path):
+    result = _run_seed(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    # Deploy settings from the same env file are no secrets and stay out of Vault.
+    assert set(result.payload) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN",
+                                  "EMPLOYEE_LIST_USERNAME", "EMPLOYEE_LIST_PASSWORD"}
+    assert result.payload["SLACK_BOT_TOKEN"] == "xoxb-secretbot"
+    # An empty optional field is left unset rather than stored as "".
+    assert "OPSGENIE_HEARTBEAT_NAME" not in result.payload
+
+
+def test_seed_vault_never_puts_a_value_on_the_command_line(tmp_path):
+    result = _run_seed(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "kv put secrets-coabkube/production/hutbot-dev @" in result.vault_calls
+    for value in ("xoxb-secretbot", "xapp-secretapp", "og-secret", "employee-pass"):
+        assert value not in result.vault_calls
+        assert value not in result.stdout
+
+
+def test_seed_vault_refuses_a_path_that_already_has_fields(tmp_path):
+    """A put replaces the whole version, so seeding over a live path would drop fields."""
+    result = _run_seed(tmp_path, existing={"SLACK_APP_TOKEN": "x", "OPSGENIE_TOKEN": "y"})
+
+    assert result.returncode != 0
+    assert "already has fields" in result.stderr and "vault kv patch" in result.stderr
+    assert result.payload is None
+
+    forced = _run_seed(tmp_path / "forced", "--force",
+                       existing={"SLACK_APP_TOKEN": "x", "OPSGENIE_TOKEN": "y"})
+    assert forced.returncode == 0, forced.stderr
+
+
+def test_seed_vault_requires_both_slack_tokens(tmp_path):
+    env_file = "\n".join(line for line in ENV_FILE.splitlines() if "SLACK_BOT_TOKEN" not in line)
+    result = _run_seed(tmp_path, env_file=env_file)
+
+    assert result.returncode != 0
+    assert "SLACK_BOT_TOKEN is not set" in result.stderr
+
+
+def test_seed_vault_can_include_the_builtin_calendar_list(tmp_path):
+    calendars = tmp_path / "calendars.json"
+    calendars.write_text('[{"name":"rota","title":"Rota","url":"https://cal.example.com/T/rota.ics"}]')
+    result = _run_seed(tmp_path, "--calendars", str(calendars))
+
+    assert result.returncode == 0, result.stderr
+    assert '"name":"rota"' in result.payload["HUTBOT_BUILTIN_CALENDARS"].replace(" ", "")
+
+
+def test_seed_vault_rejects_a_malformed_builtin_calendar_list(tmp_path):
+    calendars = tmp_path / "calendars.json"
+    calendars.write_text('[{"name":"Rota","title":"Rota","url":"http://cal.example.com/x.ics"}]')
+    result = _run_seed(tmp_path, "--calendars", str(calendars))
+
+    assert result.returncode != 0
+    assert "must be a JSON array" in result.stderr
+    assert result.payload is None
+
+
+def test_seed_vault_dry_run_writes_nothing(tmp_path):
+    result = _run_seed(tmp_path, "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert "dry run: nothing was written." in result.stdout
+    assert "kv put" not in result.vault_calls
