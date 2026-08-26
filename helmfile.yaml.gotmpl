@@ -36,21 +36,17 @@ releases:
           repository: {{ env "IMAGE_REPOSITORY" | default "ghcr.io/mittwald/hutbot" | quote }}
           tag: {{ env "IMAGE_TAG" | default .Values.imageTag | quote }}
         replicaCount: 1
+      # Every credential comes from the Kubernetes Secret synced by scripts/sync-secret.sh
+      # before deploying, so no secret value enters Helm values or the release metadata
+      # Helm stores in the cluster. Nothing in this file is a `requiredEnv` any more, which
+      # is what lets `helmfile diff` run in a shell that has never seen a token.
+      - existingSecret: {{ env "HUTBOT_EXISTING_SECRET" | default .Values.releaseName | quote }}
       - slack:
-          appToken: {{ requiredEnv "SLACK_APP_TOKEN" | quote }}
-          botToken: {{ requiredEnv "SLACK_BOT_TOKEN" | quote }}
           slashCommand: {{ env "HUTBOT_SLASH_COMMAND" | default .Values.slashCommand | quote }}
           botName: {{ env "HUTBOT_BOT_NAME" | default .Values.botName | quote }}
       - time:
           timezone: {{ env "HUTBOT_TIMEZONE" | default .Values.timezone | quote }}
           locale: {{ env "HUTBOT_DEFAULT_DATETIME_LOCALE" | default .Values.datetimeLocale | quote }}
-      - opsgenie:
-          token: {{ env "OPSGENIE_TOKEN" | quote }}
-          heartbeatName: {{ env "OPSGENIE_HEARTBEAT_NAME" | quote }}
-      - employeeList:
-          username: {{ env "EMPLOYEE_LIST_USERNAME" | quote }}
-          password: {{ env "EMPLOYEE_LIST_PASSWORD" | quote }}
-          mappings: {{ env "EMPLOYEE_LIST_MAPPINGS" | quote }}
       - persistence:
           enabled: {{ env "PERSISTENCE_ENABLED" | default "true" | quote }}
           accessModes:

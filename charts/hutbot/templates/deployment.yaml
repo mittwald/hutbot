@@ -2,6 +2,11 @@
 {{- if has (lower (toString $imageTag)) (list "latest" "main") -}}
 {{- fail "image.tag must be set to a specific image tag (e.g. v1.0.9); floating tags like 'latest' and 'main' are not allowed" -}}
 {{- end }}
+{{- if and (include "hutbot.mountBuiltinCalendars" .) .Values.persistence.enabled }}
+{{- if eq (trimSuffix "/" (clean .Values.builtinCalendars.mountPath)) (trimSuffix "/" (clean .Values.persistence.mountPath)) }}
+{{- fail "builtinCalendars.mountPath must differ from persistence.mountPath; mounting the Secret there would hide the state volume" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,6 +15,12 @@ metadata:
     app: {{ .Release.Name }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  # Recreate, not RollingUpdate: hutbot is a singleton on a ReadWriteOnce volume, so a rolling
+  # restart would briefly run two bots — two writers on bot.json, two schedulers and two
+  # OpsGenie heartbeats. The trade-off is a few seconds of gap per restart, which is why
+  # sync-secret.sh and the deploy scripts check the Secret before they touch anything.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: {{ .Release.Name }}
@@ -27,8 +38,9 @@ spec:
           image: "{{ .Values.image.repository }}:{{ $imageTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           envFrom:
+            # Synced from Vault out of band; the chart never renders it.
             - secretRef:
-                name: {{ .Release.Name }}-secret
+                name: {{ include "hutbot.secretName" . }}
           {{- if .Values.ui.enabled }}
           ports:
             - name: http
@@ -64,6 +76,14 @@ spec:
             - name: HUTBOT_BUTTON_CACHE_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "button_states.json" }}
             {{- end }}
+            {{- if include "hutbot.mountBuiltinCalendars" . }}
+            # The built-in calendar list is a multi-line JSON document whose URLs carry feed
+            # tokens. Read from a file rather than the environment: no per-variable exec
+            # limit to run into, the kubelet refreshes a mounted Secret in place, and local
+            # runs can point at a file too — `.env` cannot hold a multi-line value.
+            - name: HUTBOT_BUILTIN_CALENDARS_FILE
+              value: {{ include "hutbot.builtinCalendarsFile" . | quote }}
+            {{- end }}
             {{- if .Values.ui.enabled }}
             - name: HUTBOT_UI_ENABLED
               value: "true"
@@ -74,10 +94,17 @@ spec:
             - name: HUTBOT_UI_USER_HEADER
               value: {{ .Values.ui.userHeader | quote }}
             {{- end }}
-          {{- if .Values.persistence.enabled }}
+          {{- if or .Values.persistence.enabled (include "hutbot.mountBuiltinCalendars" .) }}
           volumeMounts:
+            {{- if .Values.persistence.enabled }}
             - name: config
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- if include "hutbot.mountBuiltinCalendars" . }}
+            - name: builtin-calendars
+              mountPath: {{ trimSuffix "/" (clean .Values.builtinCalendars.mountPath) | quote }}
+              readOnly: true
+            {{- end }}
           {{- end }}
           {{- if .Values.ui.enabled }}
           readinessProbe:
@@ -97,9 +124,24 @@ spec:
           resources:
             {{ toYaml .Values.resources | indent 12 }}
           {{- end }}
-      {{- if .Values.persistence.enabled }}
+      {{- if or .Values.persistence.enabled (include "hutbot.mountBuiltinCalendars" .) }}
       volumes:
+        {{- if .Values.persistence.enabled }}
         - name: config
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-pvc
+        {{- end }}
+        {{- if include "hutbot.mountBuiltinCalendars" . }}
+        # One key projected as one file. `optional: true` on purpose: an instance with no
+        # built-in calendars must still start, and the bot then falls back to the envFrom
+        # copy of the variable, or to having none.
+        - name: builtin-calendars
+          secret:
+            secretName: {{ include "hutbot.secretName" . }}
+            optional: true
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.builtinCalendars.secretKey | quote }}
+                path: {{ .Values.builtinCalendars.fileName | quote }}
+        {{- end }}
       {{- end }}

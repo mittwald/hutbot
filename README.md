@@ -525,33 +525,27 @@ docker pull ghcr.io/mittwald/hutbot:v1.1.0
 
 This repository includes a Helm chart under `charts/hutbot` and a Helmfile configuration at `helmfile.yaml.gotmpl`.
 
-Create a `.env` file in the project root (this file is ignored by git) with the following content:
+**Credentials are never Helm values.** The chart requires `existingSecret` and reads a Kubernetes
+Secret it does not manage, synced from Vault out of band before deploying — so no token ends up in
+a values file, in the release metadata Helm keeps in the cluster, or in a pipeline variable. `.env`
+holds only the non-secret deploy settings and is optional:
 
 ```bash
-export SLACK_BOT_TOKEN='<your bot token>'
-export SLACK_APP_TOKEN='<your app-level token>'
-export OPSGENIE_TOKEN='<your Opsgenie API token>'
-export OPSGENIE_HEARTBEAT_NAME='<your Opsgenie heartbeat name>'
-export EMPLOYEE_LIST_USERNAME='<your employee list username>'
-export EMPLOYEE_LIST_PASSWORD='<your employee list password>'
-export EMPLOYEE_LIST_MAPPINGS='<optional comma-separated mappings, e.g.: user1=alias1,user2=alias2>'
 # Slash command this instance listens on; must match the Slack app. Default: /hutbot
 export HUTBOT_SLASH_COMMAND='/hutbot'
 # Name the bot uses for itself in help/news messages. Default: Hutbot
 export HUTBOT_BOT_NAME='Hutbot'
+# Timezone and date/time locale of the instance. Empty means UTC and English names.
+export HUTBOT_TIMEZONE='Europe/Berlin'
+export HUTBOT_DEFAULT_DATETIME_LOCALE='de_DE'
 # To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
-# NOTE: this is an allow-list. A calendar feed (`set calendar <url>`) is fetched from inside the
-# cluster, so its host needs an entry here on 443 or the fetch is silently dropped. Only TCP
-# rules are rendered, so DNS resolution has to be reachable by other means.
+# NOTE: this is an allow-list. A calendar feed (`set calendar <url>`, and every built-in calendar)
+# is fetched from inside the cluster, so its host needs an entry here on 443 or the fetch is
+# silently dropped. Only TCP rules are rendered, so DNS resolution has to be reachable by other
+# means. With no rules at all the chart's defaults (443 to anywhere) apply.
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
-```
-
-Load the environment variables before deploying with Helmfile:
-
-```bash
-source .env
 ```
 
 To query the employee list locally from your terminal, you can use the standalone helper script:
@@ -563,16 +557,131 @@ python query_employees.py john.slack --cache-only
 python query_employees.py john --json
 ```
 
-Before running, update `helmfile.yaml.gotmpl` with your Docker image repository and other configuration values.
+### Secret sync
 
-Deploy the bot to your Kubernetes cluster using Helmfile:
+Source of truth is Vault at <https://vault.m3.services>: `secrets-coabkube/production/hutbot` for
+production, `.../hutbot-dev` for the dev instance. Every field becomes one key of the Kubernetes
+Secret named after the release (`mw-internal/hutbot`, `mw-internal/hutbot-dev`), and reaches the bot
+as an environment variable.
+
+| Field | Required | Purpose |
+| ----- | -------- | ------- |
+| `SLACK_APP_TOKEN` | yes | Socket Mode connection (`xapp-…`) |
+| `SLACK_BOT_TOKEN` | yes | Slack Web API (`xoxb-…`) |
+| `OPSGENIE_TOKEN` | no | Opsgenie alerts, on-call lookups, heartbeat |
+| `OPSGENIE_HEARTBEAT_NAME` | no | Heartbeat to ping; empty on dev so it cannot ping production's |
+| `EMPLOYEE_LIST_USERNAME` | no | Employee-list credentials for team lookups |
+| `EMPLOYEE_LIST_PASSWORD` | no | " |
+| `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping |
+| `HUTBOT_BUILTIN_CALENDARS` | no | The built-in calendar list (see below) |
 
 ```bash
-helmfile sync
+export VAULT_ADDR=https://vault.m3.services
+vault login -method=oidc            # Keycloak SSO in the browser
+kubectl config use-context coabkube-prod
+
+make sync-secret                        # production Secret `hutbot`
+make sync-secret-dev                    # dev Secret `hutbot-dev`
+make sync-secret ARGS='--dry-run'       # key names and byte lengths only
+make sync-secret ARGS='--restart'       # sync, then roll the deployment
 ```
 
-> **Note:** Helmfile uses Go templating to inject these variables and will error if any required environment variables are missing.
-> Ensure you run `source .env` in the same shell as you execute `helmfile sync`.
+`scripts/sync-secret.sh` refuses to run against any kube-context but `coabkube-prod`, rejects keys
+that are not usable variable names, requires both Slack tokens, ignores Vault fields hutbot does not
+read, validates the built-in calendar list and prints its feed hosts, and refuses a sync that would
+remove a key the live Secret already has (`--allow-drop`, or `--drop KEY`, to mean it). Values move
+through files, never through a command line.
+
+> **`vault kv put` replaces the whole secret version.** Use `vault kv patch <path> KEY=…` to change
+> one field; `vault kv rollback -version=N <path>` undoes a put that dropped the others.
+
+Because the Secret is not part of the release, changing it does not restart the bot — the bot reads
+its environment at startup, so pass `--restart` when a change has to take effect now.
+
+Without Vault access, the same Secret can be built from `.env`:
+
+```bash
+set -a; . ./.env; set +a
+./scripts/sync-secret.sh --local --dry-run
+./scripts/sync-secret.sh --local --restart
+```
+
+Only the eight keys above are read — `NETWORKPOLICY_RULES` and the other deploy settings stay out of
+the Secret — and a key missing from the environment is carried over from the Secret already in the
+cluster, so updating one value never needs the others at hand.
+
+### Built-in calendar feeds
+
+`HUTBOT_BUILTIN_CALENDARS` is a JSON array of `{"name", "title", "url"}` objects: the instance-wide
+calendars every channel can point at with `/hutbot [config] set calendar <name>` (see
+[Built-in calendars](#built-in-calendars)). Each URL grants read access to its calendar, which is why
+the list lives in the Secret and not in a ConfigMap. The chart projects it as a file
+(`/etc/hutbot/builtin-calendars.json`, mode `0440`) and points `HUTBOT_BUILTIN_CALENDARS_FILE` at it;
+`builtinCalendars.mountFile=false` falls back to the plain environment variable.
+
+Create or rotate one:
+
+```bash
+make calendars                      # $EDITOR on the list from Vault, validated, patched back
+make calendars ARGS='--sync'        # … and sync the Secret + restart in one go
+make calendars ARGS='--show'        # print the current list (it contains the feed tokens)
+```
+
+By hand, the shape being the part worth remembering:
+
+```bash
+cat > calendars.json <<'JSON'
+[
+  { "name": "rota", "title": "Platform on-call rota",
+    "url": "https://outlook.office365.com/owa/calendar/…/calendar.ics" }
+]
+JSON
+vault kv patch secrets-coabkube/production/hutbot HUTBOT_BUILTIN_CALENDARS=@calendars.json
+shred -u calendars.json
+make sync-secret ARGS='--restart'
+```
+
+`@file` keeps the JSON off the command line and byte-exact — and it is `patch`, not `put`, so the
+Slack and Opsgenie fields beside it survive. A name may hold lower-case letters, digits, `.`, `-`
+and `_`; an entry with a bad name, a blank title or a non-`https` URL is skipped at startup with a
+warning naming it, and the rest of the list still loads.
+
+Read a value back:
+
+```bash
+vault kv get -field=HUTBOT_BUILTIN_CALENDARS secrets-coabkube/production/hutbot | jq .
+# what the cluster has:
+kubectl -n mw-internal get secret hutbot -o jsonpath='{.data.HUTBOT_BUILTIN_CALENDARS}' | base64 -d | jq .
+# what the pod sees, without the tokens:
+kubectl -n mw-internal exec deploy/hutbot -- cat /etc/hutbot/builtin-calendars.json | jq -r '.[].name'
+```
+
+The first two print the feed tokens.
+
+The list is read at startup, so a change needs `make sync-secret ARGS='--restart'` (or
+`kubectl -n mw-internal rollout restart deploy/hutbot`). The Deployment uses `strategy: Recreate` —
+hutbot is a singleton on a ReadWriteOnce volume, so a rolling restart would briefly run two bots
+against one `bot.json` — which means every restart has a few seconds of gap.
+
+**Egress:** a public feed host (`outlook.office365.com` and friends) is covered by the chart's
+default rule. An internal host needs both a `HOST_ALIASES` entry, because cluster DNS does not serve
+that zone, **and** a `NETWORKPOLICY_RULES` entry on 443 — with only one of the two the fetch fails,
+either with a resolution error in the log or with no trace at all. `sync-secret.sh` prints the feed
+hosts so they can be checked against the rules.
+
+### Deploy
+
+```bash
+./deploy-prod.sh v1.1.0          # release hutbot, environment default
+./deploy-prod.sh v1.1.0 diff     # preview first
+./deploy-dev.sh  v1.1.0          # release hutbot-dev, environment dev
+```
+
+Both scripts check that the Secret exists **and** carries both Slack tokens, and stop before Helm
+runs if not — under `strategy: Recreate` the old pod is gone before a broken new one would start.
+`HUTBOT_EXISTING_SECRET` picks a different Secret name. `helmfile` can also be run directly; no
+variable in `helmfile.yaml.gotmpl` is required any more, so `helmfile -e default diff` works in a
+shell that has never seen a token.
 
 ### Deploying a Dev Instance
 
@@ -585,31 +694,31 @@ in the same namespace:
 | `dev`       | `hutbot-dev`  | Dev instance (separate Slack app, own PVC/Secret) |
 
 All chart resources are named after the Helm release, so the dev release gets its own Deployment,
-Secret (`hutbot-dev-secret`), PersistentVolumeClaim (`hutbot-dev-pvc`) and NetworkPolicy. The two
-instances share nothing.
+PersistentVolumeClaim (`hutbot-dev-pvc`) and NetworkPolicy, and reads its own Secret
+(`mw-internal/hutbot-dev`, synced rather than templated). The two instances share nothing.
 
 Register a second Slack app for the dev bot — [Hutbot_DEV Slack App](https://api.slack.com/apps/A0BN19HUTAP) —
-and put its credentials in a `.env-dev` file (also ignored by git). It uses the exact same variable
-names as `.env`:
+and put its credentials in the dev Vault path, with the same field names production uses:
 
 ```bash
-export SLACK_BOT_TOKEN='<dev bot token>'
-export SLACK_APP_TOKEN='<dev app-level token>'
-# ... same variables as .env
+vault kv put secrets-coabkube/production/hutbot-dev \
+  SLACK_APP_TOKEN='<dev app-level token>' \
+  SLACK_BOT_TOKEN='<dev bot token>'
+make sync-secret-dev
 ```
 
-Then deploy with the `dev` environment selected:
+Then deploy the `dev` environment:
 
 ```bash
-source .env-dev
-helmfile -e dev sync
+./deploy-dev.sh v1.1.0
 ```
 
-Production is unaffected and keeps deploying as before (`source .env && helmfile sync`), which is
-equivalent to `helmfile -e default sync`.
+Production is unaffected and keeps deploying with `./deploy-prod.sh <tag>`, which is
+`helmfile -e default sync` with the pre-flight checks.
 
-> **Note:** Point the dev instance at its own Opsgenie heartbeat (or leave `OPSGENIE_HEARTBEAT_NAME`
-> empty in `.env-dev`), otherwise the dev pod will ping the production heartbeat.
+> **Note:** Point the dev instance at its own Opsgenie heartbeat, or leave
+> `OPSGENIE_HEARTBEAT_NAME` empty in the dev secret (an empty optional field is left out of the
+> Secret rather than rejected), otherwise the dev pod will ping the production heartbeat.
 
 #### Telling the instances apart
 
@@ -695,13 +804,14 @@ export PERSISTENCE_SIZE=1Gi
 export PERSISTENCE_STORAGE_CLASS=<your-storage-class>
 export PERSISTENCE_MOUNT_PATH=/data
 # To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
-# NOTE: this is an allow-list. A calendar feed (`set calendar <url>`) is fetched from inside the
-# cluster, so its host needs an entry here on 443 or the fetch is silently dropped. Only TCP
-# rules are rendered, so DNS resolution has to be reachable by other means.
+# NOTE: this is an allow-list. A calendar feed (`set calendar <url>`, and every built-in calendar)
+# is fetched from inside the cluster, so its host needs an entry here on 443 or the fetch is
+# silently dropped. Only TCP rules are rendered, so DNS resolution has to be reachable by other
+# means.
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
-helmfile sync
+./deploy-prod.sh v1.1.0
 ```
 
 ## Development
@@ -715,7 +825,8 @@ split into cohesive modules; `bot.py` remains as a backward-compatible launcher:
 - `hutbot/persistence.py` — config and cache load/save
 - `hutbot/slackcache.py` — Slack user/channel/usergroup lookups
 - `hutbot/templating.py`, `hutbot/opsgenie.py` — reply templates and OpsGenie integration
-- `hutbot/calendarfeed.py` — the ICS calendar feed (fetch, parse, current/next event)
+- `hutbot/calendarfeed.py` — the ICS calendar feed (fetch, parse, current/next event) and the
+  instance's built-in calendars (parse, look up, resolve to a URL)
 - `hutbot/conditionutil.py` — condition normalization and evaluation
 - `hutbot/messaging.py`, `hutbot/actions.py`, `hutbot/buttons.py` — sending, the action engine, and interactive buttons/escalation
 - `hutbot/scheduling.py`, `hutbot/routing.py` — scheduled replies / cron triggers and Slack event routing
@@ -733,4 +844,6 @@ pytest
 ```
 
 Tests live in `tests/` (one file per module) and run automatically in CI before
-the Docker image is built.
+the Docker image is built. `make check` additionally runs `shellcheck` on the deploy and secret
+scripts and `helm lint` on the chart; the chart and script tests in
+`tests/test_deployment_validation.py` skip themselves where `helm` is not installed.

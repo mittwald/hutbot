@@ -9,9 +9,23 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Kubernetes Secret holding every credential, managed out of band by scripts/sync-secret.sh
+# (sourced from Vault) and only read here. It must carry SLACK_APP_TOKEN and SLACK_BOT_TOKEN;
+# OPSGENIE_*, EMPLOYEE_LIST_* and HUTBOT_BUILTIN_CALENDARS are optional additions. Every key
+# becomes an environment variable. Rendering fails while this is empty, on purpose: there is
+# no fallback that would template the credentials back into the release.
+existingSecret: ""
+
+# Instance-wide "built-in" ICS calendar feeds every channel can point at by name, as a JSON
+# array of {"name","title","url"} objects. Their URLs carry tokens, so the list lives in the
+# Secret above and is mounted as a file rather than only injected as a variable.
+builtinCalendars:
+  mountFile: true
+  mountPath: /etc/hutbot
+  fileName: builtin-calendars.json
+  secretKey: HUTBOT_BUILTIN_CALENDARS
+
 slack:
-  appToken: ""
-  botToken: ""
   # Slash command this instance listens on. Must match the command configured in
   # the Slack app backing these tokens. Empty = the bot's default (/hutbot).
   slashCommand: ""
@@ -30,14 +44,13 @@ time:
   # has translations; every other locale renders English day/month names.
   locale: ""
 
-opsgenie:
-  token: ""
-  heartbeatName: ""
-
-employeeList:
-  username: ""
-  password: ""
-  mappings: ""
+# Egress allow-list rendered into the NetworkPolicy. `rules` is a list of
+# {port, cidrs: []} entries (helmfile builds it from NETWORKPOLICY_RULES); with none, the
+# single `port`/`cidr` pair below is used instead.
+networkPolicy:
+  rules: []
+  port: 443
+  cidr: "0.0.0.0/0"
 
 resources: {}
 

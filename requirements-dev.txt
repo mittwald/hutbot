@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest
 pytest-asyncio
+# Parses rendered chart manifests in tests/test_deployment_validation.py.
+PyYAML

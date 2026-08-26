@@ -41,6 +41,31 @@ if [[ "${image_tag,,}" == "latest" || "${image_tag,,}" == "main" ]]; then
   exit 1
 fi
 
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "error: kubectl not found in PATH" >&2
+  exit 1
+fi
+
+# The credentials live in a Secret this chart only reads (scripts/sync-secret.sh writes it).
+# Checked before Helm runs: `strategy: Recreate` takes the old pod down first, so a Secret
+# that is missing a key would leave nothing running at all.
+namespace="${NAMESPACE:-mw-internal}"
+secret_name="${HUTBOT_EXISTING_SECRET:-hutbot-dev}"
+export HUTBOT_EXISTING_SECRET="$secret_name"
+
+if ! kubectl -n "$namespace" get secret "$secret_name" >/dev/null 2>&1; then
+  echo "error: Kubernetes Secret ${namespace}/${secret_name} not found" >&2
+  echo "sync it first: ./scripts/sync-secret.sh --env dev" >&2
+  exit 1
+fi
+for key in SLACK_APP_TOKEN SLACK_BOT_TOKEN; do
+  if [[ -z "$(kubectl -n "$namespace" get secret "$secret_name" -o "jsonpath={.data.${key}}" 2>/dev/null)" ]]; then
+    echo "error: ${namespace}/${secret_name} has no ${key}" >&2
+    echo "a \`vault kv put\` replaces the whole version; re-run: ./scripts/sync-secret.sh --env dev" >&2
+    exit 1
+  fi
+done
+
 helmfile_args=("$@")
 if [[ ${#helmfile_args[@]} -eq 0 ]]; then
   helmfile_args=(sync)
@@ -52,22 +77,24 @@ if ! command -v helmfile >/dev/null 2>&1; then
 fi
 
 env_path="${root_dir}/${ENV_FILE}"
-if [[ ! -f "$env_path" ]]; then
-  echo "error: ${env_path} not found" >&2
-  exit 1
+if [[ -f "$env_path" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$env_path"
+  set +a
+else
+  # Only deploy settings live here now (NETWORKPOLICY_RULES, HOST_ALIASES, PERSISTENCE_*,
+  # HUTBOT_TIMEZONE, HUTBOT_DEFAULT_DATETIME_LOCALE) — the credentials come from the Secret.
+  echo "warning: ${env_path} not found; deploying with the chart defaults" >&2
 fi
-
-set -a
-# shellcheck source=/dev/null
-source "$env_path"
-set +a
 
 export IMAGE_TAG="$image_tag"
 
 echo "==> environment: ${HELM_ENV}"
 echo "==> env file:    ${ENV_FILE}"
 echo "==> image tag:   ${IMAGE_TAG}"
-echo "==> namespace:   ${NAMESPACE:-mw-internal}"
+echo "==> namespace:   ${namespace}"
+echo "==> secret:      ${secret_name}"
 
 cd "$root_dir"
 exec helmfile -e "$HELM_ENV" "${helmfile_args[@]}"
