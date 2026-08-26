@@ -538,11 +538,12 @@ export HUTBOT_BOT_NAME='Hutbot'
 # Timezone and date/time locale of the instance. Empty means UTC and English names.
 export HUTBOT_TIMEZONE='Europe/Berlin'
 export HUTBOT_DEFAULT_DATETIME_LOCALE='de_DE'
-# To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
-# NOTE: this is an allow-list. A calendar feed (`set calendar <url>`, and every built-in calendar)
-# is fetched from inside the cluster, so its host needs an entry here on 443 or the fetch is
-# silently dropped. Only TCP rules are rendered, so DNS resolution has to be reachable by other
-# means. With no rules at all the chart's defaults (443 to anywhere) apply.
+# Egress rules for INTERNAL destinations, as a space-separated list of <port>:<cidr[,cidr...]>
+# entries. DNS and every public destination are already allowed by the chart defaults, so a
+# public calendar feed or Slack needs nothing here; an internal host does, on the port it
+# listens on, or the connection is dropped without a trace. Set NETWORKPOLICY_PUBLIC_EGRESS=false
+# to close the public rule, NETWORKPOLICY_ALLOW_DNS=false to close DNS, NETWORKPOLICY_ENABLED=false
+# to drop the policy entirely.
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
@@ -664,10 +665,11 @@ hutbot is a singleton on a ReadWriteOnce volume, so a rolling restart would brie
 against one `bot.json` — which means every restart has a few seconds of gap.
 
 **Egress:** a public feed host (`outlook.office365.com` and friends) is covered by the chart's
-default rule. An internal host needs both a `HOST_ALIASES` entry, because cluster DNS does not serve
-that zone, **and** a `NETWORKPOLICY_RULES` entry on 443 — with only one of the two the fetch fails,
-either with a resolution error in the log or with no trace at all. `sync-secret.sh` prints the feed
-hosts so they can be checked against the rules.
+default public-egress rule — everything outside the private ranges, on any port — so it needs no
+entry anywhere. An internal host needs both a `HOST_ALIASES` entry, because cluster DNS does not
+serve that zone, **and** a `NETWORKPOLICY_RULES` entry on its port: with only one of the two the
+fetch fails, either with a resolution error in the log or with no trace at all. `sync-secret.sh`
+prints the feed hosts so they can be checked against the rules.
 
 ### Deploy
 
@@ -803,11 +805,8 @@ export PERSISTENCE_ENABLED=true
 export PERSISTENCE_SIZE=1Gi
 export PERSISTENCE_STORAGE_CLASS=<your-storage-class>
 export PERSISTENCE_MOUNT_PATH=/data
-# To define netpol egress rules, you can set a space-separated list of <port>:<cidr[,cidr...]> entries:
-# NOTE: this is an allow-list. A calendar feed (`set calendar <url>`, and every built-in calendar)
-# is fetched from inside the cluster, so its host needs an entry here on 443 or the fetch is
-# silently dropped. Only TCP rules are rendered, so DNS resolution has to be reachable by other
-# means.
+# Egress rules for INTERNAL destinations (see above); public destinations and DNS are allowed
+# by the chart defaults.
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'

@@ -54,8 +54,14 @@ releases:
           size: {{ env "PERSISTENCE_SIZE" | default "100Mi" | quote }}
           storageClass: {{ env "PERSISTENCE_STORAGE_CLASS" | default "" | quote }}
           mountPath: {{ env "PERSISTENCE_MOUNT_PATH" | default "/data" | quote }}
-{{- if env "NETWORKPOLICY_RULES" }}
+      # DNS and public destinations are allowed by the chart defaults; NETWORKPOLICY_RULES
+      # only names the internal ones, which the cluster's baseline egress does not cover.
       - networkPolicy:
+          enabled: {{ env "NETWORKPOLICY_ENABLED" | default "true" }}
+          allowDNS: {{ env "NETWORKPOLICY_ALLOW_DNS" | default "true" }}
+          publicEgress:
+            enabled: {{ env "NETWORKPOLICY_PUBLIC_EGRESS" | default "true" }}
+{{- if env "NETWORKPOLICY_RULES" }}
           rules:
 {{- range $pair := splitList " " (env "NETWORKPOLICY_RULES") }}
 {{- $parts := splitList ":" $pair }}

@@ -162,12 +162,85 @@ def test_deployment_recreates_rather_than_rolls():
     assert "type: Recreate" in result.stdout
 
 
+# ----- egress policy -----
+
+def _egress(result):
+    return yaml.safe_load(result.stdout)["spec"]["egress"]
+
+
 def test_chart_renders_without_any_networkpolicy_values():
     """values.yaml carries the defaults, so a plain render needs no --set placeholders."""
     result = _render(show_only="templates/networkpolicy.yaml")
 
     assert result.returncode == 0, result.stderr
-    assert "cidr: \"0.0.0.0/0\"" in result.stdout
+    assert _egress(result)
+
+
+def test_egress_pairs_a_rules_ports_with_its_destinations():
+    """Two items — ports here, destinations there — would mean "this port to anywhere"."""
+    result = _render("v1.2.3",
+                     "--set", "networkPolicy.rules[0].port=443",
+                     "--set-string", "networkPolicy.rules[0].cidrs[0]=192.168.0.15/32",
+                     "--set-string", "networkPolicy.rules[0].cidrs[1]=192.168.0.16/32",
+                     show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    rule = next(item for item in _egress(result)
+                if item.get("to") == [{"ipBlock": {"cidr": "192.168.0.15/32"}},
+                                      {"ipBlock": {"cidr": "192.168.0.16/32"}}])
+    assert rule["ports"] == [{"port": 443, "protocol": "TCP"}]
+    # Nothing else may carry those ports, and no item may name that port without a destination.
+    assert [item for item in _egress(result) if item.get("ports") == rule["ports"]] == [rule]
+
+
+def test_egress_allows_dns_and_every_public_destination():
+    """Slack Socket Mode and public feeds must keep working without a rule per host."""
+    result = _render(show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    egress = _egress(result)
+    dns = next(item for item in egress if "to" not in item)
+    assert dns["ports"] == [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}]
+    public = next(item for item in egress
+                  if item.get("to", [{}])[0].get("ipBlock", {}).get("cidr") == "0.0.0.0/0")
+    # No `ports`: all outbound ports to public destinations.
+    assert "ports" not in public
+    assert public["to"][0]["ipBlock"]["except"] == [
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+    # DNS is the only item allowed to name ports without a destination.
+    assert [item for item in egress if "to" not in item] == [dns]
+
+
+def test_egress_can_drop_dns_and_public_destinations():
+    result = _render("v1.2.3",
+                     "--set", "networkPolicy.allowDNS=false",
+                     "--set", "networkPolicy.publicEgress.enabled=false",
+                     "--set", "networkPolicy.rules[0].port=443",
+                     "--set-string", "networkPolicy.rules[0].cidrs[0]=192.168.0.15/32",
+                     show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    assert _egress(result) == [{"to": [{"ipBlock": {"cidr": "192.168.0.15/32"}}],
+                               "ports": [{"port": 443, "protocol": "TCP"}]}]
+
+
+def test_a_policy_that_allows_nothing_is_refused():
+    """`enabled` with no rule of any kind denies all egress — almost never the intent."""
+    result = _render("v1.2.3",
+                     "--set", "networkPolicy.allowDNS=false",
+                     "--set", "networkPolicy.publicEgress.enabled=false",
+                     show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode != 0
+    assert "would deny all egress" in result.stderr
+
+
+def test_a_rule_without_a_destination_is_refused():
+    result = _render("v1.2.3", "--set", "networkPolicy.rules[0].port=443",
+                    show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode != 0
+    assert "needs at least one entry in cidrs" in result.stderr
 
 
 # ----- built-in calendars are mounted as a file -----

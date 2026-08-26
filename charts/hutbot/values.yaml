@@ -44,13 +44,31 @@ time:
   # has translations; every other locale renders English day/month names.
   locale: ""
 
-# Egress allow-list rendered into the NetworkPolicy. `rules` is a list of
-# {port, cidrs: []} entries (helmfile builds it from NETWORKPOLICY_RULES); with none, the
-# single `port`/`cidr` pair below is used instead.
+# Egress NetworkPolicy for the pod. A policy naming Egress denies everything it does not
+# list, so DNS and public destinations are part of it rather than assumed.
 networkPolicy:
+  enabled: true
+  # Cluster DNS on 53/UDP and 53/TCP, to any destination (the resolver's service address is
+  # inside the cluster range, which publicEgress excludes).
+  allowDNS: true
+  publicEgress:
+    # Everything outside the private ranges, on any port: Slack Socket Mode and Web API, and
+    # every public calendar feed — including the built-in ones, which are fetched from inside
+    # the cluster like any other.
+    enabled: true
+    # Private and link-local ranges carved out of 0.0.0.0/0, so an internal destination stays
+    # a matter of `rules` below and nothing reaches an internal service by accident.
+    except:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16
+  # Internal destinations, one entry per port: {port, cidrs: [], protocol}. Helmfile builds
+  # this from NETWORKPOLICY_RULES. Keep in sync with hostAliases — an aliased address that
+  # has no rule here resolves and is then dropped on the way out.
   rules: []
-  port: 443
-  cidr: "0.0.0.0/0"
+  # Additional egress rules, rendered verbatim (e.g. a namespaceSelector peer).
+  extraEgress: []
 
 resources: {}
 
