@@ -64,7 +64,7 @@ two attendees still reads when there is only one:
 
 `offset` counts **events** and `at` moves **time**. Either may be left out, and they compose:
 
-```bash
+```
 {{calendar_summary}}                        # running now
 {{calendar_summary(offset=next)}}           # the next one — `prev` for the one before
 {{calendar_summary(offset=+2)}}             # the one after next; `-2` counts back
@@ -183,7 +183,9 @@ access to the calendar. Hutbot therefore only ever echoes a redacted form
 (`outlook.office365.com/…/calendar.ics`) in `show config` and in the setter's confirmation — and a
 built-in calendar's URL is never printed at all, not even redacted, because it belongs to the
 instance rather than to the channel that uses it.
-The feed is cached for 5 minutes (`HUTBOT_CALENDAR_TTL`, in seconds).
+The feed is cached for 5 minutes (`HUTBOT_CALENDAR_TTL`, in seconds), and `offset=prev` searches
+back 90 days (`HUTBOT_CALENDAR_LOOKBACK_DAYS`) — widen that for a calendar whose events are
+months apart.
 
 A remote feed must be `https://`, and URLs pointing at the private ranges or the cloud metadata
 address are refused — the bot fetches them from inside the cluster. The host name is resolved and

@@ -1636,6 +1636,42 @@ async def test_a_gated_rule_reads_its_condition_and_its_message_at_one_moment(ca
     rendered = hutbot.templating.render_reply_message_template(config["reply_message"], variables, config)
     assert rendered.startswith("next: ") and "<no-event>" not in rendered
 
+@pytest.mark.asyncio
+async def test_the_test_command_names_what_each_moment_resolved_to(cal):
+    """A relative `at` is a different instant in the preview than at the firing, so say which."""
+    app = _ui_app()
+    _seed_user_caches()
+    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG,
+              "reply_message": 'tomorrow: {{calendar_summary(at="+1d")}}'}
+    channel = _mk_channel({"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "test", channel, user)
+
+    text = sent_messages(send)
+    assert "*Read at another moment:*" in text
+    assert 'at="+1d"' in text
+    # The resolved instant, so an odd expression is obvious at a glance.
+    assert re.search(r'at="\+1d"` → \d{4}-\d{2}-\d{2}T', text)
+
+
+@pytest.mark.asyncio
+async def test_the_test_command_says_nothing_extra_without_a_selector(cal):
+    app = _ui_app()
+    _seed_user_caches()
+    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "now: {{calendar_summary}}"}
+    channel = _mk_channel({"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "test", channel, user)
+
+    assert "Read at another moment" not in sent_messages(send)
+
+
 # ----- built-in calendars -----
 
 def _current_and_next(calendar, config=None, now=None):

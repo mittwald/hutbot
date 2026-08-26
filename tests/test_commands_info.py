@@ -379,6 +379,10 @@ async def test_help_variables_documents_every_variable_and_operator(command):
         assert title in sent_message, title
     assert "*Condition operators*" in sent_message
     assert "`{{calendar_attendees(nth=2)}}` is the second" in sent_message
+    # Both calendar arguments are documented, and so is the condition spelling.
+    assert "`{{calendar_summary(offset=next)}}` the one after it" in sent_message
+    assert "or as a signed offset from now: `+2h`" in sent_message
+    assert "add condition calendar_summary(at=+1d) contains Wartung" in sent_message
     assert "`fmt`/`format`, `tz`/`timezone` and `lc`/`locale`" in sent_message
     # The command table stays in `help`; this reply is only the variables.
     assert "*Commands:*" not in sent_message
