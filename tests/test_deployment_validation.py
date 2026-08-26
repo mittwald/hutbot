@@ -783,3 +783,58 @@ def test_the_deploy_guard_warns_when_head_is_ahead_of_the_tag():
 
     assert result.returncode == 0, result.stderr
     assert "commit(s) ahead of" in result.stderr
+
+
+# ----- the RollingUpdate → Recreate switch -----
+
+def _run_deploy(tmp_path, script, strategy):
+    """Run a deploy script against stub kubectl/helmfile, recording kubectl's argv."""
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    calls = tmp_path / "kubectl-calls"
+    _stub(bin_dir, "kubectl", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$*" in
+  *"get secret"*jsonpath*) echo -n "eA==" ;;
+  *"get secret"*) exit 0 ;;
+  *"get deployment"*) printf '%s' "{strategy}" ;;
+esac
+exit 0
+''')
+    _stub(bin_dir, "helmfile", "exit 0\n")
+    result = subprocess.run([str(ROOT / script), "-y", "v1.2.3"], cwd=ROOT, capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+    result.kubectl_calls = calls.read_text() if calls.exists() else ""
+    return result
+
+
+@pytest.mark.parametrize("script,release", [("deploy-dev.sh", "hutbot-dev"),
+                                            ("deploy-prod.sh", "hutbot")])
+def test_deploy_clears_a_leftover_rollingupdate_block(tmp_path, script, release):
+    """Server-side apply keeps the defaulted block, and Recreate + rollingUpdate is invalid."""
+    result = _run_deploy(tmp_path, script, "RollingUpdate")
+
+    assert result.returncode == 0, result.stderr
+    assert f"patch deployment {release} --type=merge" in result.kubectl_calls
+    assert '"rollingUpdate":null' in result.kubectl_calls
+    assert "still has strategy RollingUpdate" in result.stdout
+
+
+@pytest.mark.parametrize("script", ["deploy-dev.sh", "deploy-prod.sh"])
+def test_deploy_leaves_an_already_recreated_deployment_alone(tmp_path, script):
+    result = _run_deploy(tmp_path, script, "Recreate")
+
+    assert result.returncode == 0, result.stderr
+    assert "patch deployment" not in result.kubectl_calls
+
+
+@pytest.mark.parametrize("script", ["deploy-dev.sh", "deploy-prod.sh"])
+def test_deploy_patches_nothing_on_a_first_install(tmp_path, script):
+    """No Deployment yet: the chart's own strategy applies and there is nothing to clear."""
+    result = _run_deploy(tmp_path, script, "")
+
+    assert result.returncode == 0, result.stderr
+    assert "patch deployment" not in result.kubectl_calls

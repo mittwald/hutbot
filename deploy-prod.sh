@@ -60,7 +60,8 @@ fi
 # Checked before Helm runs: `strategy: Recreate` takes the old pod down first, so a Secret
 # that is missing a key would leave nothing running at all.
 namespace="${NAMESPACE:-mw-internal}"
-secret_name="${HUTBOT_EXISTING_SECRET:-hutbot}"
+release="hutbot"
+secret_name="${HUTBOT_EXISTING_SECRET:-$release}"
 export HUTBOT_EXISTING_SECRET="$secret_name"
 
 if ! kubectl -n "$namespace" get secret "$secret_name" >/dev/null 2>&1; then
@@ -75,6 +76,19 @@ for key in SLACK_APP_TOKEN SLACK_BOT_TOKEN; do
     exit 1
   fi
 done
+
+# A Deployment created with the default RollingUpdate strategy carries a spec.strategy.rollingUpdate
+# block the API server filled in. Server-side apply merges `type: Recreate` on top but leaves that
+# block alone — it belongs to no applier — and validation then refuses the whole object with
+# "spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy `type` is 'Recreate'".
+# Clearing it is idempotent, and strategy is no part of the pod template, so nothing restarts here.
+strategy=$(kubectl -n "$namespace" get deployment "$release" \
+  -o "jsonpath={.spec.strategy.type}" 2>/dev/null || true)
+if [[ -n "$strategy" && "$strategy" != "Recreate" ]]; then
+  echo "==> ${namespace}/${release} still has strategy ${strategy}; clearing its rollingUpdate block"
+  kubectl -n "$namespace" patch deployment "$release" --type=merge \
+    -p '{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}'
+fi
 
 helmfile_args=("$@")
 if [[ ${#helmfile_args[@]} -eq 0 ]]; then

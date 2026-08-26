@@ -726,6 +726,23 @@ The scripts can also be called directly:
 
 Both scripts check that the Secret exists **and** carries both Slack tokens, and stop before Helm
 runs if not — under `strategy: Recreate` the old pod is gone before a broken new one would start.
+
+They also clear a leftover `spec.strategy.rollingUpdate` block on an existing Deployment. A
+Deployment first created with the default `RollingUpdate` strategy carries one the API server filled
+in; server-side apply merges `type: Recreate` on top but leaves that block alone, and the API server
+then refuses the object outright:
+
+```
+spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy `type` is 'Recreate'
+```
+
+The equivalent by hand, if you ever hit it outside the scripts — idempotent, and it restarts
+nothing, since strategy is no part of the pod template:
+
+```bash
+kubectl -n mw-internal patch deployment hutbot --type=merge \
+  -p '{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}'
+```
 `HUTBOT_EXISTING_SECRET` picks a different Secret name. `helmfile` can also be run directly; no
 variable in `helmfile.yaml.gotmpl` is required any more, so `helmfile -e default diff` works in a
 shell that has never seen a token.
