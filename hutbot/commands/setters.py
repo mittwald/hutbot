@@ -43,6 +43,7 @@ from ..constants import (
     TRIGGER_MESSAGE,
     TRIGGER_CRON,
     TRIGGERS,
+    event_slice_prefix,
 )
 from ..textutil import log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
 
@@ -270,6 +271,8 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
     config = channel.configs.get(config_name) or copy.deepcopy(DEFAULT_CONFIG)
     reply_message_template = config.get('reply_message')
     permalink = await slackcache.get_message_permalink(app, channel, ts) if ts else ""
+    # The same fields the firing scans, so the preview cannot read a different set.
+    selectors = templating.find_calendar_selectors(*templating.config_templates(config))
     template_variables = await templating.build_reply_template_variables(
         app,
         opsgenie_token,
@@ -282,6 +285,7 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
         permalink,
         include_opsgenie=True,
         include_calendar=True,
+        calendar_selectors=selectors,
     )
     reply_message = templating.render_reply_message_template(reply_message_template, template_variables, config)
     variable_lines = [
@@ -303,6 +307,19 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
         header = "all must apply" if mode == CONDITION_MODE_ALL else "any may apply"
         sections.append(f"*Conditions* ({header}):\n" + "\n".join(condition_lines) + f"\n\nThis rule {verdict}.")
     sections.append("*Template variables:*\n" + "\n".join(variable_lines))
+    if selectors:
+        # What each `at`/`offset` actually resolved to, which is the one thing a preview can
+        # show that the template itself cannot: a relative moment is a different instant here
+        # than it will be when the rule fires.
+        selector_lines = []
+        for at, offset in selectors:
+            prefix = event_slice_prefix(at, offset)
+            arguments = ", ".join(part for part in (f'at="{at}"' if at else "",
+                                                    f"offset={offset}" if offset else "") if part)
+            instant = template_variables.get(f"__{prefix}instant", "")
+            summary = template_variables.get(f"__{prefix}calendar_summary", "")
+            selector_lines.append(f"`{arguments}` → {instant or '<unresolved>'}: {summary}")
+        sections.append("*Read at another moment:*\n" + "\n".join(selector_lines))
     await messaging.send_message(app, channel, user, "\n\n".join(sections), thread_ts)
 
 

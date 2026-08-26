@@ -191,3 +191,59 @@ async def test_build_template_variables_keeps_a_real_message_timestamp():
     assert variables["timestamp"] == "1786453297.645799"
     assert variables["date"] == "11.08.2026"
     assert variables["time"] == "15:01"
+
+
+# ----- rendering a selector slice -----
+
+def _slice_namespace():
+    """A namespace with a default selection and one `at="+1d"` slice, built by hand."""
+    from hutbot.constants import event_slice_name as slice_name
+
+    return {
+        "calendar_summary": "Today",
+        "calendar_attendees": "Ann, Bob",
+        f"__{slice_name('calendar_attendees', '+1d', '')}_items": ["Cleo", "Dan"],
+        "__calendar_attendees_items": ["Ann", "Bob"],
+        "calendar_start_time": "09:00",
+        "__calendar_start_time_raw": "2026-08-26T09:00:00+02:00",
+        f"__{slice_name('calendar_summary', '+1d', '')}": "Tomorrow",
+        f"__{slice_name('calendar_attendees', '+1d', '')}": "Cleo, Dan",
+        f"__{slice_name('calendar_start_time', '+1d', '')}_raw": "2026-08-27T11:30:00+02:00",
+    }
+
+
+def test_render_reads_a_scalar_from_a_slice():
+    render = hutbot.templating.render_reply_message_template
+
+    assert render("{{calendar_summary}} / {{calendar_summary(at=+1d)}}", _slice_namespace()) == "Today / Tomorrow"
+
+
+def test_render_applies_the_formatting_arguments_to_a_slice():
+    render = hutbot.templating.render_reply_message_template
+
+    rendered = render('{{calendar_start_time(at=+1d, tz="UTC", fmt="15:04")}}', _slice_namespace())
+
+    assert rendered == "09:30"
+
+
+def test_render_applies_nth_to_a_slice():
+    render = hutbot.templating.render_reply_message_template
+
+    assert render("{{calendar_attendees(nth=1)}}", _slice_namespace()) == "Ann"
+    assert render("{{calendar_attendees(at=+1d, nth=2)}}", _slice_namespace()) == "Dan"
+
+
+def test_render_joins_a_list_slice_without_nth():
+    render = hutbot.templating.render_reply_message_template
+
+    assert render("{{calendar_attendees(at=+1d)}}", _slice_namespace()) == "Cleo, Dan"
+
+
+def test_a_missing_slice_renders_a_placeholder_not_the_default_and_not_braces():
+    """The one thing render must never do is answer about the wrong moment."""
+    render = hutbot.templating.render_reply_message_template
+
+    rendered = render("{{calendar_summary(at=+2d)}} {{calendar_start_time(at=+2d)}}", _slice_namespace())
+
+    assert rendered == "<no-event> <unknown>"
+    assert "Today" not in rendered and "{{" not in rendered

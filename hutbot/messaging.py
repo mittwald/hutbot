@@ -226,7 +226,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         "> :calendar: *OpsGenie date/time template variables and defaults*\n>\n"
         f"> OpsGenie templates can now include current and next on-call start/end dates, times, and datetimes. Use `{command} [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]` to set the defaults.\n>\n"
         "> :date: *Calendar feeds*\n>\n"
-        f"> Point a config at an ICS calendar URL with `{command} [config] set calendar <url>` and use the event running now (or the next one) in any message: `{{{{calendar_current_summary}}}}`, `{{{{calendar_current_location}}}}`, `{{{{calendar_next_start_time}}}}` and more. `{command} [config] show calendar` prints both.\n>\n"
+        f"> Point a config at an ICS calendar URL — or one of the instance's built-in calendars — with `{command} [config] set calendar <name|url>`, then read it from any message: `{{{{calendar_summary}}}}` is the event running now, `{{{{calendar_summary(offset=next)}}}}` the one after it, and `{{{{calendar_summary(at=\"+1d\")}}}}` what is on this time tomorrow. `{command} [config] show calendar` prints the event before, the one now and the next.\n>\n"
         "> :traffic_light: *Conditions on any variable*\n>\n"
         f"> A rule can now be gated on any `{{{{variable}}}}`: `{command} [config] add condition <var> <operator> [value]`, with `empty`, `equals`, `contains`, `starts-with`, `ends-with`, `regex` and their `not-` forms. Chain several and pick `{command} [config] set condition-mode <all|any>`. Conditions apply to every trigger, and `{command} [config] test` shows which ones pass.\n>\n"
         "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
@@ -401,10 +401,25 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         "Every date/time variable takes `fmt`/`format`, `tz`/`timezone` and `lc`/`locale` arguments, e.g. "
         "`{{opsgenie_next_start_datetime(fmt=\"%d.%m.%Y %H:%M\", tz=\"Europe/Berlin\", lc=\"de_DE\")}}`. "
         f"Without them the config's `{command} [config] set datetime-format` values are used.",
-        "A variable holding a list — the calendar's `{{..._attendees}}`/`{{..._attendee_emails}}` and their "
-        "`other_*` forms, which leave out the organizer — renders comma-separated, and `nth` picks "
-        "one entry counting from 1: `{{calendar_current_attendees(nth=2)}}` is the second. Asking "
-        "for an entry that is not there renders empty.",
+        "Every calendar variable describes *one* event, and two arguments choose which. "
+        "`offset` counts events — `next`, `prev`, or a number like `+2`/`-1` — and `at` names "
+        "the moment to count from: `{{calendar_summary}}` is what is running now, "
+        "`{{calendar_summary(offset=next)}}` the one after it, and "
+        "`{{calendar_summary(at=\"+1d\", offset=next)}}` the event after whatever runs this time "
+        "tomorrow. In a gap between events the plain form renders `<no-event>`, and `offset=-1`/"
+        "`offset=next` are still the events either side.",
+        "Write `at` as `2026-08-27 09:00` (a `T` and seconds are both fine), as `2026-08-27` for "
+        "midnight that day, as `09:00` for today at that hour, or as a signed offset from now: "
+        "`+2h`, `-30m`, `+1d`, `+2w`. `+1d` is this time tomorrow while `+24h` is 24 real hours, "
+        "so on the two days a year the clocks change they differ by an hour. A time without a `Z` "
+        "or a `+02:00` is read in the config's timezone, and `tz` only decides how the answer is "
+        "printed — so an explicit offset is how you name a moment in another zone. A moment in "
+        "the past is fine; one the calendar does not reach renders the usual placeholders.",
+        "A variable holding a list — the calendar's `{{calendar_attendees}}`/"
+        "`{{calendar_attendee_emails}}` and their `other_*` forms, which leave out the organizer — "
+        "renders comma-separated, and `nth` picks one entry counting from 1: "
+        "`{{calendar_attendees(nth=2)}}` is the second. Asking for an entry that is not there "
+        "renders empty.",
         "`{{calendar_name}}` is the built-in calendar's title when a config uses one, and "
         "otherwise the feed's own name — or its redacted URL, when the feed does not name itself.",
         "You can `@mention` someone by email address (`@nico@example.com`) as well as by username, "
@@ -413,7 +428,7 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         f"*Condition operators*\n{', '.join(f'`{operator}`' for operator in CONDITION_OPERATORS_ORDERED)}\n"
         f"`{command} [config] add condition <variable> <operator> [value] [0|1]` gates the rule; `1` makes "
         "the comparison case sensitive. An operator on a list variable matches when *any* entry matches, "
-        "and its `not_` form when *none* does, so `add condition calendar_current_attendee_emails equals "
+        "and its `not_` form when *none* does, so `add condition calendar_attendee_emails equals "
         "nico@example.com` asks whether that person is on the event.",
         "Conditions are checked when the rule fires — for a `message` rule that is after the "
         "reminder delay, judged against the conditions as they were when the message arrived. "

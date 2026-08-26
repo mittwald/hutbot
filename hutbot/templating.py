@@ -9,15 +9,20 @@ from . import conditionutil
 from . import datetimefmt
 from . import opsgenie
 from .constants import (
+    CALENDAR_EVENT_TEMPLATE_VARIABLES,
     DATETIME_TEMPLATE_VARIABLES,
     LIST_TEMPLATE_VARIABLES,
-    TEMPLATE_DATETIME_VARIABLES,
+    MAX_CALENDAR_SELECTORS,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
     TEMPLATE_ARGUMENT_ALIASES,
     TEMPLATE_ARGUMENT_NAME_PATTERN,
+    TEMPLATE_DATETIME_VARIABLES,
     TEMPLATE_VARIABLE_NAME_PATTERN,
     UNKNOWN_PERIOD_PLACEHOLDER,
+    event_slice_name,
+    normalize_selector,
+    parse_event_offset,
 )
 from .models import Channel, TemplateExpression, TemplateExpressionError, User
 
@@ -161,12 +166,19 @@ def validate_template_expressions(message: str) -> str:
     for expr in expressions:
         renders_datetime = expr.variable in TEMPLATE_DATETIME_VARIABLES | DATETIME_TEMPLATE_VARIABLES
         holds_a_list = expr.variable in LIST_TEMPLATE_VARIABLES
+        reads_an_event = expr.variable in CALENDAR_EVENT_TEMPLATE_VARIABLES
         for argument in expr.args:
-            if argument == "nth":
+            if argument in ("at", "offset"):
+                if not reads_an_event:
+                    return (f"template variable `{{{{{expr.variable}}}}}` does not read a calendar "
+                            f"event, so it does not take `{argument}`")
+            elif argument == "nth":
                 if not holds_a_list:
                     return f"template variable `{{{{{expr.variable}}}}}` is not a list, so it does not take `nth`"
             elif holds_a_list:
-                return f"template variable `{{{{{expr.variable}}}}}` takes only `nth`"
+                return f"template variable `{{{{{expr.variable}}}}}` takes only `nth`, `at` and `offset`"
+            elif reads_an_event and not renders_datetime:
+                return f"template variable `{{{{{expr.variable}}}}}` takes only `at` and `offset`"
             elif not renders_datetime:
                 return f"template variable `{{{{{expr.variable}}}}}` does not support arguments"
         if "nth" in expr.args:
@@ -176,6 +188,16 @@ def validate_template_expressions(message: str) -> str:
                 return f"`nth` must be a whole number, not `{expr.args['nth']}`"
             if position < 1:
                 return "`nth` counts from 1, so it must be 1 or more"
+        if "at" in expr.args:
+            try:
+                datetimefmt.validate_at_time(expr.args["at"])
+            except ValueError as e:
+                return str(e)
+        if "offset" in expr.args:
+            try:
+                parse_event_offset(expr.args["offset"])
+            except ValueError as e:
+                return str(e)
         if "tz" in expr.args:
             try:
                 datetimefmt.validate_timezone_name(expr.args["tz"])
@@ -187,7 +209,65 @@ def validate_template_expressions(message: str) -> str:
             except ValueError as e:
                 return str(e)
 
+    # Uncapped here: the count is what the user is told about, and the cap in the collector is
+    # only a backstop for a config that was edited by hand.
+    selectors = find_calendar_selectors(message, limit=None)
+    if len(selectors) > MAX_CALENDAR_SELECTORS:
+        return (f"a message may read the calendar at up to {MAX_CALENDAR_SELECTORS} different "
+                f"moments; this one names {len(selectors)}")
+
     return ""
+
+
+def find_template_expressions(message: str) -> list[TemplateExpression]:
+    """Every parsed expression in `message`, or none when it does not parse.
+
+    The counterpart of `find_template_variables`, which throws the arguments away.
+    """
+    try:
+        return parse_template_expressions(message)
+    except TemplateExpressionError:
+        return []
+
+
+def config_templates(config: dict | None) -> tuple[str, ...]:
+    """Every template string a run of this config renders.
+
+    One definition, so the variable collector, the selector collector and the `test` preview
+    can never disagree about which fields are templates.
+    """
+    config = config or {}
+    return ((config.get('reply_message') or ''),
+            (config.get('opsgenie_message') or ''),
+            (config.get('action_target') or ''))
+
+
+def find_calendar_selectors(*messages: str, limit: int | None = MAX_CALENDAR_SELECTORS) -> list[tuple[str, str]]:
+    """The distinct `(at, offset)` pairs the calendar variables in these templates ask for.
+
+    First-seen order, deduped on the normalised pair, so a message reading the same moment
+    five times costs one calendar selection. Capped, because each pair costs a selection and a
+    template naming dozens is a mistake — validation reports that; here it is a backstop for a
+    hand-edited config.
+    """
+    selectors: list[tuple[str, str]] = []
+    seen = set()
+    for message in messages:
+        for expr in find_template_expressions(message):
+            if expr.variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+                continue
+            at, offset = expr.args.get("at", ""), expr.args.get("offset", "")
+            if not at and not offset:
+                continue
+            try:
+                key = normalize_selector(at, offset)
+            except ValueError:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            selectors.append((at, offset))
+    return selectors if limit is None else selectors[:limit]
 
 
 def find_unknown_template_variables(message: str) -> list[str]:
@@ -205,7 +285,7 @@ def find_template_variables(message: str) -> set[str]:
         return set()
 
 
-def _nth_list_item(variables: dict[str, str], expr: TemplateExpression) -> str:
+def _nth_list_item(variables: dict[str, str], stem: str, expr: TemplateExpression) -> str:
     """One entry of a list variable, counting from 1.
 
     Asking for an entry the list does not have renders empty rather than failing, so a
@@ -215,8 +295,24 @@ def _nth_list_item(variables: dict[str, str], expr: TemplateExpression) -> str:
         position = int(expr.args.get("nth", ""))
     except ValueError:
         return ""
-    items = conditionutil.list_items(variables, expr.variable)
+    items = conditionutil.list_items(variables, stem)
     return items[position - 1] if 1 <= position <= len(items) else ""
+
+
+def _expression_stem(expr: TemplateExpression) -> tuple[str, str]:
+    """`(stem, value_key)` for one expression: the plain variable, or its selector slice.
+
+    A slice's name is a pure function of the expression's own text, which is what lets this
+    stay synchronous — nothing here resolves a clock, a feed or a Slack lookup.
+    """
+    at, offset = expr.args.get("at", ""), expr.args.get("offset", "")
+    if (at or offset) and expr.variable in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+        try:
+            stem = event_slice_name(expr.variable, at, offset)
+        except ValueError:
+            return expr.variable, expr.variable
+        return stem, f"__{stem}"
+    return expr.variable, expr.variable
 
 
 def render_reply_message_template(message: str, variables: dict[str, str], config: dict | None = None) -> str:
@@ -236,25 +332,33 @@ def render_reply_message_template(message: str, variables: dict[str, str], confi
             last_index = end
             continue
 
+        stem, value_key = _expression_stem(expr)
         if expr.variable in DATETIME_TEMPLATE_VARIABLES:
             rendered.append(datetimefmt.format_timestamp_value(variables.get("__timestamp_raw", ""), expr.variable, config, expr.args))
         elif expr.variable in TEMPLATE_DATETIME_VARIABLES:
-            raw_value = variables.get(f"__{expr.variable}_raw", "")
+            raw_value = variables.get(f"__{stem}_raw", "")
             if raw_value or expr.args:
                 rendered.append(datetimefmt.format_template_datetime(raw_value, expr.variable, config, expr.args))
             else:
-                rendered.append(variables.get(expr.variable, UNKNOWN_PERIOD_PLACEHOLDER))
+                rendered.append(variables.get(value_key, UNKNOWN_PERIOD_PLACEHOLDER))
         elif expr.variable in LIST_TEMPLATE_VARIABLES and "nth" in expr.args:
-            rendered.append(_nth_list_item(variables, expr))
+            rendered.append(_nth_list_item(variables, stem, expr))
+        elif value_key in variables:
+            rendered.append(variables[value_key])
+        elif stem != expr.variable:
+            # A selector slice nothing resolved: render this variable's usual placeholder.
+            # Never the default selection's value, which would answer about the wrong moment,
+            # and never the raw `{{…}}`, which would put braces in a user-visible message.
+            rendered.append(calendarfeed.calendar_event_placeholder(expr.variable))
         else:
-            rendered.append(variables.get(expr.variable, message[start:end]))
+            rendered.append(message[start:end])
         last_index = end
 
     rendered.append(message[last_index:])
     return "".join(rendered)
 
 
-async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False, include_calendar: bool = False) -> dict[str, str]:
+async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False, include_calendar: bool = False, calendar_selectors: list[tuple[str, str]] | None = None) -> dict[str, str]:
     wait_time = config.get('wait_time') or 0
     opsgenie_template_variables = {}
     if include_opsgenie:
@@ -263,7 +367,8 @@ async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, cha
     # actually references one of their variables (see `actions._build_variables`).
     calendar_template_variables = {}
     if include_calendar:
-        calendar_template_variables = await calendarfeed.get_calendar_template_variables(app, config)
+        calendar_template_variables = await calendarfeed.get_calendar_template_variables(
+            app, config, selectors=calendar_selectors or ())
 
     # `test`, `run`, and schedule/manual triggers have no message behind them, so
     # there is no Slack timestamp to report. Stand in the current time instead of

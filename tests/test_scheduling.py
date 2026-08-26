@@ -434,19 +434,19 @@ async def test_a_frozen_condition_is_still_judged_against_the_current_world():
     09:30 — otherwise gating on it would be pointless.
     """
     cfg = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": "Anybody?"}
-    cfg["conditions"] = [{"variable": "calendar_current_summary", "operator": "contains",
+    cfg["conditions"] = [{"variable": "calendar_summary", "operator": "contains",
                           "value": "standup", "case_sensitive": False}]
     cfg["calendar_url"] = "https://cal.example.com/a/b/c.ics"
 
     # No matching event when it fires -> blocked.
     with patch('hutbot.calendarfeed.get_calendar_template_variables',
-               new=AsyncMock(return_value={"calendar_current_summary": "Something else"})):
+               new=AsyncMock(return_value={"calendar_summary": "Something else"})):
         count, _ = await _run_pending_reply(cfg)
     assert count == 0
 
     # A matching event when it fires -> sent, same frozen condition.
     with patch('hutbot.calendarfeed.get_calendar_template_variables',
-               new=AsyncMock(return_value={"calendar_current_summary": "Daily standup"})):
+               new=AsyncMock(return_value={"calendar_summary": "Daily standup"})):
         count, _ = await _run_pending_reply(cfg)
     assert count == 1
 

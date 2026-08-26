@@ -38,15 +38,18 @@ def _referenced_variables(config: dict) -> set[str]:
     The union of the message template, the OpsGenie alert template, and the conditions, so
     a single build serves the gate, the message, and the alert.
     """
-    return (
-        conditionutil.condition_variables(config)
-        | templating.find_template_variables(config.get('reply_message') or '')
-        | templating.find_template_variables(config.get('opsgenie_message') or '')
-        | templating.find_template_variables(config.get('action_target') or '')
-    )
+    referenced = conditionutil.condition_variables(config)
+    for template in templating.config_templates(config):
+        referenced |= templating.find_template_variables(template)
+    return referenced
 
 
-async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, referenced: set[str]) -> dict[str, str]:
+def _referenced_calendar_selectors(config: dict) -> list[tuple[str, str]]:
+    """Every distinct moment, and neighbour of it, this config reads the calendar at."""
+    return templating.find_calendar_selectors(*templating.config_templates(config))
+
+
+async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, referenced: set[str], calendar_selectors: list[tuple[str, str]] | None = None) -> dict[str, str]:
     """Resolve the template-variable namespace once for a whole run.
 
     `referenced` is every variable name the run might read — the message template, the
@@ -67,13 +70,17 @@ async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel,
         app, opsgenie_token, channel, config, config_name, user, context.get('text', ''), ts, permalink,
         include_opsgenie=bool(OPSGENIE_TEMPLATE_VARIABLES.intersection(referenced)),
         include_calendar=bool(CALENDAR_TEMPLATE_VARIABLES.intersection(referenced)),
+        calendar_selectors=calendar_selectors,
     )
 
 
 async def _render_template(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, template: str, variables: dict[str, str] | None = None) -> str:
     template = template or ''
     if variables is None:
-        variables = await _build_variables(app, opsgenie_token, channel, config, config_name, context, templating.find_template_variables(template))
+        variables = await _build_variables(
+            app, opsgenie_token, channel, config, config_name, context,
+            templating.find_template_variables(template),
+            templating.find_calendar_selectors(template))
     return templating.render_reply_message_template(template, variables, config)
 
 
@@ -144,7 +151,7 @@ async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: s
     target = (target if target is not None else config.get('action_target') or '').strip()
     if targets.names_people(target):
         # Mentions or addresses, so the target names the people directly — which is how
-        # `{{calendar_current_other_attendee_users}}` arrives once it is rendered.
+        # `{{calendar_other_attendee_users}}` arrives once it is rendered.
         members = [user.id for user in await targets.resolve_user_targets(app, target)]
         if not members:
             log_error(f"Action group_dm: cannot resolve any user from '{target}'.")
@@ -217,7 +224,9 @@ async def evaluate_conditions(app: AsyncApp, opsgenie_token: str, channel: Chann
     if not (config or {}).get('conditions'):
         return True, "", variables
     if variables is None:
-        variables = await _build_variables(app, opsgenie_token, channel, config, config_name, context, _referenced_variables(config))
+        variables = await _build_variables(
+            app, opsgenie_token, channel, config, config_name, context,
+            _referenced_variables(config), _referenced_calendar_selectors(config))
     met, reason = conditionutil.evaluate_conditions(config, variables)
     return met, reason, variables
 
@@ -266,7 +275,7 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
         return None, condition_reason
 
     text = await render_action_text(app, opsgenie_token, channel, config, config_name, context, variables)
-    # A target may name people through variables — `{{calendar_current_other_attendee_users}}`
+    # A target may name people through variables — `{{calendar_other_attendee_users}}`
     # for whoever is on call — so it is rendered with the same namespace as the message.
     target = config.get('action_target') or ''
     if target_is_templated(target):

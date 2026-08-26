@@ -44,7 +44,7 @@ async def resolve_user_targets(app: AsyncApp, target: str) -> list[User]:
     """Every user a target names, in order and without duplicates.
 
     A target can name several people once it comes from a variable —
-    `{{calendar_current_other_attendee_users}}` renders as `<@U1>, <@U2>`. Each entry may be a
+    `{{calendar_other_attendee_users}}` renders as `<@U1>, <@U2>`. Each entry may be a
     mention, a raw id, an address, or a name; entries that resolve to nobody are dropped, so a
     calendar listing someone without a Slack account still works.
     """

@@ -13,17 +13,21 @@ from hutbot.calendarfeed import (
     describe_calendar_feed,
     describe_calendar_url,
     fetch_calendar,
-    find_current_and_next_events,
     get_calendar_placeholder_variables,
+    index_calendar,
     load_builtin_calendars,
     lookup_builtin_calendar,
     normalize_builtin_calendar_name,
     parse_builtin_calendars,
     resolve_calendar_feed,
+    select_event,
     validate_calendar_url,
 )
 from hutbot.constants import (
     CALENDAR_DATETIME_TEMPLATE_VARIABLES,
+    CALENDAR_TEMPLATE_VARIABLES,
+    event_slice_name,
+    event_slice_prefix,
     UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
     UNKNOWN_CALENDAR_PLACEHOLDER,
 )
@@ -269,13 +273,13 @@ def test_organizer_absent(cal):
 
 def test_current_prefers_the_specific_timed_event(cal):
     """Three events cover 08:00Z. "Earliest start" would pick the wrong one."""
-    current, _ = find_current_and_next_events(cal, CONFIG, NOW)
+    current, _ = _current_and_next(cal, CONFIG, NOW)
     assert current.summary == "Composerbereitstellung"
     assert current.summary not in ("Betriebsausflug", "Mehrtagskonferenz")
 
 
 def test_current_skips_cancelled_but_keeps_transparent(cal):
-    current, _ = find_current_and_next_events(cal, CONFIG, NOW)
+    current, _ = _current_and_next(cal, CONFIG, NOW)
     assert current.summary != "Abgesagt"
     # A transparent event is still an event; it just does not occupy the owner.
     assert hutbot.calendarfeed._is_usable(_event_named(cal, "Frei verfuegbar")) is True
@@ -285,7 +289,7 @@ def test_current_skips_cancelled_but_keeps_transparent(cal):
 
 def test_next_skips_the_running_event(cal):
     """`after()` yields ongoing events first, so "next" must filter on the start."""
-    current, next_event = find_current_and_next_events(cal, CONFIG, NOW)
+    current, next_event = _current_and_next(cal, CONFIG, NOW)
     assert next_event.summary != current.summary
     assert next_event.summary == "m3 daily"
     assert next_event.start > current.start
@@ -293,38 +297,38 @@ def test_next_skips_the_running_event(cal):
 
 def test_exdate_occurrence_is_excluded(cal):
     # The 20th is excluded, so the series next appears on the 21st.
-    _, next_event = find_current_and_next_events(cal, CONFIG, datetime.datetime(2026, 8, 19, 12, 0, tzinfo=datetime.timezone.utc))
+    _, next_event = _current_and_next(cal, CONFIG, datetime.datetime(2026, 8, 19, 12, 0, tzinfo=datetime.timezone.utc))
     assert next_event.summary != "m3 daily" or not next_event.start.startswith("2026-08-20")
 
-    _, from_the_20th = find_current_and_next_events(cal, CONFIG, datetime.datetime(2026, 8, 20, 6, 0, tzinfo=datetime.timezone.utc))
+    _, from_the_20th = _current_and_next(cal, CONFIG, datetime.datetime(2026, 8, 20, 6, 0, tzinfo=datetime.timezone.utc))
     assert not (from_the_20th.summary == "m3 daily" and from_the_20th.start.startswith("2026-08-20"))
 
 
 def test_rrule_series_survives_a_dst_change(cal):
     """The Windows VTIMEZONE resolves, so a 11:00 local slot shifts with the offset."""
-    _, summer = find_current_and_next_events(cal, CONFIG, datetime.datetime(2026, 8, 19, 8, 30, tzinfo=datetime.timezone.utc))
+    _, summer = _current_and_next(cal, CONFIG, datetime.datetime(2026, 8, 19, 8, 30, tzinfo=datetime.timezone.utc))
     assert summer.summary == "m3 daily"
     assert summer.start.endswith("+02:00")
 
-    _, winter = find_current_and_next_events(cal, CONFIG, datetime.datetime(2026, 12, 8, 6, 0, tzinfo=datetime.timezone.utc))
+    _, winter = _current_and_next(cal, CONFIG, datetime.datetime(2026, 12, 8, 6, 0, tzinfo=datetime.timezone.utc))
     assert winter.summary == "m3 daily"
     assert winter.start.endswith("+01:00")
 
 
 def test_empty_calendar_yields_nothing():
     calendar = icalendar.Calendar.from_ical("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR")
-    assert find_current_and_next_events(calendar, CONFIG, NOW) == (None, None)
+    assert _current_and_next(calendar, CONFIG, NOW) == (None, None)
 
 
 def test_all_past_calendar_yields_nothing(cal):
-    current, next_event = find_current_and_next_events(cal, CONFIG, datetime.datetime(2027, 6, 1, 8, 0, tzinfo=datetime.timezone.utc))
+    current, next_event = _current_and_next(cal, CONFIG, datetime.datetime(2027, 6, 1, 8, 0, tzinfo=datetime.timezone.utc))
     # The weekday series runs forever, so only a feed without one goes fully quiet.
     assert current is None or current.summary == "m3 daily"
     assert next_event is None or next_event.summary == "m3 daily"
 
 
 def test_naive_now_is_treated_as_utc(cal):
-    current, _ = find_current_and_next_events(cal, CONFIG, datetime.datetime(2026, 8, 19, 8, 0))
+    current, _ = _current_and_next(cal, CONFIG, datetime.datetime(2026, 8, 19, 8, 0))
     assert current.summary == "Composerbereitstellung"
 
 
@@ -382,7 +386,7 @@ def test_placeholders_cover_exactly_the_declared_variables():
 def test_placeholders_without_a_feed_say_so():
     variables = get_calendar_placeholder_variables({})
     assert variables["calendar_name"] == "<no-calendar-set>"
-    assert variables["calendar_current_summary"] == "<no-event>"
+    assert variables["calendar_summary"] == "<no-event>"
 
 
 def test_placeholder_calendar_name_is_redacted():
@@ -392,46 +396,48 @@ def test_placeholder_calendar_name_is_redacted():
 @pytest.mark.asyncio
 async def test_template_variables_from_a_fetched_feed(cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))):
-        variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, NOW)
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(
+            None, CONFIG, NOW, selectors=[("", "next")])
     assert variables["calendar_name"] == "Team Kalender"
-    assert variables["calendar_current_summary"] == "Composerbereitstellung"
-    assert variables["calendar_current_location"] == "Mario Kart"
-    assert variables["calendar_current_organizer"] == "Michel Hopfner"
-    assert variables["calendar_next_summary"] == "m3 daily"
+    assert variables["calendar_summary"] == "Composerbereitstellung"
+    assert variables["calendar_location"] == "Mario Kart"
+    assert variables["calendar_organizer"] == "Michel Hopfner"
+    # The next event lives in its own slice, keyed by the selector that asked for it.
+    assert variables[f"__{event_slice_name('calendar_summary', '', 'next')}"] == "m3 daily"
     # Rendered in the config timezone: 07:35Z is 09:35 in Berlin.
-    assert variables["calendar_current_start_time"] == "09:35"
-    assert variables["__calendar_current_start_datetime_raw"].startswith("2026-08-19T07:35")
+    assert variables["calendar_start_time"] == "09:35"
+    assert variables["__calendar_start_datetime_raw"].startswith("2026-08-19T07:35")
 
 
 @pytest.mark.asyncio
 async def test_template_variables_without_a_url_are_all_placeholders():
     variables = await hutbot.calendarfeed.get_calendar_template_variables(None, {})
-    assert variables["calendar_current_summary"] == "<no-event>"
+    assert variables["calendar_summary"] == "<no-event>"
 
 
 @pytest.mark.asyncio
 async def test_calendar_datetime_variables_accept_format_arguments(live_cal):
     _seed_user_caches()
-    config = {**CONFIG, "reply_message": "{{calendar_current_start_datetime(fmt='02.01.2006 15:04', tz='Europe/Berlin', lc=de-DE)}}"}
+    config = {**CONFIG, "reply_message": "{{calendar_start_datetime(fmt='02.01.2006 15:04', tz='Europe/Berlin', lc=de-DE)}}"}
     app = AsyncMock()
     channel = _mk_channel({"cal": config})
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))), \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")):
         text = await hutbot.actions.render_action_text(app, "token", channel, config, "cal", {"channel_id": "C12345"})
-    current, _ = find_current_and_next_events(live_cal, config)
+    current, _ = _current_and_next(live_cal, config)
     expected = datetime.datetime.fromisoformat(current.start).astimezone(ZoneInfo("Europe/Berlin"))
     assert text == expected.strftime("%d.%m.%Y %H:%M")
 
 
 def test_calendar_scalar_variables_reject_arguments():
-    error = hutbot.templating.validate_template_expressions("{{calendar_current_summary(fmt='x')}}")
-    assert "does not support arguments" in error
-    assert hutbot.templating.validate_template_expressions("{{calendar_current_start_time(tz='UTC')}}") == ""
+    error = hutbot.templating.validate_template_expressions("{{calendar_summary(fmt='x')}}")
+    assert "takes only `at` and `offset`" in error
+    assert hutbot.templating.validate_template_expressions("{{calendar_start_time(tz='UTC')}}") == ""
 
 
 def test_calendar_variables_are_supported_template_variables():
     assert CALENDAR_TEMPLATE_VARIABLES <= SUPPORTED_TEMPLATE_VARIABLES
-    assert hutbot.templating.validate_template_expressions("{{calendar_next_end_date}}") == ""
+    assert hutbot.templating.validate_template_expressions("{{calendar_end_date(offset=next)}}") == ""
 
 
 # ----- URL validation -----
@@ -676,7 +682,7 @@ async def test_fetch_calendar_without_a_url_does_nothing():
 @pytest.mark.asyncio
 async def test_resolve_calendar_context_without_a_feed():
     context = await hutbot.calendarfeed.resolve_calendar_context({})
-    assert context.name == "" and context.current is None and context.next is None
+    assert context.name == "" and context.event is None
 
 
 # ----- commands -----
@@ -720,16 +726,22 @@ async def test_clear_calendar():
     assert channel.configs["default"]["calendar_url"] == ""
 
 
+def _patch_show_calendar(name, events):
+    """Fake what `show calendar` resolves: a feed name and its (before, now, next) events."""
+    return patch('hutbot.calendarfeed.resolve_calendar_events',
+                 new=AsyncMock(return_value=(name, events)))
+
+
 @pytest.mark.asyncio
-async def test_show_calendar_prints_current_and_next(cal):
-    """The live command resolves against the real clock, so pin the context, not the time."""
+async def test_show_calendar_prints_the_neighbouring_events(cal):
+    """The live command resolves against the real clock, so pin the events, not the time."""
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG}
     channel = _mk_channel({"default": config})
     user = User("U1", "dave", "Dave", "T")
-    current, next_event = find_current_and_next_events(cal, config, NOW)
-    context = hutbot.models.CalendarContext("Team Kalender", current, next_event)
-    with patch('hutbot.calendarfeed.resolve_calendar_context', new=AsyncMock(return_value=context)), \
+    previous_event = _event_at(cal, config, NOW, -1)
+    current, next_event = _current_and_next(cal, config, NOW)
+    with _patch_show_calendar("Team Kalender", [previous_event, current, next_event]), \
          patch('hutbot.messaging.send_message') as send:
         await process_command(app, "show calendar", channel, user)
     text = send.call_args.args[3]
@@ -745,8 +757,7 @@ async def test_show_calendar_reports_an_empty_calendar():
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG}
     channel = _mk_channel({"default": config})
     user = User("U1", "dave", "Dave", "T")
-    context = hutbot.models.CalendarContext("Team Kalender", None, None)
-    with patch('hutbot.calendarfeed.resolve_calendar_context', new=AsyncMock(return_value=context)), \
+    with _patch_show_calendar("Team Kalender", [None, None, None]), \
          patch('hutbot.messaging.send_message') as send:
         await process_command(app, "show calendar", channel, user)
     assert "No current or upcoming events" in send.call_args.args[3]
@@ -799,7 +810,7 @@ async def test_calendar_is_not_fetched_when_no_variable_references_it():
 async def test_calendar_is_fetched_once_when_a_variable_references_it(live_cal):
     _seed_user_caches()
     app = AsyncMock()
-    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "Now: {{calendar_current_summary}}"}
+    config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "Now: {{calendar_summary}}"}
     channel = _mk_channel({"cal": config})
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))) as fetch, \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")):
@@ -814,7 +825,7 @@ async def test_calendar_condition_gates_a_rule(live_cal):
     _seed_user_caches()
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "standup time"}
-    config["conditions"] = [{"variable": "calendar_current_summary", "operator": "contains",
+    config["conditions"] = [{"variable": "calendar_summary", "operator": "contains",
                              "value": "composer", "case_sensitive": False}]
     channel = _mk_channel({"gated": config})
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))), \
@@ -831,7 +842,7 @@ async def test_calendar_condition_blocks_when_no_event_matches(live_cal):
     _seed_user_caches()
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "standup time"}
-    config["conditions"] = [{"variable": "calendar_current_summary", "operator": "contains",
+    config["conditions"] = [{"variable": "calendar_summary", "operator": "contains",
                              "value": "no such meeting", "case_sensitive": False}]
     channel = _mk_channel({"gated": config})
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))), \
@@ -872,7 +883,7 @@ def oncall_cal():
 
 
 def _oncall_event(calendar):
-    current, _ = find_current_and_next_events(calendar, CONFIG, ONCALL_NOW)
+    current, _ = _current_and_next(calendar, CONFIG, ONCALL_NOW)
     return current
 
 
@@ -936,12 +947,12 @@ def test_an_attendee_with_an_x500_address_keeps_its_name_but_has_no_email():
 async def test_attendee_variables_render_as_a_comma_separated_list(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
-    assert variables["calendar_current_attendees"] == "Notfallhotline, Nico Engelbrecht"
-    assert variables["calendar_current_attendee_emails"] == "N@mittwald.de, N.Engelbrecht@mittwald.de"
-    assert variables["calendar_current_attendee_count"] == "2"
-    assert variables["calendar_current_organizer_email"] == ""
+    assert variables["calendar_attendees"] == "Notfallhotline, Nico Engelbrecht"
+    assert variables["calendar_attendee_emails"] == "N@mittwald.de, N.Engelbrecht@mittwald.de"
+    assert variables["calendar_attendee_count"] == "2"
+    assert variables["calendar_organizer_email"] == ""
     # The items a condition matches against ride along beside the joined form.
-    assert variables["__calendar_current_attendee_emails_items"] == [
+    assert variables["__calendar_attendee_emails_items"] == [
         "N@mittwald.de", "N.Engelbrecht@mittwald.de"]
 
 
@@ -951,7 +962,7 @@ async def test_conditions_on_attendee_emails(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
 
-    def judge(operator, value, variable="calendar_current_attendee_emails", case_sensitive=False):
+    def judge(operator, value, variable="calendar_attendee_emails", case_sensitive=False):
         condition = {"variable": variable, "operator": operator, "value": value,
                      "case_sensitive": case_sensitive}
         return hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0]
@@ -974,7 +985,7 @@ async def test_conditions_on_attendee_emails(oncall_cal):
     assert judge("not_empty", "") is True
     assert judge("empty", "") is False
     # Names work the same way.
-    assert judge("contains", "Nico", variable="calendar_current_attendees") is True
+    assert judge("contains", "Nico", variable="calendar_attendees") is True
     # And the case flag still applies per entry.
     assert judge("equals", "n.engelbrecht@mittwald.de", case_sensitive=True) is False
     assert judge("equals", "N.Engelbrecht@mittwald.de", case_sensitive=True) is True
@@ -983,7 +994,7 @@ async def test_conditions_on_attendee_emails(oncall_cal):
 def test_an_empty_list_is_empty_and_matches_nothing():
     variables = get_calendar_placeholder_variables({})
     def judge(operator, value=""):
-        condition = {"variable": "calendar_current_attendee_emails", "operator": operator,
+        condition = {"variable": "calendar_attendee_emails", "operator": operator,
                      "value": value, "case_sensitive": False}
         return hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0]
     assert judge("empty") is True
@@ -994,10 +1005,10 @@ def test_an_empty_list_is_empty_and_matches_nothing():
 
 
 def test_a_bad_regex_on_a_list_still_fails_closed():
-    variables = {"calendar_current_attendee_emails": "a@b.de",
-                 "__calendar_current_attendee_emails_items": ["a@b.de"]}
+    variables = {"calendar_attendee_emails": "a@b.de",
+                 "__calendar_attendee_emails_items": ["a@b.de"]}
     for operator in ("regex", "not_regex"):
-        condition = {"variable": "calendar_current_attendee_emails", "operator": operator,
+        condition = {"variable": "calendar_attendee_emails", "operator": operator,
                      "value": "[unclosed", "case_sensitive": False}
         met, reason = hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)
         assert met is False and "invalid pattern" in reason
@@ -1005,8 +1016,8 @@ def test_a_bad_regex_on_a_list_still_fails_closed():
 
 def test_a_list_variable_falls_back_to_splitting_the_joined_form():
     """A hand-built variable dict without the items still behaves sensibly."""
-    variables = {"calendar_current_attendee_emails": "a@b.de, c@d.de"}
-    condition = {"variable": "calendar_current_attendee_emails", "operator": "equals",
+    variables = {"calendar_attendee_emails": "a@b.de, c@d.de"}
+    condition = {"variable": "calendar_attendee_emails", "operator": "equals",
                  "value": "c@d.de", "case_sensitive": False}
     assert hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0] is True
 
@@ -1016,9 +1027,8 @@ async def test_show_calendar_lists_the_attendees(oncall_cal):
     app = AsyncMock()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG}
     channel = _mk_channel({"default": config})
-    current, next_event = find_current_and_next_events(oncall_cal, config, ONCALL_NOW)
-    context = hutbot.models.CalendarContext("N@mittwald.de", current, next_event)
-    with patch('hutbot.calendarfeed.resolve_calendar_context', new=AsyncMock(return_value=context)), \
+    current, next_event = _current_and_next(oncall_cal, config, ONCALL_NOW)
+    with _patch_show_calendar("N@mittwald.de", [None, current, next_event]), \
          patch('hutbot.messaging.send_message') as send:
         await process_command(app, "show calendar", channel, User("U1", "dave", "Dave", "T"))
     text = send.call_args.args[3]
@@ -1060,17 +1070,17 @@ def test_an_organizer_who_is_not_an_attendee_changes_nothing():
 async def test_other_attendee_variables_and_conditions(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
-    assert variables["calendar_current_other_attendees"] == "Nico Engelbrecht"
-    assert variables["calendar_current_other_attendee_emails"] == "N.Engelbrecht@mittwald.de"
-    assert variables["__calendar_current_other_attendee_emails_items"] == ["N.Engelbrecht@mittwald.de"]
+    assert variables["calendar_other_attendees"] == "Nico Engelbrecht"
+    assert variables["calendar_other_attendee_emails"] == "N.Engelbrecht@mittwald.de"
+    assert variables["__calendar_other_attendee_emails_items"] == ["N.Engelbrecht@mittwald.de"]
 
-    def judge(operator, value, variable="calendar_current_other_attendee_emails"):
+    def judge(operator, value, variable="calendar_other_attendee_emails"):
         condition = {"variable": variable, "operator": operator, "value": value, "case_sensitive": False}
         return hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0]
 
     # The shared mailbox is an attendee, but not one of the "other" attendees.
     assert judge("equals", "n@mittwald.de") is False
-    assert judge("equals", "n@mittwald.de", variable="calendar_current_attendee_emails") is True
+    assert judge("equals", "n@mittwald.de", variable="calendar_attendee_emails") is True
     assert judge("equals", "n.engelbrecht@mittwald.de") is True
     assert judge("not_empty", "") is True
 
@@ -1085,15 +1095,15 @@ async def test_nth_picks_one_attendee(oncall_cal):
     def render(template):
         return hutbot.templating.render_reply_message_template(template, variables, CONFIG)
 
-    assert render("{{calendar_current_attendees(nth=1)}}") == "Notfallhotline"
-    assert render("{{calendar_current_attendees(nth=2)}}") == "Nico Engelbrecht"
-    assert render("{{calendar_current_attendee_emails(nth=2)}}") == "N.Engelbrecht@mittwald.de"
+    assert render("{{calendar_attendees(nth=1)}}") == "Notfallhotline"
+    assert render("{{calendar_attendees(nth=2)}}") == "Nico Engelbrecht"
+    assert render("{{calendar_attendee_emails(nth=2)}}") == "N.Engelbrecht@mittwald.de"
     # `n` is the short spelling.
-    assert render("{{calendar_current_attendees(n=2)}}") == "Nico Engelbrecht"
+    assert render("{{calendar_attendees(n=2)}}") == "Nico Engelbrecht"
     # Without it, the whole list still renders comma-separated.
-    assert render("{{calendar_current_attendees}}") == "Notfallhotline, Nico Engelbrecht"
+    assert render("{{calendar_attendees}}") == "Notfallhotline, Nico Engelbrecht"
     # The `other_*` lists are indexed the same way.
-    assert render("{{calendar_current_other_attendees(nth=1)}}") == "Nico Engelbrecht"
+    assert render("{{calendar_other_attendees(nth=1)}}") == "Nico Engelbrecht"
 
 
 @pytest.mark.asyncio
@@ -1106,44 +1116,44 @@ async def test_nth_beyond_the_end_renders_empty(oncall_cal):
         return hutbot.templating.render_reply_message_template(template, variables, CONFIG)
 
     # Two attendees, so the third is empty rather than an error or a placeholder.
-    assert render("[{{calendar_current_attendees(nth=3)}}]") == "[]"
+    assert render("[{{calendar_attendees(nth=3)}}]") == "[]"
     # Only one non-organizer attendee.
-    assert render("[{{calendar_current_other_attendees(nth=2)}}]") == "[]"
+    assert render("[{{calendar_other_attendees(nth=2)}}]") == "[]"
     # No next event at all, so every entry is out of range.
-    assert render("[{{calendar_next_attendees(nth=1)}}]") == "[]"
+    assert render("[{{calendar_attendees(offset=next, nth=1)}}]") == "[]"
 
 
 def test_nth_on_an_empty_list_renders_empty():
     variables = get_calendar_placeholder_variables({})
     assert hutbot.templating.render_reply_message_template(
-        "[{{calendar_current_attendees(nth=1)}}]", variables, {}) == "[]"
+        "[{{calendar_attendees(nth=1)}}]", variables, {}) == "[]"
 
 
 @pytest.mark.asyncio
 async def test_nth_reads_a_real_on_call_message(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
-    template = ("On call: {{calendar_current_other_attendees(nth=1)}} "
-                "<{{calendar_current_other_attendee_emails(nth=1)}}> until {{calendar_current_end_time}}")
+    template = ("On call: {{calendar_other_attendees(nth=1)}} "
+                "<{{calendar_other_attendee_emails(nth=1)}}> until {{calendar_end_time}}")
     assert hutbot.templating.render_reply_message_template(template, variables, CONFIG) == (
         "On call: Nico Engelbrecht <N.Engelbrecht@mittwald.de> until 08:00")
 
 
 @pytest.mark.parametrize("template,expected", [
-    ("{{calendar_current_attendees(nth=1)}}", ""),
-    ("{{calendar_current_attendees(n=12)}}", ""),
-    ("{{calendar_current_attendees(nth=0)}}", "counts from 1"),
-    ("{{calendar_current_attendees(nth=-1)}}", "counts from 1"),
-    ("{{calendar_current_attendees(nth=abc)}}", "must be a whole number"),
+    ("{{calendar_attendees(nth=1)}}", ""),
+    ("{{calendar_attendees(n=12)}}", ""),
+    ("{{calendar_attendees(nth=0)}}", "counts from 1"),
+    ("{{calendar_attendees(nth=-1)}}", "counts from 1"),
+    ("{{calendar_attendees(nth=abc)}}", "must be a whole number"),
     # A list variable takes nothing else.
-    ("{{calendar_current_attendees(fmt='x')}}", "takes only `nth`"),
-    ("{{calendar_current_attendees(tz='UTC')}}", "takes only `nth`"),
+    ("{{calendar_attendees(fmt='x')}}", "takes only `nth`"),
+    ("{{calendar_attendees(tz='UTC')}}", "takes only `nth`"),
     # And `nth` is meaningless on anything that is not a list.
     ("{{message(nth=1)}}", "is not a list"),
-    ("{{calendar_current_summary(nth=1)}}", "is not a list"),
-    ("{{calendar_current_start_time(nth=1)}}", "is not a list"),
+    ("{{calendar_summary(nth=1)}}", "is not a list"),
+    ("{{calendar_start_time(nth=1)}}", "is not a list"),
     # The date/time arguments still work where they belong.
-    ("{{calendar_current_start_time(tz='UTC')}}", ""),
+    ("{{calendar_start_time(tz='UTC')}}", ""),
 ])
 def test_nth_validation(template, expected):
     error = hutbot.templating.validate_template_expressions(template)
@@ -1160,9 +1170,9 @@ async def test_set_message_accepts_and_rejects_nth():
     user = User("U1", "dave", "Dave", "T")
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.messaging.send_message') as send:
-        await process_command(app, "set message On call: {{calendar_current_other_attendees(nth=1)}}", channel, user)
-        assert channel.configs["default"]["reply_message"] == "On call: {{calendar_current_other_attendees(nth=1)}}"
-        await process_command(app, "set message Nope: {{calendar_current_attendees(nth=0)}}", channel, user)
+        await process_command(app, "set message On call: {{calendar_other_attendees(nth=1)}}", channel, user)
+        assert channel.configs["default"]["reply_message"] == "On call: {{calendar_other_attendees(nth=1)}}"
+        await process_command(app, "set message Nope: {{calendar_attendees(nth=0)}}", channel, user)
     assert "counts from 1" in send.call_args.args[3]
 
 
@@ -1213,13 +1223,13 @@ async def test_attendee_addresses_are_mapped_to_slack_users(oncall_cal):
          patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(AsyncMock(), CONFIG, ONCALL_NOW)
     # The joined form a message renders leaves out the mailbox that maps to nobody...
-    assert variables["calendar_current_attendee_users"] == "<@U777>"
-    assert variables["calendar_current_other_attendee_users"] == "<@U777>"
+    assert variables["calendar_attendee_users"] == "<@U777>"
+    assert variables["calendar_other_attendee_users"] == "<@U777>"
     # ...while the entries keep its position, so `nth` lines up with the other lists.
-    assert variables["__calendar_current_attendee_users_items"] == ["", "<@U777>"]
-    assert variables["__calendar_current_attendees_items"] == ["Notfallhotline", "Nico Engelbrecht"]
+    assert variables["__calendar_attendee_users_items"] == ["", "<@U777>"]
+    assert variables["__calendar_attendees_items"] == ["Notfallhotline", "Nico Engelbrecht"]
     # The organizer maps to nobody, so it keeps the placeholder rather than inventing a user.
-    assert variables["calendar_current_organizer_user"] == "<no-user-set>"
+    assert variables["calendar_organizer_user"] == "<no-user-set>"
 
 
 @pytest.mark.asyncio
@@ -1233,15 +1243,15 @@ async def test_an_unmapped_address_keeps_its_position(oncall_cal):
          patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(AsyncMock(), CONFIG, ONCALL_NOW)
     for name in ("attendees", "attendee_emails", "attendee_users"):
-        assert len(variables[f"__calendar_current_{name}_items"]) == 2, name
-    assert variables["__calendar_current_attendee_users_items"] == ["", "<@U777>"]
+        assert len(variables[f"__calendar_{name}_items"]) == 2, name
+    assert variables["__calendar_attendee_users_items"] == ["", "<@U777>"]
     # Nico is entry 2 of every list.
     render = lambda t: hutbot.templating.render_reply_message_template(t, variables, CONFIG)
-    assert render("{{calendar_current_attendees(nth=2)}}") == "Nico Engelbrecht"
-    assert render("{{calendar_current_attendee_emails(nth=2)}}") == "N.Engelbrecht@mittwald.de"
-    assert render("{{calendar_current_attendee_users(nth=2)}}") == "<@U777>"
+    assert render("{{calendar_attendees(nth=2)}}") == "Nico Engelbrecht"
+    assert render("{{calendar_attendee_emails(nth=2)}}") == "N.Engelbrecht@mittwald.de"
+    assert render("{{calendar_attendee_users(nth=2)}}") == "<@U777>"
     # And a condition still ignores the blank.
-    condition = {"variable": "calendar_current_attendee_users", "operator": "not_empty",
+    condition = {"variable": "calendar_attendee_users", "operator": "not_empty",
                  "value": "", "case_sensitive": False}
     assert hutbot.conditionutil.evaluate_conditions({"conditions": [condition]}, variables)[0] is True
 
@@ -1250,8 +1260,8 @@ async def test_an_unmapped_address_keeps_its_position(oncall_cal):
 async def test_no_app_means_no_mapping_attempted(oncall_cal):
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(oncall_cal, "N@mittwald.de"))):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(None, CONFIG, ONCALL_NOW)
-    assert variables["calendar_current_attendee_users"] == ""
-    assert variables["calendar_current_organizer_user"] == "<no-user-set>"
+    assert variables["calendar_attendee_users"] == ""
+    assert variables["calendar_organizer_user"] == "<no-user-set>"
 
 
 @pytest.mark.asyncio
@@ -1260,7 +1270,7 @@ async def test_a_mapped_user_variable_mentions_the_person(oncall_cal):
          patch('hutbot.slackcache.get_user_by_email', new=_fake_by_email):
         variables = await hutbot.calendarfeed.get_calendar_template_variables(AsyncMock(), CONFIG, ONCALL_NOW)
     rendered = hutbot.templating.render_reply_message_template(
-        "On call: {{calendar_current_other_attendee_users(nth=1)}}", variables, CONFIG)
+        "On call: {{calendar_other_attendee_users(nth=1)}}", variables, CONFIG)
     assert rendered == "On call: <@U777>"
 
 
@@ -1287,11 +1297,11 @@ async def _run_with_target(action, target, calendar):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action,target", [
-    ("dm_user", "{{calendar_current_other_attendee_users(nth=1)}}"),
-    ("dm_user", "{{calendar_current_other_attendee_emails(nth=1)}}"),
-    ("group_dm", "{{calendar_current_attendee_users}}"),
-    ("group_dm", "{{calendar_current_attendee_emails}}"),
-    ("group_dm", "{{calendar_current_other_attendee_emails}}"),
+    ("dm_user", "{{calendar_other_attendee_users(nth=1)}}"),
+    ("dm_user", "{{calendar_other_attendee_emails(nth=1)}}"),
+    ("group_dm", "{{calendar_attendee_users}}"),
+    ("group_dm", "{{calendar_attendee_emails}}"),
+    ("group_dm", "{{calendar_other_attendee_emails}}"),
 ])
 async def test_a_variable_target_reaches_the_person_on_call(action, target, live_oncall_cal):
     posted, opened = await _run_with_target(action, target, live_oncall_cal)
@@ -1302,14 +1312,14 @@ async def test_a_variable_target_reaches_the_person_on_call(action, target, live
 @pytest.mark.asyncio
 async def test_a_variable_target_that_maps_to_nobody_sends_nothing(live_oncall_cal):
     """The organizer has no Slack account, so its placeholder must not be looked up."""
-    posted, opened = await _run_with_target("dm_user", "{{calendar_current_organizer_user}}", live_oncall_cal)
+    posted, opened = await _run_with_target("dm_user", "{{calendar_organizer_user}}", live_oncall_cal)
     assert posted is False and opened is None
 
 
 @pytest.mark.asyncio
 async def test_a_variable_target_with_no_event_sends_nothing(live_oncall_cal):
     posted, opened = await _run_with_target(
-        "dm_user", "{{calendar_next_other_attendee_users(nth=1)}}", live_oncall_cal)
+        "dm_user", "{{calendar_other_attendee_users(offset=next, nth=1)}}", live_oncall_cal)
     assert posted is False and opened is None
 
 
@@ -1334,12 +1344,12 @@ async def test_a_templated_target_is_accepted_and_validated():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.messaging.send_message') as send:
         # A channel target that is a template cannot be checked now, so it is taken on trust.
-        await process_command(app, "set action dm-user {{calendar_current_other_attendee_users(nth=1)}}", channel, user)
-        assert channel.configs["default"]["action_target"] == "{{calendar_current_other_attendee_users(nth=1)}}"
+        await process_command(app, "set action dm-user {{calendar_other_attendee_users(nth=1)}}", channel, user)
+        assert channel.configs["default"]["action_target"] == "{{calendar_other_attendee_users(nth=1)}}"
         # The template itself is still checked.
         await process_command(app, "set action dm-user {{nope_not_a_variable}}", channel, user)
     assert "Invalid *target*" in send.call_args.args[3]
-    assert channel.configs["default"]["action_target"] == "{{calendar_current_other_attendee_users(nth=1)}}"
+    assert channel.configs["default"]["action_target"] == "{{calendar_other_attendee_users(nth=1)}}"
 
 
 # ----- fetching safely -----
@@ -1446,7 +1456,185 @@ def test_validate_calendar_url_rejects_more_reserved_ranges(url):
         validate_calendar_url(url)
 
 
+# ----- `at` and `offset` -----
+
+# The sample feed on 2026-08-19, in UTC: Composerbereitstellung 07:35-08:30, m3 daily
+# 09:00-09:30, Mit Dauer 12:00-12:45, Ohne Ende at 14:00, plus the all-day Betriebsausflug and
+# the multi-day Mehrtagskonferenz.
+# The sample feed on 2026-08-19, in UTC: Composerbereitstellung 07:35-08:30, m3 daily
+# 09:00-09:30, Mit Dauer 12:00-12:45.
+INSIDE_COMPOSER = datetime.datetime(2026, 8, 19, 8, 0, tzinfo=datetime.timezone.utc)
+# Four timed events with a gap between the second and third, and nothing else to disambiguate:
+# SAMPLE_ICS deliberately carries all-day, transparent, tentative and multi-day entries, which
+# make it the wrong fixture for counting neighbours.
+OFFSET_ICS = "\r\n".join([
+    "BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-CALNAME:Rota",
+    *[line
+      for uid, start, end in (("first", "0600", "0700"), ("second", "0900", "1000"),
+                              ("third", "1200", "1300"), ("fourth", "1500", "1600"))
+      for line in ("BEGIN:VEVENT", f"UID:{uid}", f"SUMMARY:{uid}",
+                   f"DTSTART:20260819T{start}00Z", f"DTEND:20260819T{end}00Z", "END:VEVENT")],
+    "END:VCALENDAR", "",
+])
+
+
+@pytest.fixture
+def offset_cal():
+    return icalendar.Calendar.from_ical(OFFSET_ICS)
+
+
+def _at(hour, minute=0):
+    return datetime.datetime(2026, 8, 19, hour, minute, tzinfo=datetime.timezone.utc)
+
+
+@pytest.mark.parametrize("offset,expected", [
+    (0, "second"), (1, "third"), (2, "fourth"), (-1, "first"),
+])
+def test_offset_counts_events_from_the_running_one(offset_cal, offset, expected):
+    """`-1`/`+1` are the neighbours of the event running at that moment."""
+    assert _event_at(offset_cal, CONFIG, _at(9, 30), offset).summary == expected
+
+
+@pytest.mark.parametrize("offset,expected", [
+    (0, None), (-1, "second"), (1, "third"), (-2, "first"), (2, "fourth"),
+])
+def test_in_a_gap_the_neighbours_are_the_events_either_side(offset_cal, offset, expected):
+    event = _event_at(offset_cal, CONFIG, _at(11, 0), offset)
+    assert (event.summary if event else None) == expected
+
+
+def test_an_offset_past_the_last_event_resolves_to_nothing(offset_cal):
+    assert _event_at(offset_cal, CONFIG, _at(9, 30), 20) is None
+    assert _event_at(offset_cal, CONFIG, _at(5, 0), -1) is None
+    assert _event_at(offset_cal, CONFIG, _at(5, 0), 1).summary == "first"
+
+
+def test_a_previous_event_beyond_the_lookback_window_is_not_found(offset_cal):
+    """The ICS library has no `before()`, so the search is bounded — and finds nothing past it."""
+    much_later = datetime.datetime(2026, 11, 1, 12, 0, tzinfo=datetime.timezone.utc)
+
+    with patch('hutbot.calendarfeed._CALENDAR_LOOKBACK_DAYS', 1):
+        assert _event_at(offset_cal, CONFIG, much_later, -1) is None
+    with patch('hutbot.calendarfeed._CALENDAR_LOOKBACK_DAYS', 120):
+        assert _event_at(offset_cal, CONFIG, much_later, -1).summary == "fourth"
+
+
+def test_one_occurrence_of_a_series_is_never_counted_twice(cal):
+    """`m3 daily` recurs; two backward steps must not land on the same occurrence."""
+    friday = datetime.datetime(2026, 8, 21, 10, 0, tzinfo=datetime.timezone.utc)
+    starts = [event.start for event in
+              (_event_at(cal, CONFIG, friday, -1), _event_at(cal, CONFIG, friday, -2))
+              if event is not None]
+
+    assert len(starts) == len(set(starts))
+
+
+@pytest.mark.asyncio
+async def test_a_selector_reads_the_calendar_at_another_moment(cal):
+    """The default keys describe now; a slice describes the moment it was asked about."""
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(
+            None, CONFIG, INSIDE_COMPOSER, selectors=[("2026-08-19T12:15:00Z", ""), ("", "prev")])
+
+    assert variables["calendar_summary"] == "Composerbereitstellung"
+    assert variables[f"__{event_slice_name('calendar_summary', '2026-08-19T12:15:00Z', '')}"] == "Mit Dauer"
+    # The moment each slice resolved to, so `test` can report it without a clock.
+    assert variables[f"__{event_slice_prefix('2026-08-19T12:15:00Z', '')}instant"].startswith("2026-08-19T14:15")
+
+
+@pytest.mark.asyncio
+async def test_a_selector_the_calendar_cannot_answer_keeps_its_placeholders(cal):
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(
+            None, CONFIG, INSIDE_COMPOSER, selectors=[("2027-06-01", "")])
+
+    stem = event_slice_name("calendar_summary", "2027-06-01", "")
+    assert variables[f"__{stem}"] == "<no-event>"
+    assert variables[f"__{event_slice_name('calendar_start_time', '2027-06-01', '')}"] == "<unknown>"
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_selector_is_ignored_rather_than_answered_about_now(cal):
+    """Only a hand-edited config gets here; it must not quietly describe the present."""
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(cal, "Team Kalender"))), \
+         patch('hutbot.calendarfeed.log_warning') as log_warning:
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(
+            None, CONFIG, INSIDE_COMPOSER, selectors=[("tomorrow", ""), ("", "soon")])
+
+    assert variables["calendar_summary"] == "Composerbereitstellung"
+    assert variables[f"__{event_slice_name('calendar_summary', 'tomorrow', '')}"] == "<no-event>"
+    assert log_warning.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_every_selector_shares_one_fetch_and_one_index(cal):
+    """Two fetches straddling the cache TTL could answer one message from two documents."""
+    indexings = []
+    real_index = hutbot.calendarfeed.index_calendar
+
+    def counting_index(calendar):
+        indexings.append(calendar)
+        return real_index(calendar)
+
+    calls = []
+    with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls), \
+         patch('hutbot.calendarfeed.index_calendar', counting_index):
+        await hutbot.calendarfeed.get_calendar_template_variables(
+            None, CONFIG, INSIDE_COMPOSER,
+            selectors=[("+1d", ""), ("", "next"), ("2026-08-19", "prev")])
+
+    assert len(calls) == 1
+    assert len(indexings) == 1
+
+
+@pytest.mark.asyncio
+async def test_two_spellings_of_one_moment_share_a_slice(cal):
+    """`at=" +1D "` and `at="+1d"` are one request, so they cost one selection."""
+    selectors = hutbot.templating.find_calendar_selectors(
+        '{{calendar_summary(at="+1d")}} {{calendar_location(at=" +1D ")}}')
+
+    assert selectors == [("+1d", "")]
+
+
+@pytest.mark.asyncio
+async def test_the_placeholders_of_a_slice_are_internal_only(cal):
+    """No new public key, ever: the public set is what `test` and the web UI enumerate."""
+    plain = get_calendar_placeholder_variables(CONFIG)
+    with_slices = get_calendar_placeholder_variables(CONFIG, [("+1d", "next")])
+
+    public = {key for key in with_slices if not key.startswith("__")}
+    assert public == {key for key in plain if not key.startswith("__")}
+    assert public == CALENDAR_TEMPLATE_VARIABLES
+    # The feed's name does not depend on a moment, so no slice carries one.
+    assert not any(key.endswith("calendar_name") for key in with_slices if key.startswith("__event"))
+
+
+def test_a_message_may_not_name_more_moments_than_the_cap():
+    template = " ".join(f'{{{{calendar_summary(at="+{hour}h")}}}}' for hour in range(1, 12))
+
+    error = hutbot.templating.validate_template_expressions(template)
+
+    assert "up to 8 different moments" in error and "names 11" in error
+
+
 # ----- built-in calendars -----
+
+def _current_and_next(calendar, config=None, now=None):
+    """The event running at `now` and the next one, over one shared index.
+
+    Most of these tests want both, and asking for `offset=0` and `offset=+1` is how that pair
+    is expressed now that one variable set covers every event.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    query = index_calendar(calendar)
+    return select_event(query, config, now, 0), select_event(query, config, now, 1)
+
+
+def _event_at(calendar, config=None, now=None, offset=0):
+    """One event, `offset` places from the one running at `now`."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return select_event(index_calendar(calendar), config, now, offset)
+
 
 def builtin_names(calendars):
     return [calendar.name for calendar in calendars]
@@ -1607,7 +1795,7 @@ async def test_a_builtin_is_fetched_from_its_resolved_url_and_shared_between_con
     assert calls == ["https://cal.example.com/SECRETTOKEN/rota.ics"]
     # The curated title wins over the feed's own `X-WR-CALNAME` ("Team Kalender").
     assert first.name == "Platform on-call rota"
-    assert first.current is not None
+    assert first.event is not None
 
 
 @pytest.mark.asyncio
@@ -1617,9 +1805,9 @@ async def test_a_missing_builtin_fetches_nothing():
         context = await hutbot.calendarfeed.resolve_calendar_context({"calendar_builtin": "rota"}, NOW)
         variables = await hutbot.calendarfeed.get_calendar_template_variables(None, {"calendar_builtin": "rota"}, NOW)
     assert calls == []
-    assert context.name == "" and context.current is None
+    assert context.name == "" and context.event is None
     assert variables["calendar_name"] == UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER
-    assert variables["calendar_current_summary"] == "<no-event>"
+    assert variables["calendar_summary"] == "<no-event>"
 
 
 def test_placeholder_variables_name_a_builtin_by_its_title():
@@ -1728,9 +1916,8 @@ async def test_show_calendar_labels_a_builtin_by_its_title():
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "calendar_url": "", "calendar_builtin": "rota"}
     channel = _mk_channel({"default": config})
     user = User("U1", "dave", "Dave", "T")
-    context = hutbot.models.CalendarContext("", None, None)
     with _patch_builtin_calendars(), \
-         patch('hutbot.calendarfeed.resolve_calendar_context', new=AsyncMock(return_value=context)), \
+         _patch_show_calendar("", [None, None, None]), \
          patch('hutbot.messaging.send_message') as send:
         await process_command(app, "show calendar", channel, user)
     text = send.call_args.args[3]

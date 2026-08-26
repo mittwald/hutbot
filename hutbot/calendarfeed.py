@@ -17,6 +17,7 @@ import os
 import re
 import time
 import urllib.parse
+from collections.abc import Sequence
 
 import aiohttp
 import icalendar
@@ -30,12 +31,15 @@ from . import slackcache
 from . import state
 from .constants import (
     CALENDAR_DATETIME_TEMPLATE_VARIABLES,
+    CALENDAR_EVENT_TEMPLATE_VARIABLES,
     CALENDAR_LIST_TEMPLATE_VARIABLES,
     UNKNOWN_USER_ONCALL_PLACEHOLDER,
     UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
     UNKNOWN_CALENDAR_PLACEHOLDER,
     UNKNOWN_PERIOD_PLACEHOLDER,
+    event_slice_prefix,
+    normalize_selector,
 )
 from .models import BuiltinCalendar, CalendarContext, CalendarEvent, CalendarFeed
 
@@ -52,6 +56,10 @@ _CALENDAR_LOOKAHEAD_EVENTS = 200
 _MAX_ICS_BYTES = 5 * 1024 * 1024
 _HTTP_TIMEOUT = 10
 _MAX_REDIRECTS = 3
+# How far back a negative `offset` searches. The ICS library has no `before()`, so the
+# previous event is found by scanning a window; env-tunable because a sparse calendar may
+# need a wider one. Read at import; tests patch the module attribute.
+_CALENDAR_LOOKBACK_DAYS = int(os.environ.get('HUTBOT_CALENDAR_LOOKBACK_DAYS', '90'))
 # Hosts the operator vouches for even though they resolve to an internal address — an
 # in-cluster feed bridge, say, which the address checks below cannot tell from a target an
 # attacker picked. Comma-separated host names, matched exactly and case-folded; https is
@@ -177,7 +185,7 @@ def _is_usable(event) -> bool:
     """False for events that are not happening.
 
     Only `CANCELLED` is dropped. `TENTATIVE` is kept — it is on the calendar, and
-    `{{calendar_current_status}}` lets a template say so. A missing STATUS is normal in
+    `{{calendar_status}}` lets a template say so. A missing STATUS is normal in
     Outlook feeds and means confirmed.
     """
     return _text(event, "STATUS").upper() != "CANCELLED"
@@ -250,51 +258,108 @@ def build_calendar_event(event, config: dict | None = None) -> CalendarEvent:
     )
 
 
-def find_current_and_next_events(calendar, config: dict | None = None, now: datetime.datetime | None = None) -> tuple[CalendarEvent | None, CalendarEvent | None]:
-    """The event covering `now` and the soonest one starting after it.
+def index_calendar(calendar):
+    """The recurrence index every selection over one calendar shares, or ``None``.
 
-    Takes `now` so callers (and tests) never depend on the wall clock, like
-    ``opsgenie.find_opsgenie_on_call_period``.
+    Built once per resolve rather than per selector: expanding the recurrences is the
+    expensive part, and a message asking about three moments must not pay for it three times.
     """
-    now = now or datetime.datetime.now(datetime.timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=datetime.timezone.utc)
-    timezone = datetimefmt.get_config_timezone(config)
+    try:
+        # Malformed RRULEs are common in real Outlook feeds; without skip_bad_series a
+        # single broken series would take the whole calendar down with it.
+        return recurring_ical_events.of(calendar, skip_bad_series=True)
+    except Exception as e:
+        log_error("Failed to index calendar events:", e)
+        return None
+
+
+def _covering_event(query, timezone, instant):
+    """The raw event covering `instant`, picked by `_current_rank` when several overlap."""
+    candidates = [event for event in query.at(instant.astimezone(timezone)) if _is_usable(event)]
+    candidates.sort(key=lambda event: _current_rank(event, timezone))
+    return candidates[0] if candidates else None
+
+
+def _distinct_by_occurrence(events, timezone):
+    """The events, with one entry per (UID, start) — an occurrence cannot count twice."""
+    seen = set()
+    for event in events:
+        key = (_text(event, "UID"), _aware(event.start, timezone).isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+        yield event
+
+
+def _event_after(query, timezone, instant, count: int):
+    """The `count`-th event starting strictly after `instant`."""
+    # `after()` deliberately yields events that are *ongoing* at the instant before future
+    # ones, so the start filter is what keeps this from echoing the covering event.
+    upcoming = (event for event in itertools.islice(query.after(instant.astimezone(timezone)),
+                                                    _CALENDAR_LOOKAHEAD_EVENTS)
+                if _aware(event.start, timezone) > instant and _is_usable(event))
+    for position, event in enumerate(_distinct_by_occurrence(upcoming, timezone), start=1):
+        if position == count:
+            return event
+    return None
+
+
+def _event_before(query, timezone, boundary, count: int):
+    """The `count`-th event starting before `boundary`, counting backwards.
+
+    The ICS library has no `before()`, so this searches a window: everything overlapping
+    ``[boundary - HUTBOT_CALENDAR_LOOKBACK_DAYS, boundary]``, newest start first. A gap wider
+    than the window therefore reports nothing, which reads the same as an empty calendar —
+    the price of not walking a feed's whole history on every render.
+    """
+    window_start = boundary - datetime.timedelta(days=_CALENDAR_LOOKBACK_DAYS)
+    earlier = [event for event in query.between(window_start.astimezone(timezone),
+                                                boundary.astimezone(timezone))
+               if _aware(event.start, timezone) < boundary and _is_usable(event)]
+    earlier.sort(key=lambda event: _aware(event.start, timezone), reverse=True)
+    for position, event in enumerate(_distinct_by_occurrence(earlier, timezone), start=1):
+        if position == count:
+            return event
+    return None
+
+
+def select_event(query, config: dict | None, instant: datetime.datetime, offset: int = 0) -> CalendarEvent | None:
+    """The event `offset` places from the one covering `instant`.
+
+    `0` is the event running then; `+n` counts forward over the events starting after that
+    moment, and `-n` backwards over the ones starting before it. The anchor for counting
+    backwards is the covering event's start when there is one, so `-1` and `+1` are the
+    neighbours either side of a running event — and in a gap they are still the events either
+    side of the moment.
+    """
+    if query is None:
+        return None
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=datetime.timezone.utc)
     # Ask in the config's timezone. The library compares a `DTSTART;VALUE=DATE` against the
     # date of the instant it is given, so querying in UTC would use the wrong calendar day
     # either side of midnight: at 01:00 on the 2nd in Tokyo a whole-day event on the 2nd is
     # still "tomorrow" in UTC, and in Los Angeles it turns current before local midnight.
-    local_now = now.astimezone(timezone)
+    timezone = datetimefmt.get_config_timezone(config)
 
     try:
-        # Malformed RRULEs are common in real Outlook feeds; without skip_bad_series a
-        # single broken series would take the whole calendar down with it.
-        query = recurring_ical_events.of(calendar, skip_bad_series=True)
+        covering = _covering_event(query, timezone, instant)
     except Exception as e:
-        log_error("Failed to index calendar events:", e)
-        return None, None
+        log_error("Failed to resolve the calendar event at the requested moment:", e)
+        return None
+    if offset == 0:
+        return build_calendar_event(covering, config) if covering is not None else None
 
-    current = None
     try:
-        candidates = [event for event in query.at(local_now) if _is_usable(event)]
-        candidates.sort(key=lambda event: _current_rank(event, timezone))
-        if candidates:
-            current = build_calendar_event(candidates[0], config)
+        if offset > 0:
+            found = _event_after(query, timezone, instant, offset)
+        else:
+            boundary = _aware(covering.start, timezone) if covering is not None else instant
+            found = _event_before(query, timezone, boundary, -offset)
     except Exception as e:
-        log_error("Failed to resolve the current calendar event:", e)
-
-    next_event = None
-    try:
-        # `after()` deliberately yields events that are *ongoing* at `now` before future
-        # ones, so the start filter is what keeps "next" from echoing "current".
-        for event in itertools.islice(query.after(local_now), _CALENDAR_LOOKAHEAD_EVENTS):
-            if _aware(event.start, timezone) > now and _is_usable(event):
-                next_event = build_calendar_event(event, config)
-                break
-    except Exception as e:
-        log_error("Failed to resolve the next calendar event:", e)
-
-    return current, next_event
+        log_error(f"Failed to resolve the calendar event at offset {offset:+d}:", e)
+        return None
+    return build_calendar_event(found, config) if found is not None else None
 
 
 # ----- URL validation and display -----
@@ -692,31 +757,59 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
     return calendar, name
 
 
-async def resolve_calendar_context(config: dict, now: datetime.datetime | None = None) -> CalendarContext:
-    """The configured feed's name plus its current and next event."""
-    feed = resolve_calendar_feed(config)
-    if not feed.url:
-        return CalendarContext("", None, None)
-    calendar, fetched_name = await fetch_calendar(feed.url)
-    if calendar is None:
-        return CalendarContext("", None, None)
-    # A built-in is named by the title an operator curated, not by whatever the feed calls
-    # itself: `X-WR-CALNAME` on a real rota feed is a bare mailbox address, which would
-    # contradict what `list calendars` and the web UI show for the same calendar.
-    name = feed.title if feed.builtin else (fetched_name or feed.title)
-    current, next_event = find_current_and_next_events(calendar, config, now)
-    return CalendarContext(name, current, next_event)
-
-
 # ----- template variables -----
 
 
-def get_calendar_placeholder_variables(config: dict | None = None) -> dict[str, str]:
-    """Every calendar variable, filled with placeholders.
+def calendar_event_placeholder(variable: str) -> str:
+    """The stand-in one calendar variable renders when no event resolved.
+
+    One definition, so the placeholders seeded before a fetch and the fallback a missing
+    namespace slice renders can never disagree.
+    """
+    if variable in CALENDAR_DATETIME_TEMPLATE_VARIABLES:
+        return UNKNOWN_PERIOD_PLACEHOLDER
+    if variable == "calendar_organizer_user":
+        # Same placeholder OpsGenie uses for an unmapped person, so `empty` works on it.
+        return UNKNOWN_USER_ONCALL_PLACEHOLDER
+    return UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
+
+
+def _slice_keys(prefix: str):
+    """Key builders for one namespace slice: `(value, raw, items)` for a variable.
+
+    The default selection keeps the public names (`calendar_summary`); a slice is internal, so
+    its value hides behind `__` alongside the `_raw`/`_items` companions it already had. Both
+    shapes come from here, so the writers and the renderer cannot drift apart.
+    """
+    def keys(variable: str) -> tuple[str, str, str]:
+        stem = f"{prefix}{variable}"
+        return (f"__{stem}" if prefix else stem), f"__{stem}_raw", f"__{stem}_items"
+    return keys
+
+
+def usable_selectors(selectors: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The selectors whose arguments parse, warning about the ones that do not.
+
+    Only a hand-edited config reaches an unusable one: every setter and the web UI validate
+    the arguments before storing them.
+    """
+    usable = []
+    for at, offset in selectors or ():
+        try:
+            normalize_selector(at, offset)
+        except ValueError as e:
+            log_warning(f"Ignoring an unusable calendar selector (at={at!r}, offset={offset!r}): {e}")
+            continue
+        usable.append((at, offset))
+    return usable
+
+
+def get_calendar_placeholder_variables(config: dict | None = None, selectors: Sequence[tuple[str, str]] = ()) -> dict[str, str]:
+    """Every calendar variable, filled with placeholders, plus one slice per selector.
 
     Mirrors ``opsgenie.get_opsgenie_placeholder_variables``: a template referencing a
-    calendar variable renders a visible placeholder rather than an empty string when
-    there is no feed, no event, or a failed fetch.
+    calendar variable renders a visible placeholder rather than an empty string when there is
+    no feed, no event, or a failed fetch.
     """
     feed = resolve_calendar_feed(config)
     variables = {
@@ -725,56 +818,57 @@ def get_calendar_placeholder_variables(config: dict | None = None) -> dict[str, 
         "calendar_name": (UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER if feed.missing
                           else describe_calendar_feed(feed) or UNKNOWN_CALENDAR_PLACEHOLDER),
     }
-    for prefix in ("current", "next"):
-        for field in ("summary", "location", "description", "organizer", "organizer_email",
-                      "attendee_count", "uid", "status"):
-            variables[f"calendar_{prefix}_{field}"] = UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
-        # Same placeholder OpsGenie uses for an unmapped person, so `empty` works on it.
-        variables[f"calendar_{prefix}_organizer_user"] = UNKNOWN_USER_ONCALL_PLACEHOLDER
-    for variable in CALENDAR_LIST_TEMPLATE_VARIABLES:
-        variables[variable] = UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
-        # The items a condition matches against, beside the joined form a message renders.
-        variables[f"__{variable}_items"] = []
-    for variable in CALENDAR_DATETIME_TEMPLATE_VARIABLES:
-        variables[variable] = UNKNOWN_PERIOD_PLACEHOLDER
-        variables[f"__{variable}_raw"] = ""
+    for prefix in ("", *(event_slice_prefix(at, offset) for at, offset in usable_selectors(selectors))):
+        keys = _slice_keys(prefix)
+        for variable in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+            value_key, raw_key, items_key = keys(variable)
+            variables[value_key] = calendar_event_placeholder(variable)
+            if variable in CALENDAR_LIST_TEMPLATE_VARIABLES:
+                # The items a condition matches against, beside the joined form a message
+                # renders.
+                variables[items_key] = []
+            elif variable in CALENDAR_DATETIME_TEMPLATE_VARIABLES:
+                variables[raw_key] = ""
     return variables
 
 
-def _set_list_variable(variables: dict, variable: str, items: list) -> None:
+def _set_list_variable(variables: dict, key: str, items_key: str, items: list) -> None:
     """Store a list variable: the aligned entries, plus the joined form a message renders.
 
     The joined form leaves out the blanks — a reader wants "Nico Engelbrecht", not a stray
     comma for the room mailbox that has no address — while the entries keep them so `nth`
     lines up across the parallel lists.
     """
-    variables[f"__{variable}_items"] = list(items)
-    variables[variable] = ", ".join(item for item in items if item)
+    variables[items_key] = list(items)
+    variables[key] = ", ".join(item for item in items if item)
 
 
-def fill_calendar_event_variables(variables: dict[str, str], config: dict | None, prefix: str, event: CalendarEvent | None) -> None:
-    """Overwrite one period's placeholders from a resolved event."""
+def fill_calendar_event_variables(variables: dict[str, str], config: dict | None, keys, event: CalendarEvent | None) -> None:
+    """Overwrite one slice's placeholders from a resolved event."""
     if event is None:
         return
-    variables[f"calendar_{prefix}_summary"] = event.summary
-    variables[f"calendar_{prefix}_location"] = event.location
-    variables[f"calendar_{prefix}_description"] = event.description
-    variables[f"calendar_{prefix}_organizer"] = event.organizer
-    variables[f"calendar_{prefix}_organizer_email"] = event.organizer_email
-    variables[f"calendar_{prefix}_uid"] = event.uid
-    variables[f"calendar_{prefix}_status"] = event.status
-    variables[f"calendar_{prefix}_attendee_count"] = str(len(event.attendees))
+    for field, value in (("summary", event.summary),
+                         ("location", event.location),
+                         ("description", event.description),
+                         ("organizer", event.organizer),
+                         ("organizer_email", event.organizer_email),
+                         ("uid", event.uid),
+                         ("status", event.status),
+                         ("attendee_count", str(len(event.attendees)))):
+        variables[keys(f"calendar_{field}")[0]] = value
     for field, items in (("attendees", event.attendees),
                          ("attendee_emails", event.attendee_emails),
                          ("other_attendees", event.other_attendees),
                          ("other_attendee_emails", event.other_attendee_emails)):
-        _set_list_variable(variables, f"calendar_{prefix}_{field}", items)
+        value_key, _, items_key = keys(f"calendar_{field}")
+        _set_list_variable(variables, value_key, items_key, items)
 
     for bound, value in (("start", event.start), ("end", event.end)):
         for part in ("date", "time", "datetime"):
-            variable = f"calendar_{prefix}_{bound}_{part}"
-            variables[f"__{variable}_raw"] = value or ""
-            variables[variable] = datetimefmt.format_template_datetime(value, variable, config)
+            variable = f"calendar_{bound}_{part}"
+            value_key, raw_key, _ = keys(variable)
+            variables[raw_key] = value or ""
+            variables[value_key] = datetimefmt.format_template_datetime(value, variable, config)
 
 
 async def _mention(app, email: str) -> str:
@@ -800,34 +894,97 @@ async def _mentions(app, emails: list) -> list[str]:
     return [await _mention(app, email) for email in emails or []]
 
 
-async def fill_calendar_user_variables(app, variables: dict, prefix: str, event: CalendarEvent | None) -> None:
+async def fill_calendar_user_variables(app, variables: dict, keys, event: CalendarEvent | None) -> None:
     """Map the event's addresses to Slack users, for @mentions and DM targets."""
     if event is None:
         return
     organizer = await _mention(app, event.organizer_email)
     if organizer:
-        variables[f"calendar_{prefix}_organizer_user"] = organizer
+        variables[keys("calendar_organizer_user")[0]] = organizer
     for field, emails in (("attendee_users", event.attendee_emails),
                           ("other_attendee_users", event.other_attendee_emails)):
-        _set_list_variable(variables, f"calendar_{prefix}_{field}", await _mentions(app, emails))
+        value_key, _, items_key = keys(f"calendar_{field}")
+        _set_list_variable(variables, value_key, items_key, await _mentions(app, emails))
 
 
-async def get_calendar_template_variables(app, config: dict, now: datetime.datetime | None = None) -> dict[str, str]:
-    """The `{{calendar_*}}` values for one config.
+async def get_calendar_template_variables(app, config: dict, now: datetime.datetime | None = None,
+                                          selectors: Sequence[tuple[str, str]] = ()) -> dict[str, str]:
+    """The `{{calendar_*}}` values for one config, plus one slice per `(at, offset)` selector.
 
     `app` is only used to map attendee addresses to Slack users; pass ``None`` to skip that.
+
+    One `now` for the whole build, resolved here rather than deeper down, so the default
+    selection and every relative `at` in the same message describe one moment — which is what
+    makes `at="+0m"` agree with the plain form. One fetch and one index likewise serve every
+    selector: two fetches straddling the cache TTL could otherwise answer two halves of one
+    message from two different documents.
     """
-    variables = get_calendar_placeholder_variables(config)
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    selectors = usable_selectors(selectors)
+    variables = get_calendar_placeholder_variables(config, selectors)
     if not resolve_calendar_feed(config).url:
         return variables
 
-    context = await resolve_calendar_context(config, now)
-    if context.name:
-        variables["calendar_name"] = context.name
-    for prefix, event in (("current", context.current), ("next", context.next)):
-        fill_calendar_event_variables(variables, config, prefix, event)
-        await fill_calendar_user_variables(app, variables, prefix, event)
+    name, query = await _fetch_and_index(config)
+    if name:
+        variables["calendar_name"] = name
+    if query is None:
+        return variables
+
+    # The default selection first, then one slice per selector.
+    requests = [("", "", 0)] + [(event_slice_prefix(at, offset), at, normalize_selector(at, offset)[1])
+                                for at, offset in selectors]
+    for prefix, at, offset in requests:
+        instant = now
+        if at:
+            instant = datetimefmt.resolve_at_time(at, config, now)
+            if instant is None:
+                # Same reasoning: rather than quietly answering about the present, leave the
+                # slice as placeholders.
+                log_warning(f"Ignoring an unusable `at` value in a calendar variable: {at}")
+                continue
+        keys = _slice_keys(prefix)
+        if prefix:
+            # What the moment resolved to, so `test` can show it without a clock of its own.
+            variables[f"__{prefix}instant"] = instant.isoformat()
+        event = select_event(query, config, instant, offset)
+        fill_calendar_event_variables(variables, config, keys, event)
+        await fill_calendar_user_variables(app, variables, keys, event)
     return variables
+
+
+async def _fetch_and_index(config: dict) -> tuple[str, object]:
+    """The feed's display name and its recurrence index, fetched and built once."""
+    feed = resolve_calendar_feed(config)
+    if not feed.url:
+        return "", None
+    calendar, fetched_name = await fetch_calendar(feed.url)
+    if calendar is None:
+        return "", None
+    # A built-in is named by the title an operator curated, not by whatever the feed calls
+    # itself: `X-WR-CALNAME` on a real rota feed is a bare mailbox address, which would
+    # contradict what `list calendars` and the web UI show for the same calendar.
+    name = feed.title if feed.builtin else (fetched_name or feed.title)
+    return name, index_calendar(calendar)
+
+
+async def resolve_calendar_events(config: dict, selectors: Sequence[tuple[datetime.datetime, int]]) -> tuple[str, list[CalendarEvent | None]]:
+    """The feed's name plus one event per `(instant, offset)` pair, index-aligned.
+
+    One fetch and one index for the whole list — see `get_calendar_template_variables`.
+    """
+    name, query = await _fetch_and_index(config)
+    if query is None:
+        return name, [None for _ in selectors]
+    return name, [select_event(query, config, instant, offset) for instant, offset in selectors]
+
+
+async def resolve_calendar_context(config: dict, now: datetime.datetime | None = None,
+                                   offset: int = 0) -> CalendarContext:
+    """The feed's name and the event `offset` places from the one running at `now`."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    name, events = await resolve_calendar_events(config, [(now, offset)])
+    return CalendarContext(name, events[0])
 
 
 # ----- the read command -----
@@ -868,16 +1025,22 @@ async def send_current_calendar_event(app, channel, config_name: str, user, thre
         return
 
     label = describe_calendar_feed(feed)
-    context = await resolve_calendar_context(config)
-    if context.current is None and context.next is None:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # The previous, running and next event in one fetch: `show calendar` is where an operator
+    # checks what the feed actually contains, so the neighbours are worth the two extra
+    # selections.
+    name, (previous_event, current, next_event) = await resolve_calendar_events(
+        config, [(now, -1), (now, 0), (now, 1)])
+    if current is None and next_event is None and previous_event is None:
         await messaging.send_message(app, channel, user, f"No current or upcoming events in the calendar `{label}`.", thread_ts)
         return
 
-    header = f"*Calendar*: `{context.name or label}`"
-    message = "\n\n".join([
-        header,
-        _describe_event(config, "Now", context.current),
-        _describe_event(config, "Next", context.next),
-    ])
+    header = f"*Calendar*: `{name or label}`"
+    parts = [header]
+    if previous_event is not None:
+        parts.append(_describe_event(config, "Before", previous_event))
+    parts.append(_describe_event(config, "Now", current))
+    parts.append(_describe_event(config, "Next", next_event))
+    message = "\n\n".join(parts)
     log(f"Reporting calendar events for config '{config_name}' in #{channel.name}.")
     await messaging.send_message(app, channel, user, message, thread_ts)

@@ -571,7 +571,7 @@ def format_template_datetime(value: str, variable: str, config: dict | None = No
     """Render one of the `_date`/`_time`/`_datetime` template variables.
 
     The part to render is the variable's last segment, so this serves every provider
-    (`opsgenie_current_start_time`, `calendar_next_end_date`, ...) unchanged.
+    (`opsgenie_current_start_time`, `calendar_end_date`, ...) unchanged.
     """
     part = variable.rsplit("_", 1)[-1]
     return format_datetime_value(value, part, config, args)

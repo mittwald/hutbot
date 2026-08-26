@@ -378,7 +378,7 @@ async def test_help_variables_documents_every_variable_and_operator(command):
     for title in ("*Message, sender and config*", "*Date and time*", "*OpsGenie*", "*Calendar*"):
         assert title in sent_message, title
     assert "*Condition operators*" in sent_message
-    assert "`{{calendar_current_attendees(nth=2)}}` is the second" in sent_message
+    assert "`{{calendar_attendees(nth=2)}}` is the second" in sent_message
     assert "`fmt`/`format`, `tz`/`timezone` and `lc`/`locale`" in sent_message
     # The command table stays in `help`; this reply is only the variables.
     assert "*Commands:*" not in sent_message
@@ -446,7 +446,7 @@ async def test_show_config_hides_settings_that_do_not_apply():
         # cron with a date in its message: condition + full date/time block
         "standup": {**DEFAULT_CONFIG.copy(), "trigger": TRIGGER_CRON, "cron": "0 9 * * 1-5",
                     "reply_message": "Standup at {{time}}",
-                    "conditions": [{"variable": "calendar_current_summary", "operator": "contains",
+                    "conditions": [{"variable": "calendar_summary", "operator": "contains",
                                     "value": "standup", "case_sensitive": False}]},
         # message trigger with work hours: timezone only, no formats
         "watch": {**DEFAULT_CONFIG.copy(), "hours": ["9:00", "17:00"]},
@@ -468,7 +468,7 @@ async def test_show_config_hides_settings_that_do_not_apply():
 
     cron = sections["standup"]
     # Conditions gate every trigger now, and a single one needs no `Match` row.
-    assert '{{calendar_current_summary}} contains "standup"' in cron
+    assert '{{calendar_summary}} contains "standup"' in cron
     assert "Conditions" in cron and "Match" not in cron
     assert "Date format" in cron and "Date/time locale" in cron
     for mute in ("Pattern", "Wait time", "Work hours", "Include bots"):

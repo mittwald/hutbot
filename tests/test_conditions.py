@@ -469,14 +469,14 @@ async def test_migration_normalizes_conditions_and_drops_junk():
     ([_c("user_name", "contains", "Dave")], "all", True),
     ([_c("user_name", "contains", "Nobody")], "all", False),
     # A fire-time variable can only be judged when the reply fires.
-    ([_c("calendar_current_summary", "contains", "daily")], "all", True),
+    ([_c("calendar_summary", "contains", "daily")], "all", True),
     ([_c("opsgenie_current_user", "not_empty")], "all", True),
     # `message_link` needs a Slack call, so it is deferred too.
     ([_c("message_link", "not_empty")], "all", True),
     # all: one settled failure settles the chain, whatever else is in it.
-    ([_c("message", "contains", "zzz"), _c("calendar_current_summary", "contains", "x")], "all", False),
+    ([_c("message", "contains", "zzz"), _c("calendar_summary", "contains", "x")], "all", False),
     # any: a deferred condition could still carry it, so nothing is decided early.
-    ([_c("message", "contains", "zzz"), _c("calendar_current_summary", "contains", "x")], "any", True),
+    ([_c("message", "contains", "zzz"), _c("calendar_summary", "contains", "x")], "any", True),
     # any: every condition settled and none match -> it can never pass.
     ([_c("message", "contains", "zzz"), _c("team", "equals", "Support")], "any", False),
     ([_c("message", "contains", "zzz"), _c("team", "equals", "Platform")], "any", True),
@@ -513,7 +513,7 @@ async def test_deciding_early_never_touches_the_network():
 
 
 def test_conditions_ruled_out_leaves_fire_time_conditions_alone():
-    config = {"conditions": [_c("calendar_current_summary", "contains", "daily")], "conditions_mode": "all"}
+    config = {"conditions": [_c("calendar_summary", "contains", "daily")], "conditions_mode": "all"}
     # No calendar variable resolved at all, and it still must not be ruled out.
     assert conditions_ruled_out(config, {"message": "hi"}) == (False, "")
 
@@ -521,7 +521,7 @@ def test_conditions_ruled_out_leaves_fire_time_conditions_alone():
 def test_settled_condition_variables_excludes_fire_time_ones():
     config = {"conditions": [
         _c("message", "contains", "x"),
-        _c("calendar_current_summary", "contains", "y"),
+        _c("calendar_summary", "contains", "y"),
         _c("opsgenie_current_user", "not_empty"),
         _c("message_link", "not_empty"),
         _c("team", "equals", "Platform"),

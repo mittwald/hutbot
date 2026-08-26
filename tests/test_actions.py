@@ -57,12 +57,12 @@ async def test_add_condition_accepts_operator_aliases():
     with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
         await process_command(app, "add condition message has urgent", channel, user)
         await process_command(app, "condition {{team}} is Platform", channel, user)
-        await process_command(app, "add condition calendar_current_summary not contains daily", channel, user)
+        await process_command(app, "add condition calendar_summary not contains daily", channel, user)
     conditions = channel.configs["default"]["conditions"]
     assert [(c["variable"], c["operator"], c["value"]) for c in conditions] == [
         ("message", "contains", "urgent"),
         ("team", "equals", "Platform"),
-        ("calendar_current_summary", "not_contains", "daily"),
+        ("calendar_summary", "not_contains", "daily"),
     ]
     assert channel.configs["default"]["conditions_mode"] == "all"
 

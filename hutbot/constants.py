@@ -274,6 +274,11 @@ TEMPLATE_ARGUMENT_ALIASES = {
     # Picks one entry out of a list variable, counting from 1: `nth=2` is the second.
     "nth": "nth",
     "n": "nth",
+    # The moment a calendar variable asks about, instead of when the rule runs.
+    "at": "at",
+    "when": "at",
+    # Which event relative to that moment: `next`, `prev`, or a count like `+2`/`-1`.
+    "offset": "offset",
 }
 OPSGENIE_DATETIME_TEMPLATE_VARIABLES = {
     f"opsgenie_{period}_{bound}_{part}"
@@ -291,20 +296,21 @@ OPSGENIE_TEMPLATE_VARIABLES = {
     "opsgenie_next_user",
     *OPSGENIE_DATETIME_TEMPLATE_VARIABLES,
 }
+# One event's fields, not two families: which event is a matter of the `at` and `offset`
+# arguments, so `{{calendar_summary}}` is what runs now, `{{calendar_summary(offset=next)}}`
+# the one after it, and `{{calendar_summary(at="+1d")}}` what runs this time tomorrow.
 CALENDAR_DATETIME_TEMPLATE_VARIABLES = {
-    f"calendar_{period}_{bound}_{part}"
-    for period in ("current", "next")
+    f"calendar_{bound}_{part}"
     for bound in ("start", "end")
     for part in ("date", "time", "datetime")
 }
 # Attendee names and emails: several per event, so these hold a list. A condition on one
 # matches when *any* item matches, and a `not_` operator when *none* does.
 CALENDAR_LIST_TEMPLATE_VARIABLES = {
-    f"calendar_{period}_{field}"
-    for period in ("current", "next")
     # `other_*` drops the organizer, which a shared mailbox invites itself to — so a rota
     # entry organized by "Notfallhotline" leaves just the person actually on call.
     # `*_users` are the addresses mapped to Slack users, ready to @mention or DM.
+    f"calendar_{field}"
     for field in ("attendees", "attendee_emails", "attendee_users",
                   "other_attendees", "other_attendee_emails", "other_attendee_users")
 }
@@ -312,14 +318,75 @@ LIST_TEMPLATE_VARIABLES = CALENDAR_LIST_TEMPLATE_VARIABLES
 CALENDAR_TEMPLATE_VARIABLES = {
     "calendar_name",
     *(
-        f"calendar_{period}_{field}"
-        for period in ("current", "next")
+        f"calendar_{field}"
         for field in ("summary", "location", "description", "organizer", "organizer_email",
                       "organizer_user", "attendee_count", "uid", "status")
     ),
     *CALENDAR_LIST_TEMPLATE_VARIABLES,
     *CALENDAR_DATETIME_TEMPLATE_VARIABLES,
 }
+# The ones that describe an event and therefore take `at`/`offset`. The feed's own name does
+# not depend on a moment, so it is the one that does not.
+CALENDAR_EVENT_TEMPLATE_VARIABLES = CALENDAR_TEMPLATE_VARIABLES - {"calendar_name"}
+# How far `offset` may count in either direction. The forward walk is bounded by the ICS
+# lookahead and the backward one by a window, so neither may be asked for an arbitrary count.
+MAX_EVENT_OFFSET = 20
+# How many distinct (moment, offset) pairs one config may ask for. Each costs a selection over
+# the already-parsed feed — cheap, but not free, and a template naming dozens is a mistake.
+MAX_CALENDAR_SELECTORS = 8
+EVENT_OFFSET_WORDS = {"next": 1, "previous": -1, "prev": -1, "current": 0}
+
+
+def parse_event_offset(value: str) -> int:
+    """The event `offset` argument as a number, or a ``ValueError`` explaining why not.
+
+    `next`/`prev` are the spellings for the two common cases; everything else is a count, so
+    `offset=+2` is the event after next and `offset=-2` the one before last. The error names
+    events explicitly, because `at` sits in the same expression and an offset written as a
+    duration is the likely slip.
+    """
+    text = " ".join((value or "").split()).casefold()
+    if not text:
+        raise ValueError("`offset` must be non-empty")
+    if text in EVENT_OFFSET_WORDS:
+        return EVENT_OFFSET_WORDS[text]
+    try:
+        offset = int(text)
+    except ValueError:
+        raise ValueError("`offset` counts events: `next`, `prev`, or a number like `+1` or "
+                         f"`-2`, not `{value}`")
+    if abs(offset) > MAX_EVENT_OFFSET:
+        raise ValueError(f"`offset` counts at most {MAX_EVENT_OFFSET} events either way, "
+                         f"not `{value}`")
+    return offset
+
+
+def normalize_selector(at: str = "", offset: str = "") -> tuple[str, int]:
+    """An `(at, offset)` pair reduced to the form the namespace key is built from.
+
+    Whitespace-collapsed and casefolded, so two spellings of one request share a key — and
+    therefore one calendar selection. Raises for an unusable offset; an unusable `at` is left
+    to `datetimefmt.validate_at_time`, which owns that grammar.
+    """
+    return " ".join((at or "").split()).casefold(), parse_event_offset(offset or "0")
+
+
+def event_slice_name(variable: str, at: str = "", offset: str = "") -> str:
+    """`event(at=+1d;offset=+1)_calendar_summary` — one variable read at one moment.
+
+    A template variable name can hold none of `(`, `)`, `;`, `=` or a space, so a slice name
+    can never collide with a real variable, and the `__<name>` / `__<name>_raw` /
+    `__<name>_items` convention applies to it unchanged. The name is a pure function of the
+    expression's own text, which is what lets the synchronous render find its value without a
+    clock, a config or an index.
+    """
+    at_text, offset_value = normalize_selector(at, offset)
+    return f"event(at={at_text};offset={offset_value:+d})_{variable}"
+
+
+def event_slice_prefix(at: str = "", offset: str = "") -> str:
+    """`event(at=+1d;offset=+1)_` — the namespace prefix one selector's values live under."""
+    return event_slice_name("", at, offset)
 # Every variable that renders an instant and therefore accepts `fmt`/`tz`/`lc`
 # arguments. Both providers store their raw ISO value under `__<variable>_raw`.
 TEMPLATE_DATETIME_VARIABLES = OPSGENIE_DATETIME_TEMPLATE_VARIABLES | CALENDAR_DATETIME_TEMPLATE_VARIABLES

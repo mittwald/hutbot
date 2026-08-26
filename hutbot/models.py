@@ -16,7 +16,9 @@ OpsGenieContext = collections.namedtuple('OpsGenieContext', ['schedule_name', 'c
 # `attendees` and `attendee_emails` are lists; an attendee may have a name without a usable
 # address, or an address without a name, so the two are collected independently.
 CalendarEvent = collections.namedtuple('CalendarEvent', ['uid', 'summary', 'location', 'description', 'organizer', 'organizer_email', 'attendees', 'attendee_emails', 'other_attendees', 'other_attendee_emails', 'status', 'start', 'end', 'all_day'])
-CalendarContext = collections.namedtuple('CalendarContext', ['name', 'current', 'next'])
+# The feed's name plus the one event a selection resolved to. Which event is a matter of
+# the `at`/`offset` template arguments, not of two fixed fields.
+CalendarContext = collections.namedtuple('CalendarContext', ['name', 'event'])
 # One of the instance's built-in calendars, read from HUTBOT_BUILTIN_CALENDARS. `url` carries a
 # secret token, so only `name` and `title` are ever echoed to a user or handed to the web UI.
 BuiltinCalendar = collections.namedtuple('BuiltinCalendar', ['name', 'title', 'url'])

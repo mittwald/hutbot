@@ -25,44 +25,84 @@ Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, 
 - `{{opsgenie_next_start_date}}`, `{{opsgenie_next_start_time}}`, and `{{opsgenie_next_start_datetime}}`
 - `{{opsgenie_next_end_date}}`, `{{opsgenie_next_end_time}}`, and `{{opsgenie_next_end_datetime}}`
 
-If a channel config has a calendar feed configured via `/hutbot [config] set calendar <url>`,
-Hutbot reads the ICS feed and exposes the event running **now** and the **next** one:
+If a channel config has a calendar feed configured via `/hutbot [config] set calendar <name|url>`,
+Hutbot reads the ICS feed and exposes **one event** — by default the one running when the rule
+fires. Which event is a matter of two arguments, `offset` and `at`, described below:
 
 - `{{calendar_name}}` for the built-in calendar's **title** when the config uses one, else the
   feed's own name (`X-WR-CALNAME`), else its redacted URL — `<unknown-calendar>` when the
   config names a built-in this instance no longer offers
-- `{{calendar_current_summary}}`, `{{calendar_current_location}}`, `{{calendar_current_description}}`
-- `{{calendar_current_organizer}}` (display name) and `{{calendar_current_organizer_email}}`
-- `{{calendar_current_attendees}}` (display names) and `{{calendar_current_attendee_emails}}` —
-  **lists**, rendered comma-separated — plus `{{calendar_current_attendee_count}}`
-- `{{calendar_current_other_attendees}}` / `{{calendar_current_other_attendee_emails}}` — the
+- `{{calendar_summary}}`, `{{calendar_location}}`, `{{calendar_description}}`
+- `{{calendar_organizer}}` (display name) and `{{calendar_organizer_email}}`
+- `{{calendar_attendees}}` (display names) and `{{calendar_attendee_emails}}` —
+  **lists**, rendered comma-separated — plus `{{calendar_attendee_count}}`
+- `{{calendar_other_attendees}}` / `{{calendar_other_attendee_emails}}` — the
   same lists **without the organizer**. A shared mailbox invites itself to the events it
   organizes, so on a rota entry organized by *Notfallhotline* these leave just the person
   actually on call
 
-- `{{calendar_current_organizer_user}}`, `{{calendar_current_attendee_users}}` and
-  `{{calendar_current_other_attendee_users}}` — the same people **mapped to Slack users**, as
+- `{{calendar_organizer_user}}`, `{{calendar_attendee_users}}` and
+  `{{calendar_other_attendee_users}}` — the same people **mapped to Slack users**, as
   `<@U…>` mentions. Addresses are matched against the Slack directory with the bot's usual
   user mapping; anyone without a Slack account is simply left out, so a mapped list can be
   shorter than the address list it came from
 
+- `{{calendar_uid}}`, `{{calendar_status}}`
+- `{{calendar_start_date}}`, `{{calendar_start_time}}`, and `{{calendar_start_datetime}}`
+- `{{calendar_end_date}}`, `{{calendar_end_time}}`, and `{{calendar_end_datetime}}`
+
 A list variable renders comma-separated, and `nth` picks one entry out of it, counting from 1:
-`{{calendar_current_attendees(nth=2)}}` is the second (`n=2` is the short spelling). Asking for
+`{{calendar_attendees(nth=2)}}` is the second (`n=2` is the short spelling). Asking for
 an entry the list does not have renders **empty** rather than failing, so a message written for
 two attendees still reads when there is only one:
 
 ```bash
-/hutbot oncall set message "On call: {{calendar_current_other_attendees(nth=1)}} <{{calendar_current_other_attendee_emails(nth=1)}}> until {{calendar_current_end_time}}"
+/hutbot oncall set message "On call: {{calendar_other_attendees(nth=1)}} <{{calendar_other_attendee_emails(nth=1)}}> until {{calendar_end_time}}"
 ```
-- `{{calendar_current_uid}}`, `{{calendar_current_status}}`
-- `{{calendar_current_start_date}}`, `{{calendar_current_start_time}}`, and `{{calendar_current_start_datetime}}`
-- `{{calendar_current_end_date}}`, `{{calendar_current_end_time}}`, and `{{calendar_current_end_datetime}}`
-- the same set again as `{{calendar_next_…}}` for the next event that starts after now
+
+### Which event: `offset` and `at`
+
+`offset` counts **events** and `at` moves **time**. Either may be left out, and they compose:
+
+```bash
+{{calendar_summary}}                        # running now
+{{calendar_summary(offset=next)}}           # the next one — `prev` for the one before
+{{calendar_summary(offset=+2)}}             # the one after next; `-2` counts back
+{{calendar_summary(at="2026-08-27 09:00")}} # what is on at 09:00 on the 27th
+{{calendar_summary(at="+1d", offset=next)}} # the event after whatever runs this time tomorrow
+```
+
+In a gap between events the plain form renders `<no-event>` — it never silently reports the
+upcoming one — while `offset=prev` and `offset=next` are still the events either side of that
+moment. With an event running, `prev` and `next` are its two neighbours. An offset counts at most
+20 events either way, and `prev` searches back 90 days (`HUTBOT_CALENDAR_LOOKBACK_DAYS`), so a
+longer gap reports `<no-event>` too.
+
+`at` accepts:
+
+| Spelling | Means |
+| -------- | ----- |
+| `at="2026-08-27 09:00"` | that wall clock **in the config's timezone** (a `T` and seconds are both fine) |
+| `at="2026-08-27T09:00:00Z"`, `at="2026-08-27T09:00+09:00"` | an absolute instant, converted to the config's timezone |
+| `at="2026-08-27"` | **00:00** that day — exactly right for an all-day rota entry, and usually finds nothing on a calendar of timed meetings |
+| `at="09:00"`, `at=9` | **today** at that hour, the spelling `set work-hours` takes |
+| `at="+2h"`, `at="-30m"`, `at="+1d"`, `at="+2w"` | a signed offset from the moment the rule fires |
+
+`+1d` is *this time tomorrow*; `+24h` is 24 *real* hours — on the two days a year the clocks
+change, those differ by an hour. A time without a `Z` or a `+02:00` is read in the config's
+timezone, never UTC, and `tz` only decides how the answer is **printed**, so an explicit offset is
+how you name a moment in another zone. A moment in the past is fine. A relative `at` is measured
+from when the rule runs, so a message reminder with a 30-minute delay measures `+1d` from the
+reminder, not from the message. `{{date}}`, `{{time}}` and `{{datetime}}` still mean the
+triggering message's time and take neither argument, and nor does `{{calendar_name}}`.
+
+One message may name up to 8 different moments; each costs a selection over the feed, which is
+fetched and expanded once per run no matter how many moments are read.
 
 Calendar date/time variables take the same `fmt`/`tz`/`lc` arguments as the Opsgenie ones. For an
 **all-day** event the end is the *inclusive* last day, not the exclusive `DTEND` the ICS file
 carries — a one-day event on the 19th reports the 19th, not the 20th. Cancelled events are skipped;
-tentative ones are kept, and `{{calendar_current_status}}` says which is which. Recurring events
+tentative ones are kept, and `{{calendar_status}}` says which is which. Recurring events
 (`RRULE`, with `EXDATE` exclusions) are expanded, including their `VTIMEZONE`.
 
 Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments, for example `{{opsgenie_next_start_datetime(format='02.01.2006 15:04', timezone='Europe/Berlin', locale='de_DE')}}`. The default date/time output for Opsgenie variables and `/hutbot on-call` can be configured with:
@@ -114,11 +154,12 @@ A config can read **one** ICS calendar feed, the same way it has one Opsgenie sc
 /hutbot [config] set calendar <name>    # one of them, by name
 /hutbot [config] set calendar <url>     # or a published .ics link
 /hutbot [config] clear calendar
-/hutbot [config] show calendar          # the event running now, and the next one
+/hutbot [config] show calendar          # the event before, the one now, and the next
 ```
 
-The event running now and the next one become `{{calendar_*}}` template variables (see above),
-so a message can name them — and a condition can gate a rule on them.
+The event a config points at becomes the `{{calendar_*}}` template variables (see above), so a
+message can name it — and a condition can gate a rule on it. `offset` and `at` pick a different
+event or a different moment: `{{calendar_summary(offset=next)}}`, `{{calendar_summary(at="+1d")}}`.
 
 ### Built-in calendars
 
@@ -183,16 +224,16 @@ existing configs keep working unchanged.
     Common spellings are accepted too (`is`, `=`, `!=`, `has`, `matches`, `not contains`, …).
   - The left-hand side is any supported reply variable, so a rule can react to the message
     (`{{message}}`), the sender (`{{team}}`), the on-call state (`{{opsgenie_current_user}}`),
-    or the calendar (`{{calendar_current_summary}}`).
+    or the calendar (`{{calendar_summary}}`).
   - **List variables** — the calendar's `attendees` / `attendee_emails` and their
     `other_*` counterparts — match when *any* entry matches, and their `not_` forms when
     *none* does. So `equals` is a membership test and `not_equals` means "not among
     them", rather than the useless "some entry differs":
     ```bash
     # is this person on the event that is running right now?
-    /hutbot oncall add condition calendar_current_attendee_emails equals nico@example.com
+    /hutbot oncall add condition calendar_attendee_emails equals nico@example.com
     # nobody from outside the company is on it
-    /hutbot oncall add condition calendar_current_attendee_emails not_contains @external.com
+    /hutbot oncall add condition calendar_attendee_emails not_contains @external.com
     ```
   - **Quote a value that contains spaces** if you also want the case flag:
     `add condition message contains "deploy to prod" 1`.
@@ -215,7 +256,7 @@ existing configs keep working unchanged.
   ```bash
   # nudge only while a "Composer" meeting is actually running
   /hutbot standup set calendar https://outlook.office365.com/owa/calendar/…/calendar.ics
-  /hutbot standup add condition calendar_current_summary contains composer
+  /hutbot standup add condition calendar_summary contains composer
   /hutbot standup add condition message not_empty
   /hutbot standup set condition-mode all
   ```
@@ -225,12 +266,12 @@ existing configs keep working unchanged.
   command, so a config can never be left with an action that has nowhere to send.
   - `set action reply` — post in the rule's channel. Takes no target.
   - `set action dm-user <@user>` — DM a single user. The target may be a mention, an email
-    address, or a `{{variable}}`, so `set action dm-user {{calendar_current_other_attendee_users(nth=1)}}`
+    address, or a `{{variable}}`, so `set action dm-user {{calendar_other_attendee_users(nth=1)}}`
     DMs whoever the calendar says is on call right now.
   - `set action group-dm <@usergroup>` — open one group DM (mpim) with all members of a Slack user
     group and post once (Slack caps a group DM at 8 members). The target may instead name the
     people directly — mentions or addresses, including from a variable:
-    `set action group-dm {{calendar_current_attendee_users}}`. A bare handle like `@sre` is
+    `set action group-dm {{calendar_attendee_users}}`. A bare handle like `@sre` is
     always taken as a user group, so nothing changes for existing configs.
   - A target built from variables is resolved when the rule runs, and the rule simply does not
     send when it resolves to nobody.
