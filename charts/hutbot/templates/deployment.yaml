@@ -84,6 +84,13 @@ spec:
             - name: HUTBOT_BUILTIN_CALENDARS_FILE
               value: {{ include "hutbot.builtinCalendarsFile" . | quote }}
             {{- end }}
+            {{- with .Values.calendar.allowedHosts }}
+            # Feed hosts exempt from the internal-address refusal. Not secret, and set by
+            # whoever runs the instance rather than per channel, so it belongs in the chart
+            # rather than in the Secret.
+            - name: HUTBOT_CALENDAR_ALLOWED_HOSTS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- if .Values.ui.enabled }}
             - name: HUTBOT_UI_ENABLED
               value: "true"

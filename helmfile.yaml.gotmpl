@@ -54,6 +54,15 @@ releases:
           size: {{ env "PERSISTENCE_SIZE" | default "100Mi" | quote }}
           storageClass: {{ env "PERSISTENCE_STORAGE_CLASS" | default "" | quote }}
           mountPath: {{ env "PERSISTENCE_MOUNT_PATH" | default "/data" | quote }}
+{{- if env "HUTBOT_CALENDAR_ALLOWED_HOSTS" }}
+      # Feed hosts the bot may fetch despite their internal address. Keep in sync with
+      # NETWORKPOLICY_RULES and HOST_ALIASES: all three are needed for an internal feed.
+      - calendar:
+          allowedHosts:
+{{- range $host := splitList "," (env "HUTBOT_CALENDAR_ALLOWED_HOSTS") }}
+            - {{ trim $host | quote }}
+{{- end }}
+{{- end }}
       # DNS and public destinations are allowed by the chart defaults; NETWORKPOLICY_RULES
       # only names the internal ones, which the cluster's baseline egress does not cover.
       - networkPolicy:

@@ -272,6 +272,23 @@ def test_builtin_calendars_are_projected_as_one_file():
     assert mount["mountPath"] == "/etc/hutbot" and mount["readOnly"] is True
 
 
+def test_calendar_allowed_hosts_reach_the_container_as_one_variable():
+    result = _render("v1.2.3", "--set",
+                     "calendar.allowedHosts={bridge.internal.example,other.internal.example}")
+
+    assert result.returncode == 0, result.stderr
+    assert {"name": "HUTBOT_CALENDAR_ALLOWED_HOSTS",
+            "value": "bridge.internal.example,other.internal.example"} in _container(result)["env"]
+
+
+def test_no_allowed_hosts_means_no_variable():
+    """Absent, not empty: the bot's own default is to allow-list nothing."""
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_CALENDAR_ALLOWED_HOSTS" not in result.stdout
+
+
 def test_the_builtin_calendar_mount_can_be_switched_off():
     result = _render("v1.2.3", "--set", "builtinCalendars.mountFile=false")
 

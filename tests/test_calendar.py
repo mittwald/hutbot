@@ -480,6 +480,49 @@ def test_validate_calendar_url_rejections(url, expected):
     assert expected in str(excinfo.value)
 
 
+def test_validate_calendar_url_accepts_an_allow_listed_internal_host():
+    """An operator-named host is exempt from the address check; the name matches case-folded."""
+    url = "https://bridge.internal.example/feed.ics"
+    with patch('hutbot.calendarfeed._CALENDAR_ALLOWED_HOSTS', frozenset({"bridge.internal.example"})):
+        assert validate_calendar_url(url) == url
+        assert validate_calendar_url("https://BRIDGE.Internal.Example/feed.ics") == \
+            "https://BRIDGE.Internal.Example/feed.ics"
+
+
+def test_validate_calendar_url_accepts_an_allow_listed_literal_address():
+    """Naming the address itself works too — the host is compared as written."""
+    with patch('hutbot.calendarfeed._CALENDAR_ALLOWED_HOSTS', frozenset({"10.42.41.4"})):
+        assert validate_calendar_url("https://10.42.41.4/feed.ics") == "https://10.42.41.4/feed.ics"
+
+
+def test_allow_listing_one_host_does_not_widen_to_others():
+    with patch('hutbot.calendarfeed._CALENDAR_ALLOWED_HOSTS', frozenset({"bridge.internal.example"})):
+        assert hutbot.calendarfeed._is_allowed_host("bridge.internal.example")
+        # Exact match, not a suffix one: a name below the exempt one is a different host and
+        # could be registered by somebody else entirely.
+        assert not hutbot.calendarfeed._is_allowed_host("evil.bridge.internal.example")
+        assert not hutbot.calendarfeed._is_allowed_host("other.internal.example")
+        # An unlisted internal address is refused as before ...
+        with pytest.raises(ValueError) as excinfo:
+            validate_calendar_url("https://10.0.0.1/feed.ics")
+        assert "internal" in str(excinfo.value)
+        # ... and the exemption does not buy plain http.
+        with pytest.raises(ValueError) as excinfo:
+            validate_calendar_url("http://bridge.internal.example/feed.ics")
+        assert "only allowed for localhost" in str(excinfo.value)
+
+
+def test_allowed_hosts_are_read_from_the_environment():
+    import importlib
+
+    with patch.dict(os.environ, {"HUTBOT_CALENDAR_ALLOWED_HOSTS": " Bridge.Internal.Example , ,b.example "}):
+        module = importlib.reload(hutbot.calendarfeed)
+    try:
+        assert module._CALENDAR_ALLOWED_HOSTS == frozenset({"bridge.internal.example", "b.example"})
+    finally:
+        importlib.reload(hutbot.calendarfeed)
+
+
 def test_describe_calendar_url_redacts_the_path():
     described = describe_calendar_url("https://outlook.office365.com/owa/calendar/secret-guid@tenant/other-guid/calendar.ics")
     assert described == "outlook.office365.com/…/calendar.ics"
@@ -1350,6 +1393,17 @@ async def test_a_host_resolving_to_an_internal_address_is_refused():
     with _patch_http([_FakeResponse(text=SAMPLE_ICS)], calls, resolves=False):
         assert await fetch_calendar("https://evil.example.com/feed.ics") == (None, "")
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_allow_listed_host_is_fetched_without_the_address_check():
+    """The internal feed the allow-list exists for: refused by address, named by the operator."""
+    calls = []
+    with _patch_http([_FakeResponse(text=SAMPLE_ICS)], calls, resolves=False), \
+         patch('hutbot.calendarfeed._CALENDAR_ALLOWED_HOSTS', frozenset({"bridge.internal.example"})):
+        calendar, name = await fetch_calendar("https://bridge.internal.example/feed.ics")
+    assert calendar is not None and name == "Team Kalender"
+    assert calls == ["https://bridge.internal.example/feed.ics"]
 
 
 @pytest.mark.asyncio

@@ -145,9 +145,17 @@ instance rather than to the channel that uses it.
 The feed is cached for 5 minutes (`HUTBOT_CALENDAR_TTL`, in seconds).
 
 A remote feed must be `https://`, and URLs pointing at the private ranges or the cloud metadata
-address are refused — the bot fetches them from inside the cluster. **Loopback is exempt**, over
-plain `http://` too, so a local file server works while developing:
-`/hutbot set calendar http://127.0.0.1:8073/calendar.ics`.
+address are refused — the bot fetches them from inside the cluster. The host name is resolved and
+checked too, at every redirect hop, so a public name that answers with `10.0.0.1` is refused just
+the same. **Loopback is exempt**, over plain `http://` too, so a local file server works while
+developing: `/hutbot set calendar http://127.0.0.1:8073/calendar.ics`.
+
+An internal feed — an in-cluster ICS bridge, say — is refused by that same check, which cannot tell
+it from a target somebody talked the bot into. Name its host in `HUTBOT_CALENDAR_ALLOWED_HOSTS`
+(comma-separated, exact host names, `https://` still required) to exempt it. This is an operator
+setting, not something a channel can set, and it exempts one name rather than a range. The
+`NETWORKPOLICY_RULES` entry for the host is still needed as well: the allow-list lets the bot try,
+the egress rule lets the packet leave.
 
 ## Triggers, conditions, and actions
 
@@ -547,6 +555,10 @@ export HUTBOT_DEFAULT_DATETIME_LOCALE='de_DE'
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
+# Calendar feed hosts that resolve to an internal address and are meant to be fetched anyway.
+# Without an entry the bot refuses the fetch and logs the address it resolved to. Needs the
+# matching NETWORKPOLICY_RULES entry (and HOST_ALIASES, if cluster DNS does not serve the zone).
+export HUTBOT_CALENDAR_ALLOWED_HOSTS='outlook-bridge.prod.example.systems'
 ```
 
 To query the employee list locally from your terminal, you can use the standalone helper script:
@@ -694,10 +706,11 @@ against one `bot.json` — which means every restart has a few seconds of gap.
 
 **Egress:** a public feed host (`outlook.office365.com` and friends) is covered by the chart's
 default public-egress rule — everything outside the private ranges, on any port — so it needs no
-entry anywhere. An internal host needs both a `HOST_ALIASES` entry, because cluster DNS does not
-serve that zone, **and** a `NETWORKPOLICY_RULES` entry on its port: with only one of the two the
-fetch fails, either with a resolution error in the log or with no trace at all. `sync-secret.sh`
-prints the feed hosts so they can be checked against the rules.
+entry anywhere. An internal host needs a `HOST_ALIASES` entry, because cluster DNS does not serve
+that zone, a `NETWORKPOLICY_RULES` entry on its port, **and** its name in
+`HUTBOT_CALENDAR_ALLOWED_HOSTS`, or the bot refuses the internal address before it dials. With only
+some of the three the fetch fails — with a resolution error, a refusal in the log, or no trace at
+all. `sync-secret.sh` prints the feed hosts so they can be checked against the rules.
 
 ### Deploy
 
@@ -872,6 +885,10 @@ export PERSISTENCE_MOUNT_PATH=/data
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
 export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
+# Calendar feed hosts that resolve to an internal address and are meant to be fetched anyway.
+# Without an entry the bot refuses the fetch and logs the address it resolved to. Needs the
+# matching NETWORKPOLICY_RULES entry (and HOST_ALIASES, if cluster DNS does not serve the zone).
+export HUTBOT_CALENDAR_ALLOWED_HOSTS='outlook-bridge.prod.example.systems'
 ./deploy-prod.sh v1.1.0
 ```
 

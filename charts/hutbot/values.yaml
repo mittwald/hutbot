@@ -25,6 +25,14 @@ builtinCalendars:
   fileName: builtin-calendars.json
   secretKey: HUTBOT_BUILTIN_CALENDARS
 
+calendar:
+  # Feed hosts that resolve to an internal address and are meant to be fetched anyway — an
+  # in-cluster ICS bridge, say. The bot refuses internal addresses on its own and cannot tell
+  # a legitimate one from a target somebody talked it into; each entry here vouches for one
+  # host name (exact match, https still required), not for a range. Every entry also needs a
+  # networkPolicy rule below on its port, or the request is dropped on the way out.
+  allowedHosts: []
+
 slack:
   # Slash command this instance listens on. Must match the command configured in
   # the Slack app backing these tokens. Empty = the bot's default (/hutbot).

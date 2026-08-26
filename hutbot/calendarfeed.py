@@ -52,6 +52,16 @@ _CALENDAR_LOOKAHEAD_EVENTS = 200
 _MAX_ICS_BYTES = 5 * 1024 * 1024
 _HTTP_TIMEOUT = 10
 _MAX_REDIRECTS = 3
+# Hosts the operator vouches for even though they resolve to an internal address — an
+# in-cluster feed bridge, say, which the address checks below cannot tell from a target an
+# attacker picked. Comma-separated host names, matched exactly and case-folded; https is
+# still required, and the exemption is per host rather than per range, so it does not widen
+# to the rest of the cluster. The NetworkPolicy egress rule for the host has to exist too,
+# or the request is dropped on the way out. Read at import; tests patch the attribute.
+ALLOWED_HOSTS_ENV = 'HUTBOT_CALENDAR_ALLOWED_HOSTS'
+_CALENDAR_ALLOWED_HOSTS = frozenset(
+    host.strip().lower() for host in os.environ.get(ALLOWED_HOSTS_ENV, '').split(',') if host.strip()
+)
 
 # The instance's built-in calendars: a JSON array of {name, title, url} objects, or the path to
 # a file holding the same JSON. Read once at startup (see `load_builtin_calendars`).
@@ -322,6 +332,17 @@ async def _resolve_public_host(host: str) -> str:
     return ""
 
 
+def _is_allowed_host(host: str) -> bool:
+    """Whether the operator has named this host in `HUTBOT_CALENDAR_ALLOWED_HOSTS`.
+
+    An internal feed resolves into a private range and is refused by the address checks,
+    which cannot see the difference between it and a target chosen through the bot. Naming
+    the host is that difference: it is a deliberate act by whoever runs the instance, not
+    something a channel can set, and it exempts one name rather than a whole range.
+    """
+    return (host or "").lower() in _CALENDAR_ALLOWED_HOSTS
+
+
 def _is_loopback_host(host: str) -> bool:
     """Whether a host can only ever mean this machine.
 
@@ -361,6 +382,7 @@ def validate_calendar_url(url: str) -> str:
 
     scheme = parts.scheme.lower()
     loopback = _is_loopback_host(parts.hostname)
+    allowed = _is_allowed_host(parts.hostname)
     if scheme not in ("https", "http"):
         raise ValueError("calendar URL must start with `https://`")
     if scheme == "http" and not loopback:
@@ -368,7 +390,7 @@ def validate_calendar_url(url: str) -> str:
     if parts.username or parts.password:
         raise ValueError("calendar URL must not embed credentials")
 
-    if not loopback:
+    if not loopback and not allowed:
         try:
             address = ipaddress.ip_address(parts.hostname)
         except ValueError:
@@ -594,10 +616,11 @@ async def _get_calendar_document(url: str) -> str | None:
                 log_error(f"Refusing to fetch the calendar feed {describe_calendar_url(url)}: {e}.")
                 return None
             host = urllib.parse.urlsplit(url).hostname or ""
-            if not _is_loopback_host(host):
+            if not _is_loopback_host(host) and not _is_allowed_host(host):
                 problem = await _resolve_public_host(host)
                 if problem:
-                    log_error(f"Refusing to fetch the calendar feed {describe_calendar_url(url)}: {problem}.")
+                    log_error(f"Refusing to fetch the calendar feed {describe_calendar_url(url)}: {problem} "
+                              f"(name the host in {ALLOWED_HOSTS_ENV} if it is meant to be reachable).")
                     return None
 
             async with session.get(url, allow_redirects=False) as response:
