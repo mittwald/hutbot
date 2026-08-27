@@ -20,6 +20,7 @@ from .constants import (
     MENTION_PATTERN,
     OPSGENIE_TEMPLATE_VARIABLES,
     PARENT_TEMPLATE_VARIABLES,
+    PRESS_TEMPLATE_VARIABLES,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEMPLATE_DATETIME_VARIABLES,
 )
@@ -298,7 +299,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ]),
         ("Buttons", [
             (f"{command} [config] add button \"<label>\" config <config>", "Button runs another config (e.g. an alert config)."),
-            (f"{command} [config] add button \"<label>\" ack [text]", "Button marks it handled, posting [text] if given."),
+            (f"{command} [config] add button \"<label>\" ack [text]", "Button marks it handled; [text] replies in the thread."),
             (f"{command} [config] add button \"<label>\" delay <minutes>", "Button postpones the escalation; buttons stay."),
             (f"{command} [config] clear buttons", "Remove all buttons."),
             (f"{command} [config] set escalation <minutes> button \"<label>\"", "Auto-press that button if nobody does in time."),
@@ -357,6 +358,11 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "Any value can be quoted with `\"`, `'` or a backtick.",
         f"`{command} help variables` lists every `{{{{variable}}}}` you can put in a message or a "
         "condition, and every condition operator.",
+        "An `ack` button's text is *not* private: it is posted as a thread reply under the "
+        "message the buttons are on, so it lands wherever that message went — this channel, "
+        "another channel, or a DM — and everyone who can see that conversation can read it. "
+        "Whoever pressed is named in the message itself, where the buttons were, and is "
+        f"available to the text as `{{{{press_user}}}}` (`{command} help variables`).",
     ]
     # The command table alone is well past Slack's per-message limit, and Slack
     # splits an oversized message wherever it happens to land — which cuts the code
@@ -381,13 +387,14 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
     name = state.bot_name
     version = state.version
     general_variables = (SUPPORTED_TEMPLATE_VARIABLES - DATETIME_TEMPLATE_VARIABLES - OPSGENIE_TEMPLATE_VARIABLES
-                         - CALENDAR_TEMPLATE_VARIABLES - PARENT_TEMPLATE_VARIABLES)
+                         - CALENDAR_TEMPLATE_VARIABLES - PARENT_TEMPLATE_VARIABLES - PRESS_TEMPLATE_VARIABLES)
     variable_groups = [
         ("Message, sender and config", general_variables),
         ("Date and time", DATETIME_TEMPLATE_VARIABLES),
         ("OpsGenie", OPSGENIE_TEMPLATE_VARIABLES),
         ("Calendar", CALENDAR_TEMPLATE_VARIABLES),
         ("The config that triggered this one", PARENT_TEMPLATE_VARIABLES),
+        ("The button press that ran this", PRESS_TEMPLATE_VARIABLES),
     ]
     intro = (
         f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here are all the variables I know:\n\n"
@@ -440,6 +447,15 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         "`{{parent_action}}` and `{{parent_target}}` are how it was sent. Slack reports delivery "
         "and not readership, so none of these say who *read* it — and for a channel post the "
         "recipient is the conversation, not the people in it.",
+        "The `{{press_*}}` variables describe the button press that ran this — usable in an "
+        "`ack` text and in a config a button runs, and `<no-press>` anywhere else. "
+        "`{{press_label}}` is the label of the button, `{{press_user}}` who pressed it as a "
+        "mention and `{{press_user_name}}` their name, and `{{press_date}}`/`{{press_time}}`/"
+        "`{{press_datetime}}` when it was pressed (`{{press_timestamp}}` is the raw instant). "
+        "`{{press_kind}}` is `user` when a person pressed and `timeout` when nobody did and the "
+        "escalation auto-pressed the default button — for a `timeout` there is no presser, so "
+        "`{{press_user}}` renders empty. An escalation that runs a config instead of pressing a "
+        "button is no press at all, and renders `<no-press>` like everything else.",
         "`{{calendar_name}}` is the built-in calendar's title when a config uses one, and "
         "otherwise the feed's own name — or its redacted URL, when the feed does not name itself.",
         "You can `@mention` someone by email address (`@nico@example.com`) as well as by username, "

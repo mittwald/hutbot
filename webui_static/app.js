@@ -65,6 +65,15 @@ const COND_MODE_LABEL = { all: "All conditions must apply", any: "Any one condit
 const BTN_ACTION_LABEL = { config: "Run rule", ack: "Acknowledge / post text", delay: "Delay timer" };
 const ESCALATION_LABEL = { none: "Never escalate; buttons stay open", button: "Auto-press a button", config: "Run another rule" };
 const TARGET_HINT = { dm_user: "A @user (id, name, or email)", group_dm: "A @usergroup handle", post_channel: "A channel ID like C0123ABCD" };
+// Where an ack button's text ends up, phrased per action: it is a thread reply under the
+// message the buttons are on, so it follows that message into whichever conversation the
+// rule sends it to — not a private confirmation for whoever pressed.
+const ACK_DESTINATION = {
+  reply: "in this channel",
+  post_channel: "in the channel this rule posts to",
+  dm_user: "in the direct message this rule sends",
+  group_dm: "in the group message this rule sends",
+};
 // Set by the bot itself when it is removed from a channel (see DISABLED_REASON_REMOVED).
 const DISABLED_REASON_LABEL = { removed_from_channel: "Disabled — the bot was removed from this channel" };
 
@@ -530,6 +539,17 @@ function buttonsSection() {
 
   const add = h("button", { class: "add-row", type: "button", onclick: () => { cfg.buttons = buttons.concat([{ label: "", action: "ack", value: "" }]); structuralRefresh(); } }, "+ Add button");
 
+  // Shown for any acknowledge button, whether it has text yet or not: typing only triggers
+  // `liveRefresh`, which leaves the editor body alone, so a hint conditioned on the text
+  // would appear a refresh too late — and this is exactly what one is about to type into.
+  const hasAckButton = buttons.some((b) => b.action === "ack");
+  const ackHint = hasAckButton
+    ? h("div", { class: "hint btn-hint", text: "An acknowledge text is not private: whatever you give it is posted as "
+        + `a thread reply under the message the buttons are on, ${ACK_DESTINATION[cfg.action] || "in the conversation this rule sends to"}`
+        + ", where everyone who sees that conversation can read it. Whoever pressed is named on the message itself, "
+        + "and reaches the text as {{press_user}}." })
+    : null;
+
   // Escalation is one setting: minutes + what to escalate to. Picking "Never" hides
   // the rest, so the form cannot produce a timer with nothing to fire.
   const escalationKinds = ["none", "button", "config"];
@@ -544,7 +564,7 @@ function buttonsSection() {
       { hint: cfg.escalation_kind === "button" ? "A button label above." : "Another rule's name.", error: fieldErr("escalation_target") }));
   }
 
-  return section("Buttons", null, rows, add, meta);
+  return section("Buttons", null, rows, add, ...(ackHint ? [ackHint] : []), meta);
 }
 
 function buttonRow(btn, i) {

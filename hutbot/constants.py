@@ -149,6 +149,12 @@ BUTTON_ACTION_ACK = "ack"
 BUTTON_ACTION_DELAY = "delay"      # delay the pending escalation by N minutes
 BUTTON_ACTIONS = {BUTTON_ACTION_CONFIG, BUTTON_ACTION_ACK, BUTTON_ACTION_DELAY}
 
+# Who ran a button's action: a person who clicked it, or the escalation timer auto-pressing
+# the default button. `{{press_kind}}` renders this, so an `ack` text can thank whoever
+# pressed or say that nobody did and the timer answered for them.
+PRESS_KIND_USER = "user"
+PRESS_KIND_TIMEOUT = "timeout"
+
 # What a buttoned message escalates to if no button is pressed within the timeout.
 ESCALATION_NONE = "none"
 ESCALATION_CONFIG = "config"
@@ -360,6 +366,20 @@ PARENT_VARIABLE_LENGTH_LIMIT = 500
 # count travels in the persisted parent facts instead. A config that escalates to itself would
 # otherwise post forever, once per timeout.
 MAX_ACTION_CHAIN_DEPTH = 10
+# The button press that ran this config: which button, who pressed it, when, and whether a
+# person pressed at all or the escalation timer auto-pressed the default button. Set for an
+# `ack` text and for a config a button runs. A run no press started renders `<no-press>` —
+# a message, a schedule, a command, or an escalation that goes straight to a config, which
+# is a timeout without a button and therefore not a press.
+PRESS_DATETIME_TEMPLATE_VARIABLES = {"press_date", "press_time", "press_datetime"}
+PRESS_TEMPLATE_VARIABLES = {
+    "press_kind",
+    "press_label",
+    "press_timestamp",
+    "press_user",
+    "press_user_name",
+    *PRESS_DATETIME_TEMPLATE_VARIABLES,
+}
 # Every variable that holds a list: rendered comma-separated, and `nth` picks one entry.
 LIST_TEMPLATE_VARIABLES = CALENDAR_LIST_TEMPLATE_VARIABLES | PARENT_LIST_TEMPLATE_VARIABLES
 # How far `offset` may count in either direction. The forward walk is bounded by the ICS
@@ -431,16 +451,16 @@ def event_slice_prefix(at: str = "", offset: str = "") -> str:
 # Every variable that renders an instant and therefore accepts `fmt`/`tz`/`lc`
 # arguments. Both providers store their raw ISO value under `__<variable>_raw`.
 TEMPLATE_DATETIME_VARIABLES = (OPSGENIE_DATETIME_TEMPLATE_VARIABLES | CALENDAR_DATETIME_TEMPLATE_VARIABLES
-                              | PARENT_DATETIME_TEMPLATE_VARIABLES)
+                              | PARENT_DATETIME_TEMPLATE_VARIABLES | PRESS_DATETIME_TEMPLATE_VARIABLES)
 # Variables whose value is not settled until a rule actually fires: the two providers that
 # have to be fetched, plus the permalink, which would cost a Slack call per message to
 # resolve early. Everything else follows from the message, its sender, and the config, so a
 # condition on it can be judged the moment the message arrives.
 FIRE_TIME_TEMPLATE_VARIABLES = OPSGENIE_TEMPLATE_VARIABLES | CALENDAR_TEMPLATE_VARIABLES | {"message_link"}
-# The parent family is not in here on purpose. Only a `message` rule is judged at arrival
-# (`actions.conditions_ruled_out_at_arrival`, reached only from `routing.route_message`), and a
-# `message` rule is never the config a button or a timeout runs — so `parent_*` is the
-# placeholder both at arrival and at fire time, and the arrival gate cannot drift from it.
+# The parent and press families are not in here on purpose. Only a `message` rule is judged at
+# arrival (`actions.conditions_ruled_out_at_arrival`, reached only from `routing.route_message`),
+# and a `message` rule is never the config a button or a timeout runs — so `parent_*`/`press_*`
+# are the placeholder both at arrival and at fire time, and the arrival gate cannot drift from it.
 # Formatted renderings of ``{{timestamp}}``: the triggering message's time, or the
 # time the rule ran when there is no message behind it. Like the OpsGenie date/time
 # variables they take `fmt`/`tz`/`lc` arguments.
@@ -455,6 +475,7 @@ SUPPORTED_TEMPLATE_VARIABLES = {
     *OPSGENIE_TEMPLATE_VARIABLES,
     *CALENDAR_TEMPLATE_VARIABLES,
     *PARENT_TEMPLATE_VARIABLES,
+    *PRESS_TEMPLATE_VARIABLES,
     "team",
     "timestamp",
     "user",
@@ -478,6 +499,10 @@ UNKNOWN_CALENDAR_EVENT_PLACEHOLDER = "<no-event>"
 # `UNKNOWN_PLACEHOLDERS` below — and why `targets.resolve_user_targets` skips it instead of
 # trying to look it up as a person when `{{parent_recipients}}` is used as a target.
 NO_PARENT_PLACEHOLDER = "<no-parent>"
+# No button press ran this config: it came from a message, a schedule, a command, or from an
+# escalation straight to a config. Like the parent placeholder it joins `UNKNOWN_PLACEHOLDERS`,
+# so `press_kind empty` asks "was this a press at all?".
+NO_PRESS_PLACEHOLDER = "<no-press>"
 # Every "nothing resolved" stand-in. A condition's `empty`/`not_empty` treats these as
 # empty, because the providers never hand back a bare "" and `opsgenie_current_user empty`
 # is the natural way to ask "is anyone on call?".
@@ -491,4 +516,5 @@ UNKNOWN_PLACEHOLDERS = {
     UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
     NO_PARENT_PLACEHOLDER,
+    NO_PRESS_PLACEHOLDER,
 }

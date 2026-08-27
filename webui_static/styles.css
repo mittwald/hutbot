@@ -346,6 +346,8 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 }
 .add-row:hover { border-color: var(--teal); color: var(--teal-deep); }
 .btn-empty { font-size: 13px; color: var(--ink-mute); padding: 2px 0 4px; }
+/* Sits outside a `.field`, so it carries the hint type styling itself. */
+.btn-hint { font-size: 11.5px; color: var(--ink-mute); margin: 12px 0 14px; max-width: 74ch; line-height: 1.5; }
 
 /* Apply bar */
 .applybar {

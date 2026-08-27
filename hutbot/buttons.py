@@ -24,6 +24,8 @@ from .constants import (
     ESCALATION_BUTTON,
     ESCALATION_CONFIG,
     ESCALATION_NONE,
+    PRESS_KIND_TIMEOUT,
+    PRESS_KIND_USER,
 )
 from .models import User
 
@@ -266,7 +268,26 @@ async def _escalation_context(app: AsyncApp, entry: dict | None, posted_channel_
     }
 
 
-async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '', target_conditions: dict | None = None) -> bool:
+def _press_facts(button: dict, presser: User | None, kind: str) -> dict:
+    """What the press that is about to run something was, for its `{{press_*}}` variables.
+
+    Plain strings, like `_parent_facts`, because `templating.press_template_variables` is
+    synchronous — the pressing user is resolved here, where a `User` is already in hand.
+
+    A press is not a Slack message, so its time is stamped now, in Slack's epoch spelling, and
+    a timeout auto-press has no user behind it: `kind` is what tells the two apart, and the
+    empty `user`/`user_name` is what a template renders for "nobody".
+    """
+    return {
+        'kind': kind,
+        'label': button.get('label') or '',
+        'timestamp': f"{datetime.datetime.now(datetime.timezone.utc).timestamp():.6f}",
+        'user': f"<@{presser.id}>" if presser and presser.id else '',
+        'user_name': (presser.real_name or presser.name or '') if presser else '',
+    }
+
+
+async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '', target_conditions: dict | None = None, presser: User | None = None, press_kind: str = PRESS_KIND_USER) -> bool:
     """Run a button's action. Shared by a real press and an auto-press on timeout.
 
     Returns whether the action actually happened. The caller has already consumed the
@@ -279,8 +300,14 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, po
     `ack` is deliberately not condition-gated. Its text belongs to the *source* config,
     whose conditions were already evaluated when the buttoned message was posted;
     re-checking them minutes later could swallow a person's acknowledgement.
+
+    `presser`/`press_kind` describe the press itself — who pressed which button, when, and
+    whether a person pressed at all — and reach the ack text and any config this runs as the
+    `{{press_*}}` variables. They are deliberately *not* the run's `{{user}}`: that stays the
+    original message's author, which is what the timeout path can attribute a run to as well.
     """
     action, value = normalize_button(button)
+    run_context = {**run_context, 'press': _press_facts(button, presser, press_kind)}
     if action == BUTTON_ACTION_CONFIG:
         target_config = channel.configs.get(value)
         if not target_config:
@@ -291,9 +318,11 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_token: str, channel, po
         target_config = _with_snapshotted_conditions(target_config, target_conditions, value)
         return bool(await actions.run_action(app, opsgenie_token, channel, target_config, value, context=run_context))
     elif action == BUTTON_ACTION_ACK:
-        # Dismissing posts the ack text when there is one. The text is a template
-        # like a config's reply message, rendered against the original message with
-        # the defining config's date/time settings.
+        # Dismissing posts the ack text when there is one, as a thread reply under the
+        # buttoned message — so it lands in whichever conversation that message went to
+        # (this channel, another channel, a DM), visible to everyone who can see it. The
+        # text is a template like a config's reply message, rendered against the original
+        # message with the defining config's date/time settings.
         if value:
             text = await actions.render_template_text(app, opsgenie_token, channel, src_config or {}, src_config_name, run_context, value)
             await messaging._post_message(app, posted_channel_id, text, None, message_ts)
@@ -325,7 +354,7 @@ async def _run_escalation(app: AsyncApp, opsgenie_token: str, entry: dict) -> No
             return
         buttons = snapshot if snapshot is not None else (src_config or {}).get('buttons') or []
         log(f"No button pressed on message {message_ts}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
-        ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''), entry.get('target_conditions'))
+        ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''), entry.get('target_conditions'), press_kind=PRESS_KIND_TIMEOUT)
         await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), _ran_config(buttons[idx]), ok))
     elif kind == ESCALATION_CONFIG:
         target = entry.get('escalation_target', '')
@@ -565,7 +594,8 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
 
     # Every other button has already claimed the pending record, then runs its action. A config
     # run is attributed to the *original* author (presser=None ⇒ orig.user_id), matching
-    # the timeout-escalation path; the presser is only used for the log line above.
+    # the timeout-escalation path; the presser reaches whatever runs as `{{press_user}}`, so
+    # a text can name them without the run's `{{user}}` shifting from message to presser.
     run_context = await _escalation_context(app, entry, posted_channel_id, message_ts)
-    ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name, entry.get('target_conditions'))
+    ok = await dispatch_button_action(app, opsgenie_token, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name, entry.get('target_conditions'), presser=presser)
     await _strip_buttons(app, posted_channel_id, message_ts, entry, _press_note(buttons[index], presser, ok))

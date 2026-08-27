@@ -150,6 +150,35 @@ its members. A `group-dm` does list its members, as they stood when the message 
 /hutbot escalate add condition parent_config equals reminder
 ```
 
+### The button press that ran this
+
+The `press_*` variables describe the press itself, rather than the config behind it. They are
+filled in for a button's `ack` text and for a config a button runs:
+
+- `{{press_label}}` — the label of the button that was pressed
+- `{{press_user}}` — who pressed it, as a `<@mention>`, and `{{press_user_name}}` as their name
+- `{{press_date}}`, `{{press_time}}` and `{{press_datetime}}` — when it was pressed, taking the same
+  `fmt`/`tz`/`lc` arguments as every other date/time variable
+- `{{press_timestamp}}` — the raw timestamp of the same instant
+- `{{press_kind}}` — `user` when a person pressed the button, `timeout` when nobody did in time and
+  the escalation auto-pressed the default button
+
+A `timeout` press has a button and a time but nobody behind it, so `{{press_user}}` and
+`{{press_user_name}}` render empty there — which is how one `ack` text can cover both cases:
+
+```bash
+/hutbot incident add button "I've got it" ack "{{press_user}} is on it, as of {{press_time}}."
+/hutbot page-oncall add condition press_kind equals timeout   # page only when nobody pressed in time
+```
+
+An escalation that runs a config instead of auto-pressing a button is a timeout without a press,
+so the whole family renders `<no-press>` there — as it does for a `message`, `cron` or `manual`
+run and for `test`/`run`.
+
+`{{press_user}}` is not the same as `{{user}}`: a run started by a button still reports the
+**original** message's author as `{{user}}`, so the press is an addition to that context and never
+a replacement for it.
+
 Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments, for example `{{opsgenie_next_start_datetime(format='02.01.2006 15:04', timezone='Europe/Berlin', locale='de_DE')}}`. The default date/time output for Opsgenie variables and `/hutbot on-call` can be configured with:
 
 ```bash
@@ -358,7 +387,11 @@ existing configs keep working unchanged.
   - `/hutbot [config] add button "<label>" ack [text]` — mark the message handled: stop any
     escalation, remove the buttons, and post `[text]` in the thread when given. Like a reply message,
     the text may use `{{variables}}` and `@mentions`, both resolved against the *original* message
-    when pressed.
+    when pressed, plus the `{{press_*}}` variables of the press itself. `[text]` is **not** a private
+    confirmation for whoever pressed: it is posted as a thread reply under the buttoned message, so it
+    lands in whatever conversation that message went to — this channel, another channel, or a DM — and
+    everyone who can see that conversation can read it. Whoever pressed is named on the message itself,
+    where the buttons were.
   - `/hutbot [config] add button "<label>" delay <minutes>` — push the escalation out by N minutes
     and leave the buttons in place (the only button that does not consume the message). It needs an
     escalation to postpone, so set one first; `clear escalation` warns if it strands such a button.

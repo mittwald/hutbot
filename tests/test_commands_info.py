@@ -529,3 +529,70 @@ async def test_process_command_list_calendars_without_any():
         await process_command(app, "list calendars", channel, user)
 
     assert "No built-in calendars are configured" in mock_send_message.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_show_config_says_where_an_ack_text_lands():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "buttons": [
+        {"label": "Silent", "action": "ack", "value": ""},
+        {"label": "I've got it", "action": "ack", "value": "On it, thanks!"},
+    ]}
+    channel = Channel(id="C123", name="general", configs={"default": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sent_message = sent_messages(mock_send_message)
+    assert "Ack text" in sent_message
+    assert "posted in a thread under the buttoned message, for everyone there" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_show_config_omits_the_ack_note_when_no_ack_button_posts_text():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "buttons": [
+        {"label": "Silent", "action": "ack", "value": ""},
+        {"label": "Run", "action": "config", "value": "other"},
+    ]}
+    channel = Channel(id="C123", name="general", configs={"default": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    assert "Ack text" not in sent_messages(mock_send_message)
+
+
+@pytest.mark.asyncio
+async def test_help_says_an_ack_text_is_public_and_where_it_lands():
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "help", channel, user)
+
+    sent_message = sent_messages(mock_send_message)
+    assert "is *not* private: it is posted as a thread reply under the" in sent_message
+    assert "`{{press_user}}`" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_help_variables_groups_and_explains_the_press_family():
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "help variables", channel, user)
+
+    sent_message = sent_messages(mock_send_message)
+    assert "*The button press that ran this*" in sent_message
+    for variable in hutbot.constants.PRESS_TEMPLATE_VARIABLES:
+        assert f"`{{{{{variable}}}}}`" in sent_message, variable
+    # The two things the family exists for: naming the presser, and telling a real press
+    # from a timeout that pressed for them.
+    assert "`{{press_kind}}` is `user` when a person pressed and `timeout` when nobody did" in sent_message
+    assert "`<no-press>` anywhere else" in sent_message

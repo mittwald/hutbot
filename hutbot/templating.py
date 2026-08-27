@@ -13,10 +13,12 @@ from .constants import (
     DATETIME_TEMPLATE_VARIABLES,
     LIST_TEMPLATE_VARIABLES,
     NO_PARENT_PLACEHOLDER,
+    NO_PRESS_PLACEHOLDER,
     PARENT_DATETIME_TEMPLATE_VARIABLES,
     PARENT_LIST_TEMPLATE_VARIABLES,
     PARENT_VARIABLE_NAMES_KEY,
     PARENT_VARIABLES_TEMPLATE_VARIABLE,
+    PRESS_DATETIME_TEMPLATE_VARIABLES,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEAM_UNKNOWN,
     TEMPLATE_ARGUMENT_ALIASES,
@@ -502,7 +504,50 @@ def parent_template_variables(parent: dict | None, config: dict | None = None) -
     return variables
 
 
-async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False, include_calendar: bool = False, calendar_selectors: list[tuple[str, str]] | None = None, parent: dict | None = None) -> dict[str, str]:
+def press_template_variables(press: dict | None = None, config: dict | None = None) -> dict[str, str]:
+    """The `{{press_*}}` slice: which button ran this, who pressed it, and when.
+
+    Always present, for the same two reasons as `parent_template_variables`: a template reading
+    one renders a visible `<no-press>` rather than a literal `{{…}}`, and a condition on one can
+    be judged instead of failing closed.
+
+    A timeout auto-press has a button and a time but nobody behind it, so its `press_user`/
+    `press_user_name` render empty while `press_kind` says `timeout` — which is what lets an ack
+    text distinguish "nobody answered in time" from "somebody dismissed this". No press at all
+    renders `<no-press>` throughout.
+
+    Synchronous and network-free: `press` is already plain strings, built by `buttons._press_facts`
+    where the pressing user is in hand. `config` is the *consuming* config, whose date/time
+    settings print the three date/time forms, like every other date/time variable.
+    """
+    press = press or {}
+    kind = press.get('kind') or ''
+
+    def present(value: str) -> str:
+        """A press that simply has nothing here renders empty; no press at all says so."""
+        return value or ('' if kind else NO_PRESS_PLACEHOLDER)
+
+    # A press is not a Slack message, so its time is stamped as a Slack-style epoch when it
+    # happens — that way `{{press_timestamp}}` reads like `{{timestamp}}` and the date/time
+    # forms re-render from ISO the way `TEMPLATE_DATETIME_VARIABLES` expects.
+    instant = datetimefmt.parse_slack_timestamp(press.get('timestamp') or '')
+    raw = instant.isoformat() if instant else ''
+
+    variables = {
+        "press_kind": kind or NO_PRESS_PLACEHOLDER,
+        "press_label": present(press.get('label') or ''),
+        "press_timestamp": press.get('timestamp') or '',
+        "press_user": present(press.get('user') or ''),
+        "press_user_name": present(press.get('user_name') or ''),
+    }
+    for variable in PRESS_DATETIME_TEMPLATE_VARIABLES:
+        variables[f"__{variable}_raw"] = raw
+        variables[variable] = (datetimefmt.format_template_datetime(raw, variable, config)
+                               if raw else UNKNOWN_PERIOD_PLACEHOLDER)
+    return variables
+
+
+async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False, include_calendar: bool = False, calendar_selectors: list[tuple[str, str]] | None = None, parent: dict | None = None, press: dict | None = None) -> dict[str, str]:
     wait_time = config.get('wait_time') or 0
     opsgenie_template_variables = {}
     if include_opsgenie:
@@ -533,6 +578,7 @@ async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, cha
         **opsgenie_template_variables,
         **calendar_template_variables,
         **parent_template_variables(parent, config),
+        **press_template_variables(press, config),
         "team": user.team if user.team else TEAM_UNKNOWN,
         "timestamp": ts,
         "user": f"<@{user.id}>",

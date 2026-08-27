@@ -1363,3 +1363,117 @@ async def test_the_chain_depth_travels_with_the_record_across_a_hop():
     await _press(app, channel, "10.1")
 
     assert hutbot.state.pending_buttons[("C12345", "11.1")]["parent"]["depth"] == 2
+
+
+@pytest.mark.asyncio
+async def test_an_ack_text_can_name_who_pressed_which_button_and_when():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    src_config = {**DEFAULT_CONFIG.copy(), "reply_message": "Who takes {{message}}?",
+                  "buttons": [{"label": "I've got it", "action": "ack",
+                               "value": "{{press_user}} ({{press_user_name}}) pressed "
+                                        "[{{press_label}}] as {{press_kind}} on "
+                                        '{{press_date(fmt="%Y-%m-%d", tz="UTC")}}'}]}
+    channel = _mk_channel({"src": src_config})
+    hutbot.state.channel_config[channel.id] = channel.configs
+    author = User("UAUTH", "ada", "Ada Author", "T")
+    presser = User("U9", "bob", "Bob Ops", "Ops")
+    users = {"UAUTH": author, "U9": presser}
+    context = {"user": author, "text": "the DB is down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"},
+            "user": {"id": "U9"}, "message": {"ts": "10.1"}}
+    action = {"action_id": "hutbot_btn:0",
+              "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=lambda app, uid, *a, **k: users[uid])):
+        await hutbot.buttons.handle_button_press(app, "token", body, action)
+
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == (
+        f"<@U9> (Bob Ops) pressed [I've got it] as user on {today}")
+
+
+@pytest.mark.asyncio
+async def test_the_press_variables_say_when_a_timeout_pressed_instead_of_a_person():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    src_config = {**DEFAULT_CONFIG.copy(), "reply_message": "Who takes {{message}}?",
+                  "buttons": [{"label": "I've got it", "action": "ack",
+                               "value": "{{press_kind}} pressed [{{press_label}}], "
+                                        "presser: '{{press_user}}'"}],
+                  "escalation_kind": "button", "escalation_target": "I've got it",
+                  "escalation_timeout": 3600}
+    channel = _mk_channel({"src": src_config})
+    hutbot.state.channel_config[channel.id] = channel.configs
+    author = User("UAUTH", "ada", "Ada Author", "T")
+    context = {"user": author, "text": "the DB is down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    entry = hutbot.state.pending_buttons[("C12345", "10.1")]
+    entry["task"].cancel()
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=author)):
+        await hutbot.buttons._run_escalation(app, "token", entry)
+
+    # Nobody pressed, so there is no presser to name — but the button and the time are real.
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == (
+        "timeout pressed [I've got it], presser: ''")
+
+
+@pytest.mark.asyncio
+async def test_a_config_a_button_runs_reads_the_press_too_without_losing_the_author():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel("{{press_user_name}} pressed for {{user_name}}: {{message}}")
+    author = User("UAUTH", "ada", "Ada Author", "T")
+    presser = User("U9", "bob", "Bob Ops", "Ops")
+    users = {"UAUTH": author, "U9": presser}
+    context = {"user": author, "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "10.1"},
+            "user": {"id": "U9"}, "message": {"ts": "10.1"}}
+    action = {"action_id": "hutbot_btn:0",
+              "value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=lambda app, uid, *a, **k: users[uid])):
+        await hutbot.buttons.handle_button_press(app, "token", body, action)
+
+    # `{{user}}` stays the original author; the presser arrives beside it, not instead of it.
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == "Bob Ops pressed for Ada Author: DB down"
+
+
+@pytest.mark.asyncio
+async def test_an_escalation_straight_to_a_config_is_no_press_at_all():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel("{{press_kind}}/{{press_label}}",
+                             src_extra={"escalation_kind": "config", "escalation_target": "tgt",
+                                        "escalation_timeout": 3600})
+    author = User("UAUTH", "ada", "Ada Author", "T")
+    context = {"user": author, "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    entry = hutbot.state.pending_buttons[("C12345", "10.1")]
+    entry["task"].cancel()
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=author)):
+        await hutbot.buttons._run_escalation(app, "token", entry)
+
+    # A timeout with no button to press is not a press: the family says so rather than
+    # reporting a `timeout` press that never happened.
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == "<no-press>/<no-press>"

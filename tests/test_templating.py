@@ -419,3 +419,82 @@ def test_the_parent_variables_are_supported_and_listed():
     assert hutbot.constants.PARENT_TEMPLATE_VARIABLES <= hutbot.constants.SUPPORTED_TEMPLATE_VARIABLES
     # Not calendar variables, which is what keeps the calendar placeholder coverage test honest.
     assert not (hutbot.constants.PARENT_TEMPLATE_VARIABLES & hutbot.constants.CALENDAR_TEMPLATE_VARIABLES)
+
+
+# ----- the button press that ran this -----
+
+def _press_facts(**overrides):
+    facts = {
+        'kind': hutbot.constants.PRESS_KIND_USER,
+        'label': "I've got it",
+        'timestamp': '1786453297.645799',
+        'user': '<@U9>',
+        'user_name': 'Bob Ops',
+    }
+    return {**facts, **overrides}
+
+
+def test_the_press_slice_covers_exactly_the_declared_variables():
+    """A name added to the set but not to the builder renders `{{…}}` in a real message."""
+    variables = hutbot.templating.press_template_variables(_press_facts())
+
+    public = {name for name in variables if not name.startswith("__")}
+    assert public == hutbot.constants.PRESS_TEMPLATE_VARIABLES
+    assert {name for name in variables if name.startswith("__")} == {
+        "__press_date_raw", "__press_time_raw", "__press_datetime_raw",
+    }
+
+
+def test_the_press_slice_reports_who_pressed_what_and_when():
+    render = hutbot.templating.render_reply_message_template
+    config = {"date_format": "%d.%m.%Y", "datetime_timezone": "Europe/Berlin"}
+    variables = hutbot.templating.press_template_variables(_press_facts(), config)
+
+    assert render("{{press_kind}}", variables) == "user"
+    assert render("{{press_label}}", variables) == "I've got it"
+    assert render("{{press_user}}", variables) == "<@U9>"
+    assert render("{{press_user_name}}", variables) == "Bob Ops"
+    assert render("{{press_timestamp}}", variables) == "1786453297.645799"
+    assert render("{{press_date}}", variables, config) == "11.08.2026"
+    assert render('{{press_date(fmt="%Y-%m-%d", tz="UTC")}}', variables, config) == "2026-08-11"
+
+
+def test_a_timeout_press_has_a_button_and_a_time_but_nobody_behind_it():
+    """The distinction an ack text needs: dismissed by somebody vs. nobody answered in time."""
+    render = hutbot.templating.render_reply_message_template
+    variables = hutbot.templating.press_template_variables(
+        _press_facts(kind=hutbot.constants.PRESS_KIND_TIMEOUT, user='', user_name=''))
+
+    assert render("{{press_kind}}", variables) == "timeout"
+    assert render("{{press_label}}", variables) == "I've got it"
+    assert render("{{press_user}}", variables) == ""
+    assert render("{{press_user_name}}", variables) == ""
+
+
+def test_without_a_press_every_variable_says_so():
+    render = hutbot.templating.render_reply_message_template
+    variables = hutbot.templating.press_template_variables(None)
+
+    for variable in hutbot.constants.PRESS_TEMPLATE_VARIABLES - {"press_timestamp"}:
+        rendered = render(f"{{{{{variable}}}}}", variables)
+        assert rendered in ("<no-press>", "<unknown>"), (variable, rendered)
+    # The raw timestamp is the one that renders empty, like `{{timestamp}}` itself.
+    assert render("{{press_timestamp}}", variables) == ""
+
+
+@pytest.mark.parametrize("template,expected", [
+    ('{{press_label(nth=2)}}', "is not a list"),
+    ('{{press_user(fmt="%d")}}', "does not support arguments"),
+    ('{{press_kind(of="user")}}', "does not hold the parent's variables"),
+    ('{{press_date(at="+1d")}}', "does not read a calendar event"),
+])
+def test_the_press_variables_reject_an_argument_they_do_not_take(template, expected):
+    assert expected in hutbot.templating.validate_template_expressions(template)
+
+
+def test_the_press_variables_are_supported_and_listed():
+    assert hutbot.constants.PRESS_TEMPLATE_VARIABLES <= hutbot.constants.SUPPORTED_TEMPLATE_VARIABLES
+    # Its own family: neither the parent's nor the calendar's, whose placeholder coverage
+    # tests count on the sets not overlapping.
+    assert not (hutbot.constants.PRESS_TEMPLATE_VARIABLES & hutbot.constants.PARENT_TEMPLATE_VARIABLES)
+    assert not (hutbot.constants.PRESS_TEMPLATE_VARIABLES & hutbot.constants.CALENDAR_TEMPLATE_VARIABLES)

@@ -78,6 +78,7 @@ async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel,
         include_calendar=bool(CALENDAR_TEMPLATE_VARIABLES.intersection(referenced)),
         calendar_selectors=calendar_selectors,
         parent=context.get('parent'),
+        press=context.get('press'),
     )
 
 
