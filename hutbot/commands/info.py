@@ -19,6 +19,8 @@ from .. import conditionutil
 from ..buttonutil import normalize_button
 from .. import targets
 from ..constants import (
+    ACK_DESTINATION_UNKNOWN,
+    ACK_DESTINATIONS,
     BUTTON_ACTION_ACK,
     CONDITION_MODE_ALL,
     ACTION_DM_USER,
@@ -246,15 +248,15 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
                 button_action, value = normalize_button(b)
                 return f"{b.get('label')} → {button_action}" + (f":{value}" if value else "")
             button_rows = [("Buttons", [_button_label(b) for b in config_buttons])]
-            # An `ack` text is a public thread reply, not a private confirmation for whoever
-            # pressed — said here because the button list alone reads like the text belongs to
-            # the press. Where the buttoned message went is printed above, as *Replied in* /
-            # *Posted in* / *Sent to*, and the ack follows it into that conversation.
+            # An `ack` text is a thread reply under the buttoned message, not a private
+            # confirmation for whoever pressed — said here because the button list alone reads
+            # like the text belongs to the press. Named per action, like the destination line
+            # above: "in the thread" is not an answer when the message went to a DM.
             def _posts_ack_text(b):
                 button_action, value = normalize_button(b)
                 return button_action == BUTTON_ACTION_ACK and bool(value)
             if any(_posts_ack_text(b) for b in config_buttons):
-                button_rows.append(("Ack text", "posted in a thread under the buttoned message, for everyone there"))
+                button_rows.append(("Ack text", ACK_DESTINATIONS.get(action, ACK_DESTINATION_UNKNOWN)))
             escalation_minutes = (config.get('escalation_timeout') or 0) // 60
             kind, target = buttons._escalation_kind(config)
             if escalation_minutes and kind != ESCALATION_NONE:

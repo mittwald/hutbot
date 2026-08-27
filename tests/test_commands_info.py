@@ -532,9 +532,17 @@ async def test_process_command_list_calendars_without_any():
 
 
 @pytest.mark.asyncio
-async def test_show_config_says_where_an_ack_text_lands():
+@pytest.mark.parametrize("action,target,expected", [
+    ("reply", "", "in a thread in this channel, for everyone here"),
+    ("post_channel", "C777", "in a thread in the channel this rule posts to, for everyone there"),
+    # The one the destination line alone does not answer: an ack on a DM'd message is a reply
+    # inside that DM, and never reaches the channel the rule lives in.
+    ("dm_user", "U777", "in a thread in the direct message this rule sends, for its recipient only"),
+    ("group_dm", "S123", "in a thread in the group message this rule sends, for its members only"),
+])
+async def test_show_config_says_where_an_ack_text_lands(action, target, expected):
     app = AsyncMock()
-    config = {**DEFAULT_CONFIG.copy(), "buttons": [
+    config = {**DEFAULT_CONFIG.copy(), "action": action, "action_target": target, "buttons": [
         {"label": "Silent", "action": "ack", "value": ""},
         {"label": "I've got it", "action": "ack", "value": "On it, thanks!"},
     ]}
@@ -545,8 +553,7 @@ async def test_show_config_says_where_an_ack_text_lands():
         await show_config(app, channel, user, "")
 
     sent_message = sent_messages(mock_send_message)
-    assert "Ack text" in sent_message
-    assert "posted in a thread under the buttoned message, for everyone there" in sent_message
+    assert f"Ack text        {expected}" in sent_message
 
 
 @pytest.mark.asyncio

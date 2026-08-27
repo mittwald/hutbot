@@ -20,6 +20,8 @@ from .. import renaming
 from .. import targets
 from ..buttonutil import _find_button_index, normalize_button
 from ..constants import (
+    ACK_DESTINATION_UNKNOWN,
+    ACK_DESTINATIONS,
     ACTION_POST_CHANNEL,
     ESCALATION_BUTTON,
     ESCALATION_CONFIG,
@@ -700,7 +702,15 @@ async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec:
     if action == BUTTON_ACTION_CONFIG and value not in channel.configs:
         warning = f" :warning: (configuration `{value}` does not exist yet)"
     descriptor = f"`{action}`" + (f" → `{value}`" if value else "")
-    await messaging.send_message(app, channel, user, f"Added button `{label}` ({descriptor}) in configuration `{config_name}`{warning}.", thread_ts)
+    # Say where an ack text ends up, right when it is written: it is a thread reply under the
+    # buttoned message and not a private confirmation for whoever pressed, which is the wrong
+    # guess to make about a text one is about to word. Phrased from the config's current action,
+    # the same map `show config` prints.
+    landing = ""
+    if action == BUTTON_ACTION_ACK and value:
+        destination = ACK_DESTINATIONS.get(config.get('action', ACTION_REPLY), ACK_DESTINATION_UNKNOWN)
+        landing = f" When pressed, its text is posted {destination}."
+    await messaging.send_message(app, channel, user, f"Added button `{label}` ({descriptor}) in configuration `{config_name}`{warning}.{landing}", thread_ts)
 
 
 async def clear_buttons(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:

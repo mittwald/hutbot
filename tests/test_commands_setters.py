@@ -895,3 +895,38 @@ async def test_the_test_preview_renders_the_parent_variables_as_placeholders():
     for variable in hutbot.constants.PARENT_TEMPLATE_VARIABLES:
         assert f"{{{{{variable}}}}}" in preview, variable
     assert "<no-parent>" in preview
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,target,expected", [
+    ("reply", "", "in a thread in this channel, for everyone here"),
+    ("post_channel", "C777", "in a thread in the channel this rule posts to, for everyone there"),
+    ("dm_user", "U777", "in a thread in the direct message this rule sends, for its recipient only"),
+    ("group_dm", "S123", "in a thread in the group message this rule sends, for its members only"),
+])
+async def test_adding_an_ack_button_with_text_says_where_that_text_lands(action, target, expected):
+    app = AsyncMock()
+    channel = _mk_channel({"default": {**DEFAULT_CONFIG.copy(), "action": action, "action_target": target}})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'add button "Got it" ack "On it."', channel, user)
+
+    assert send.await_args.args[3] == (
+        f"Added button `Got it` (`ack` → `On it.`) in configuration `default`. "
+        f"When pressed, its text is posted {expected}.")
+
+
+@pytest.mark.asyncio
+async def test_an_ack_button_without_text_says_nothing_about_where_text_lands():
+    """Nothing is posted, so there is no landing to report."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'add button "Silent" ack', channel, user)
+        await process_command(app, 'add button "Run" config other', channel, user)
+
+    for call in send.await_args_list:
+        assert "When pressed, its text is posted" not in call.args[3], call.args[3]

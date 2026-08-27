@@ -155,6 +155,20 @@ BUTTON_ACTIONS = {BUTTON_ACTION_CONFIG, BUTTON_ACTION_ACK, BUTTON_ACTION_DELAY}
 PRESS_KIND_USER = "user"
 PRESS_KIND_TIMEOUT = "timeout"
 
+# Where an `ack` button's text lands, per action of the config the button belongs to: it is a
+# thread reply under the buttoned message, so it follows that message into whichever
+# conversation the action sent it to — never a private confirmation for whoever pressed. Worded
+# without a `<#C…>`/`<@U…>` mention, because `show config` prints it inside a code fence where
+# Slack would leave the raw id standing.
+ACK_DESTINATIONS = {
+    ACTION_REPLY: "in a thread in this channel, for everyone here",
+    ACTION_POST_CHANNEL: "in a thread in the channel this rule posts to, for everyone there",
+    ACTION_DM_USER: "in a thread in the direct message this rule sends, for its recipient only",
+    ACTION_GROUP_DM: "in a thread in the group message this rule sends, for its members only",
+}
+# The fallback wording, for an action this map does not know.
+ACK_DESTINATION_UNKNOWN = "in a thread under the buttoned message"
+
 # What a buttoned message escalates to if no button is pressed within the timeout.
 ESCALATION_NONE = "none"
 ESCALATION_CONFIG = "config"
