@@ -627,33 +627,65 @@ def test_the_command_column_is_capped_but_never_narrower_than_the_longest_head()
     assert width([f"{head} <value>"]) == len(head)
 
 
-def test_a_long_command_stacks_its_arguments_under_its_head():
+def test_a_long_command_fills_the_column_and_stacks_the_rest_under_its_head():
     rows = [('/hutbot [config] set datetime-format "<date>" "<time>" [<tz> <locale>]',
              "Date/time output."),
             ("/hutbot [config] clear calendar", "Stop reading a calendar feed.")]
     width = hutbot.messaging.command_column_width([command for command, _ in rows])
 
-    assert hutbot.messaging.format_command_rows(rows, width) == [
+    lines = hutbot.messaging.format_command_rows(rows, width)
+
+    # Here the column is exactly the long command's head — the other row is shorter — so its
+    # first line has no room to spare and every argument goes underneath.
+    assert width == len("/hutbot [config] set datetime-format")
+    assert lines == [
         "/hutbot [config] set datetime-format  Date/time output.",
         '                     "<date>"',
         '                     "<time>"',
         "                     [<tz> <locale>]",
         "/hutbot [config] clear calendar       Stop reading a calendar feed.",
     ]
+    # Nothing overruns the column, and the description keeps its two spaces.
+    assert all(len(line.split("  ")[0]) <= width for line in lines)
 
 
-def test_commands_sharing_a_head_wrap_together():
-    """Three spellings of one command, so wrapping two and inlining the third reads as three."""
+def test_commands_sharing_a_head_break_at_the_same_argument():
+    """Three spellings of one command, so three different break points read as three commands."""
     rows = [('/hutbot [config] add button "<label>" config <config>', "Run another config."),
             ('/hutbot [config] add button "<label>" ack [text]', "Mark it handled.")]
-    # A column the short spelling fits in and the long one does not.
+    # A column the short spelling fits in whole and the long one does not.
     lines = hutbot.messaging.format_command_rows(rows, len('/hutbot [config] add button "<label>" ack [text]'))
 
     assert lines == [
-        '/hutbot [config] add button                       Run another config.',
-        '                     "<label>"',
+        '/hutbot [config] add button "<label>"             Run another config.',
         "                     config <config>",
-        '/hutbot [config] add button                       Mark it handled.',
-        '                     "<label>"',
+        '/hutbot [config] add button "<label>"             Mark it handled.',
         "                     ack [text]",
+    ]
+
+
+def test_a_wrapped_row_fills_the_first_line_up_to_the_column():
+    """The point of the wrap: use the column, do not stack what still fits beside the head."""
+    rows = [("/hutbot [config] add condition <var> <operator> [value] [0|1]", "Gate this rule."),
+            ("/hutbot [config] clear conditions and then some padding", "Ungate it.")]
+    width = hutbot.messaging.command_column_width([command for command, _ in rows])
+
+    lines = hutbot.messaging.format_command_rows(rows, width)
+
+    assert lines[0].startswith("/hutbot [config] add condition <var> <operator> [value]")
+    assert lines[1] == "                     [0|1]"
+    # Two spaces is the minimum, and the column is never overrun.
+    assert lines[0][width:width + 2] == "  "
+    assert all(len(line.rstrip()) <= width for line in lines[1:] if not line.strip().startswith("/"))
+
+
+def test_an_argument_wider_than_the_column_still_gets_its_own_line():
+    """Nowhere to break it, so it overruns alone rather than being dropped or looping."""
+    rows = [("/hutbot set thing <a-very-long-single-argument-nothing-can-split>", "Set it.")]
+
+    lines = hutbot.messaging.format_command_rows(rows, len("/hutbot set thing"))
+
+    assert lines == [
+        "/hutbot set thing  Set it.",
+        "            <a-very-long-single-argument-nothing-can-split>",
     ]

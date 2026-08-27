@@ -342,30 +342,63 @@ def command_column_width(commands: list[str]) -> int:
     return max(longest_head, max(fitting, default=0))
 
 
+def _fitting_count(prefix: str, arguments: list[str], width: int) -> int:
+    """How many of `arguments` still fit after `prefix`, filling the column as far as it goes."""
+    count = 0
+    length = len(prefix)
+    for argument in arguments:
+        length += 1 + len(argument)
+        if length > width:
+            break
+        count += 1
+    return count
+
+
+def _pack(arguments: list[str], indent: int, width: int) -> list[str]:
+    """The leftover arguments as indented lines, each filled to the column."""
+    lines = []
+    remaining = list(arguments)
+    while remaining:
+        # At least one per line: an argument wider than the column has nowhere to go.
+        count = max(1, _fitting_count(" " * indent, remaining, width))
+        lines.append(" " * indent + " ".join(remaining[:count]))
+        remaining = remaining[count:]
+    return lines
+
+
 def format_command_rows(rows: list[tuple[str, str]], width: int, gap: int = 2) -> list[str]:
     """The help table's rows: each command, its description, and any wrapped arguments.
 
-    A command that fits the column is printed as one line. A longer one keeps its head in the
-    column — beside the description, where the eye looks for it — and stacks its arguments
-    underneath, indented to the head's last word so they read as belonging to it. Without this
-    a single long command (`set datetime-format "<date>" "<time>" [<tz> <locale>]`) sets the
-    column width for the whole table and pushes every description off to the right.
+    A command that fits the column is printed as one line. A longer one fills the column with
+    as many arguments as fit beside its head — the description still starts `gap` spaces after
+    the column — and the rest are stacked underneath, indented to the head's last word so they
+    read as belonging to it. Without this a single long command (`set datetime-format "<date>"
+    "<time>" [<tz> <locale>]`) sets the column width for the whole table and pushes every
+    description off to the right.
 
-    Commands sharing a head wrap together, even where one of them would have fitted: the three
-    `add button "<label>" <action>` spellings are one command with three endings, and wrapping
-    two of them while the third stays inline reads as three unrelated rows.
+    Commands sharing a head break at the same argument, even where one of them would have fitted
+    the column whole: the three `add button "<label>" <action>` spellings are one command with
+    three endings, and breaking them in three different places reads as three unrelated rows.
     """
     specs = [(command, description, *split_command_spec(command)) for command, description in rows]
-    wrapping_heads = {head for command, _, head, arguments in specs
-                      if arguments and len(command) > width}
+    # Per head, how many arguments the first line carries — the fewest any of its rows can fit,
+    # so they all break in the same place. A head whose rows all fit whole keeps them inline.
+    first_line_counts: dict[str, int] = {}
+    for command, _, head, arguments in specs:
+        if not arguments:
+            continue
+        count = len(arguments) if len(command) <= width else _fitting_count(head, arguments, width)
+        first_line_counts[head] = min(first_line_counts.get(head, count), count)
     lines = []
     for command, description, head, arguments in specs:
-        if not arguments or (len(command) <= width and head not in wrapping_heads):
+        count = first_line_counts.get(head, 0)
+        if not arguments or count == len(arguments):
             lines.append(f"{command:<{width}}{' ' * gap}{description}")
             continue
+        first = " ".join([head, *arguments[:count]]) if count else head
         indent = len(head) - len(head.rsplit(" ", 1)[-1]) if " " in head else 0
-        lines.append(f"{head:<{width}}{' ' * gap}{description}")
-        lines.extend(f"{' ' * indent}{argument}" for argument in arguments)
+        lines.append(f"{first:<{width}}{' ' * gap}{description}")
+        lines.extend(_pack(arguments[count:], indent, width))
     return lines
 
 
