@@ -789,7 +789,8 @@ async def test_a_reply_quotes_the_command_it_answers():
         await process_command(app, "set wait-time 5", channel, user)
     sent = app.client.chat_postEphemeral.await_args.kwargs["text"]
     # The fence is outside the quote: Slack renders a `>` inside a code block literally.
-    assert sent.endswith("> Response to command:\n```\n/hutbot set wait-time 5\n```")
+    # The fences are quoted too, so the code block sits inside the quote instead of below it.
+    assert sent.endswith("> Response to command:\n> ```\n> /hutbot set wait-time 5\n> ```")
 
 
 @pytest.mark.asyncio
@@ -802,7 +803,7 @@ async def test_a_mention_is_quoted_back_as_the_slash_command():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
         await process_command(app, "<@U0BOT> set wait-time 7", channel, user, allow_test_message=True)
     sent = app.client.chat_postEphemeral.await_args.kwargs["text"]
-    assert "> Response to command:\n```\n/hutbot set wait-time 7\n```" in sent
+    assert "> Response to command:\n> ```\n> /hutbot set wait-time 7\n> ```" in sent
 
 
 @pytest.mark.asyncio

@@ -61,9 +61,12 @@ def command_footer() -> str:
     command = state.current_command.get()
     if not command:
         return ""
-    # The fence stays outside the quote: Slack renders a `>` inside a code block literally,
-    # so quoting those lines puts the prefixes in the output.
-    return f"\n\n> Response to command:\n```\n{command}\n```"
+    # Every line carries the quote prefix, the fences and the command between them included:
+    # that is what keeps the code block *inside* the quote, sharing its bar, instead of
+    # breaking out below it. Slack strips the prefix from the block's own lines when it
+    # renders them, so the command itself is not printed with a `>` in front.
+    quoted = "\n".join(f"> {line}".rstrip() for line in command.split("\n"))
+    return f"\n\n> Response to command:\n> ```\n{quoted}\n> ```"
 
 
 async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "", footer: bool = True) -> None:
