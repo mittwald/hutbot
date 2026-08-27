@@ -675,3 +675,98 @@ async def test_the_migration_keeps_a_conditions_selector():
     assert conditions == [{"variable": "calendar_summary", "operator": "contains", "value": "x",
                            "case_sensitive": False, "at": "+1D", "offset": "NEXT"}]
     assert "calendar_next_summary" in log_warning.call_args.args[0]
+
+
+# ----- a condition may read the config that triggered this one -----
+
+def test_a_condition_can_gate_on_which_config_triggered_this_one():
+    triggered = hutbot.templating.parent_template_variables({
+        'config_name': 'reminder', 'message': 'Anybody?', 'timestamp': '1786453297.6',
+        'recipients': ['<@U1>', '<@U2>'], 'variable_names': ['user'], 'variables': ['<@U1>'],
+    })
+    unchained = hutbot.templating.parent_template_variables(None)
+    judge = hutbot.conditionutil.evaluate_conditions
+
+    is_reminder = {"variable": "parent_config", "operator": "equals", "value": "reminder"}
+    assert judge({"conditions": [is_reminder]}, triggered)[0] is True
+    assert judge({"conditions": [is_reminder]}, unchained)[0] is False
+
+
+def test_nothing_triggered_me_is_the_empty_operator():
+    """`<no-parent>` counts as empty, so this is the natural way to ask."""
+    judge = hutbot.conditionutil.evaluate_conditions
+    nobody = {"variable": "parent_config", "operator": "empty", "value": ""}
+
+    assert judge({"conditions": [nobody]}, hutbot.templating.parent_template_variables(None))[0] is True
+    assert judge({"conditions": [nobody]}, hutbot.templating.parent_template_variables(
+        {'config_name': 'reminder'}))[0] is False
+
+
+def test_a_condition_on_the_parents_recipients_matches_any_of_them():
+    variables = hutbot.templating.parent_template_variables({
+        'config_name': 'reminder', 'recipients': ['<@U1>', '<@U2>']})
+    judge = hutbot.conditionutil.evaluate_conditions
+
+    assert judge({"conditions": [{"variable": "parent_recipients", "operator": "contains",
+                                  "value": "U2"}]}, variables)[0] is True
+    assert judge({"conditions": [{"variable": "parent_recipients", "operator": "not_contains",
+                                  "value": "U2"}]}, variables)[0] is False
+    assert judge({"conditions": [{"variable": "parent_recipients", "operator": "not_contains",
+                                  "value": "U9"}]}, variables)[0] is True
+
+
+def test_a_condition_on_the_parents_variables_matches_any_entry():
+    variables = hutbot.templating.parent_template_variables({
+        'config_name': 'reminder', 'variable_names': ['user', 'message'],
+        'variables': ['<@U1>', 'DB down']})
+
+    assert hutbot.conditionutil.evaluate_conditions(
+        {"conditions": [{"variable": "parent_variables", "operator": "contains", "value": "DB"}]},
+        variables)[0] is True
+
+
+@pytest.mark.asyncio
+async def test_a_parent_condition_is_settled_so_it_is_judged_the_same_at_arrival():
+    """Why the parent family is not a fire-time variable: only `message` rules are judged at
+    arrival, and a `message` rule is never the config a button or a timeout runs — so the
+    answer at arrival is the same placeholder it would be at fire time."""
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(),
+              "conditions": [{"variable": "parent_config", "operator": "equals", "value": "reminder"}]}
+    channel = _mk_channel({"default": config})
+
+    assert "parent_config" in hutbot.conditionutil.settled_condition_variables(config)
+    ruled_out, reason = await hutbot.actions.conditions_ruled_out_at_arrival(
+        app, "token", channel, config, "default", {"text": "DB down"})
+
+    assert ruled_out is True
+    assert "parent_config" in reason
+
+
+@pytest.mark.asyncio
+async def test_add_condition_accepts_a_parent_variable():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "add condition parent_config equals reminder", channel, user)
+
+    # No `at`/`offset` keys: those are stored only for a variable that reads a calendar event.
+    assert channel.configs["default"]["conditions"] == [
+        {"variable": "parent_config", "operator": "equals", "value": "reminder", "case_sensitive": False}]
+
+
+@pytest.mark.asyncio
+async def test_add_condition_rejects_a_selector_on_a_parent_variable():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "add condition parent_date(at=+1d) equals x", channel, user)
+
+    assert "does not read a calendar event" in send.call_args.args[3]
+    assert not channel.configs["default"]["conditions"]

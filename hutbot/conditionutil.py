@@ -2,7 +2,7 @@
 
 Nearly a leaf, like ``buttonutil``: it imports ``re``, ``constants`` and ``datetimefmt`` —
 the last one only to judge an `at` expression, which owns that grammar — so every consumer
-(``persistence``, ``actions``, the setters, ``info``, ``webui_backend``) can use it without
+(``persistence``, ``actions``, ``calendarfeed``, the setters, ``info``, ``webui_backend``) can use it without
 touching the ``actions`` <-> ``buttons`` import cycle.
 
 ``evaluate_conditions`` is deliberately pure and synchronous. It takes an already-resolved
@@ -282,6 +282,17 @@ def snapshot_conditions(config: dict) -> dict:
         'conditions': [dict(c) for c in (config.get('conditions') or []) if isinstance(c, dict)],
         'conditions_mode': config.get('conditions_mode') or CONDITION_MODE_ALL,
     }
+
+
+def set_list_variable(variables: dict, key: str, items_key: str, items: list) -> None:
+    """Store a list variable: the aligned entries, plus the joined form a message renders.
+
+    The joined form leaves out the blanks — a reader wants "Nico Engelbrecht", not a stray
+    comma for the room mailbox that has no address — while the entries keep them so `nth`
+    lines up across the parallel lists.
+    """
+    variables[items_key] = list(items)
+    variables[key] = ", ".join(item for item in items if item)
 
 
 def list_items(variables: dict, variable: str) -> list[str]:

@@ -119,7 +119,7 @@ def _with_snapshotted_conditions(config: dict, target_conditions: dict | None, n
     return {**config, **snapshot} if snapshot else config
 
 
-async def register_escalation(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, def_channel_id: str, config_name: str, config: dict, context: dict | None = None, posted_text: str = '') -> None:
+async def register_escalation(app: AsyncApp, opsgenie_token: str, posted_channel_id: str, message_ts: str, def_channel_id: str, config_name: str, config: dict, context: dict | None = None, posted_text: str = '', parent: dict | None = None) -> None:
     """Record a buttoned message so ack/delay/timeout can act on it later.
 
     A record is stored for every buttoned message (it carries the original message
@@ -144,6 +144,11 @@ async def register_escalation(app: AsyncApp, opsgenie_token: str, posted_channel
         # message can be de-buttoned once handled.
         'buttons': [dict(b) for b in (config.get('buttons') or [])],
         'posted_text': posted_text,
+        # What the run that posted this message did, for the `{{parent_*}}` variables of whatever
+        # a press or the timeout goes on to run. Only the facts the record does not already
+        # carry: the name, the text and the ts are read back from `config_name`, `posted_text`
+        # and `message_ts`, which is what lets a record written before this answer them too.
+        'parent': parent or {},
         # The conditions of the configs this message can run, frozen like the buttons above.
         'target_conditions': _target_conditions(def_channel_id, config),
         'escalation_kind': kind,
@@ -161,6 +166,28 @@ async def register_escalation(app: AsyncApp, opsgenie_token: str, posted_channel
     state.pending_buttons[key] = {'task': task, **entry}
     state._button_states_cache[key] = entry
     await persistence.flush_button_cache()
+
+
+def _parent_facts(entry: dict | None) -> dict:
+    """The triggering run's facts, as this record can answer them.
+
+    The button cache has no migration — `persistence.flush_button_cache` dumps it wholesale — so
+    a record written by an older version has to degrade rather than fail. It already stores the
+    three facts that matter most under their own names, so those are read from there for *every*
+    record and never duplicated into `parent`: an older record answers `{{parent_config}}`,
+    `{{parent_message}}`, `{{parent_timestamp}}` and the three date/time forms in full. The rest
+    render empty rather than `<no-parent>` — there *was* a parent, this record just never
+    recorded that much about it.
+    """
+    entry = entry or {}
+    return {
+        **(entry.get('parent') or {}),
+        'config_name': entry.get('config_name', ''),
+        'message': entry.get('posted_text', ''),
+        # The posted message's own Slack ts *is* when the parent ran, and it is on every record
+        # ever written — so the date/time variables need no field of their own.
+        'timestamp': entry.get('message_ts', ''),
+    }
 
 
 async def _escalation_context(app: AsyncApp, entry: dict | None, posted_channel_id: str, message_ts: str, presser: User | None = None) -> dict:
@@ -181,6 +208,7 @@ async def _escalation_context(app: AsyncApp, entry: dict | None, posted_channel_
         'text': orig.get('text', ''),
         'ts': orig.get('ts', ''),
         'permalink': orig.get('permalink', ''),
+        'parent': _parent_facts(entry),
     }
 
 

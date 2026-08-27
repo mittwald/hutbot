@@ -848,3 +848,50 @@ async def test_a_backticked_button_label_keeps_its_apostrophe():
         await process_command(app, "add button `I've got it` ack `On it`", channel, user)
     assert channel.configs["default"]["buttons"] == [
         {"label": "I've got it", "action": "ack", "value": "On it"}]
+
+
+# ----- the config that triggered this one -----
+
+@pytest.mark.asyncio
+async def test_set_message_accepts_every_parent_variable():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    template = " ".join(f"{{{{{variable}}}}}" for variable in sorted(hutbot.constants.PARENT_TEMPLATE_VARIABLES))
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
+        await process_command(app, f'set message "{template}"', channel, user)
+
+    assert channel.configs["default"]["reply_message"] == template
+
+
+@pytest.mark.asyncio
+async def test_set_message_rejects_a_misspelled_of_argument():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'set message "{{parent_variables(of=\\"usre\\")}}"', channel, user)
+
+    assert "`of` names a template variable" in send.call_args.args[3]
+    assert channel.configs["default"]["reply_message"] == DEFAULT_CONFIG["reply_message"]
+
+
+@pytest.mark.asyncio
+async def test_the_test_preview_renders_the_parent_variables_as_placeholders():
+    """`test` has no parent, so every one of them has to say so rather than show braces."""
+    app = AsyncMock()
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p/1"}
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "test", channel, user)
+
+    preview = "\n".join(str(arg) for call in send.call_args_list for arg in call.args)
+    for variable in hutbot.constants.PARENT_TEMPLATE_VARIABLES:
+        assert f"{{{{{variable}}}}}" in preview, variable
+    assert "<no-parent>" in preview

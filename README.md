@@ -107,6 +107,49 @@ carries — a one-day event on the 19th reports the 19th, not the 20th. Cancelle
 tentative ones are kept, and `{{calendar_status}}` says which is which. Recurring events
 (`RRULE`, with `EXDATE` exclusions) are expanded, including their `VTIMEZONE`.
 
+### The config that triggered this one
+
+A button press and an escalation timeout both run another config. The config they run can read
+what triggered it through the `parent_*` variables:
+
+- `{{parent_config}}` — the triggering config's name
+- `{{parent_message}}` — the full text it posted
+- `{{parent_variables}}` — what its own `{{…}}` came out as, in the order its message reads them
+- `{{parent_date}}`, `{{parent_time}}` and `{{parent_datetime}}` — when it posted, taking the same
+  `fmt`/`tz`/`lc` arguments as every other date/time variable
+- `{{parent_timestamp}}` — the raw Slack timestamp of the same instant
+- `{{parent_action}}` and `{{parent_target}}` — how it was sent (`reply`, `dm_user`, `group_dm`,
+  `post_channel`) and the target it was sent to, already rendered
+- `{{parent_recipients}}` — who received it, as `#channel` or `<@person>`: the channel for `reply`
+  and `post-channel`, the person for `dm-user`, every member for `group-dm`
+
+`{{parent_variables}}` renders comma-separated like any list variable, and `nth` picks one entry
+counting from 1. `of` names one instead of counting to it, which survives someone reordering the
+parent's message:
+
+```
+{{parent_variables(nth=1)}}                  the first {{…}} of the parent's message
+{{parent_variables(of="calendar_summary")}}  whatever the parent rendered there
+```
+
+Two things are easy to get wrong. `{{message}}` still means the **original** Slack message, which
+travels down the whole chain — `{{parent_message}}` is the text the config immediately before this
+one posted, so the two are different things. And where one config runs another which runs a third,
+the parent is always the one **immediately** before: the third sees the second, never the first.
+
+Nothing triggered a `message`, `cron` or `manual` run, nor a `test` or `run` command, so there the
+whole family renders `<no-parent>`. In a button's `ack` text the family describes the message the
+button is attached to, which is how an ack can quote what it is acknowledging.
+
+What this cannot tell you: who *read* the message — Slack reports delivery, not readership — and
+which people a channel post reached, because `{{parent_recipients}}` names the channel rather than
+its members. A `group-dm` does list its members, as they stood when the message was sent.
+
+```bash
+/hutbot escalate set message "No answer to {{parent_config}} from {{parent_datetime}} to {{parent_recipients}}: {{parent_message}}"
+/hutbot escalate add condition parent_config equals reminder
+```
+
 Opsgenie date/time variables support `fmt`/`format`, `tz`/`timezone`, and `lc`/`locale` arguments, for example `{{opsgenie_next_start_datetime(format='02.01.2006 15:04', timezone='Europe/Berlin', locale='de_DE')}}`. The default date/time output for Opsgenie variables and `/hutbot on-call` can be configured with:
 
 ```bash
@@ -305,7 +348,13 @@ existing configs keep working unchanged.
     The timeout and its target are one setting, so a timer can never exist with nothing to fire.
     Pending escalations survive restarts.
   - A button/timeout that runs a config passes the **original message context** to it, so the target's
-    templates and any OpsGenie alert reference the original message.
+    templates and any OpsGenie alert reference the original message. The config it runs can also read
+    what triggered it — its name, its text, when it posted and who it reached — through the
+    [`{{parent_*}}` variables](#the-config-that-triggered-this-one).
+  - A chain of configs is cut off after 10 hops, so a config that escalates to itself (directly or
+    around a loop) stops instead of posting once per timeout forever. The count travels with the
+    pending message, so a restart does not reset it. `add condition parent_config empty` is the way
+    to say "only run when nothing triggered me".
   - Once a message is handled, its buttons are removed and replaced by a one-line note of what
     happened: *Dave Grieser: [I've got it]* or *Dave Grieser: [Page] ▶︎ alarm* for a press, and
     *⌛︎ 1m* or *⌛︎ 5m ▶︎ alarm* when the escalation acted instead.

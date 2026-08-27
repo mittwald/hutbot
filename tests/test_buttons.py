@@ -175,7 +175,8 @@ async def test_run_action_reply_posts_with_buttons():
     channel = _mk_channel({"src": config})
     with patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
         posted = await hutbot.actions.run_action(app, "token", channel, config, "src", context=None)
-    assert posted == {"channel": "C12345", "ts": "99.1", "text": "Hi there"}
+    assert posted == {"channel": "C12345", "ts": "99.1", "text": "Hi there",
+                      "recipients": ["#general"]}
     reg.assert_awaited_once()  # buttons present ⇒ escalation registered
     kwargs = app.client.chat_postMessage.call_args.kwargs
     assert kwargs["channel"] == "C12345"
@@ -1098,3 +1099,267 @@ def test_reachable_config_names_covers_buttons_and_the_escalation():
     assert hutbot.buttons._reachable_config_names(
         {"buttons": [{"label": "Page", "action": "config", "value": "alarm"}],
          "escalation_timeout": 300, "escalation_kind": "button", "escalation_target": "Page"}) == {"alarm"}
+
+
+# ----- the config that triggered this one -----
+
+def _chain_channel(target_message: str, *, src_extra=None, target_extra=None):
+    """A `src` config with a `config` button, and the `tgt` config that button runs."""
+    src_config = {**DEFAULT_CONFIG.copy(),
+                  "reply_message": "Ping {{user}} about {{message}}",
+                  "buttons": [{"label": "Go", "action": "config", "value": "tgt"}],
+                  **(src_extra or {})}
+    target_config = {**DEFAULT_CONFIG.copy(), "trigger": "manual",
+                     "reply_message": target_message, **(target_extra or {})}
+    channel = _mk_channel({"src": src_config, "tgt": target_config})
+    # `restore_pending_buttons` drops a record whose channel is no longer configured.
+    hutbot.state.channel_config[channel.id] = channel.configs
+    return channel
+
+
+async def _post_the_buttoned_message(app, channel, context, config_name="src"):
+    """Run `src` for real, so the pending record is the one the product would have written."""
+    # A real payload, or `response.get(...)` in `get_message_permalink` is itself an AsyncMock
+    # and leaves a coroutine nobody awaits.
+    app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p/9.1"}
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
+        await hutbot.actions.run_action(app, "token", channel, channel.configs[config_name], config_name, context)
+
+
+async def _press(app, channel, posted_ts, config_name="src", index=0):
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": posted_ts},
+            "user": {"id": "U9"}, "message": {"ts": posted_ts}}
+    action = {"action_id": "hutbot_btn:0",
+              "value": json.dumps({"channel": "C12345", "config": config_name, "index": index})}
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("UAUTH", "ada", "Ada Author", "T"))):
+        await hutbot.buttons.handle_button_press(app, "token", body, action)
+
+
+@pytest.mark.asyncio
+async def test_a_pressed_config_reads_what_the_config_that_triggered_it_did():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel(
+        "{{parent_config}} said \"{{parent_message}}\" to {{parent_recipients}} "
+        "via {{parent_action}} at {{parent_timestamp}}")
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    app.client.chat_postMessage.return_value = {"ts": "11.1"}
+    await _press(app, channel, "10.1")
+
+    sent = app.client.chat_postMessage.call_args.kwargs["text"]
+    assert sent == ('src said "Ping <@UAUTH> about DB down" to #general '
+                    'via reply at 10.1')
+
+
+@pytest.mark.asyncio
+async def test_a_pressed_config_reads_the_parents_own_variables_by_position_and_by_name():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel('{{parent_variables(nth=1)}} / {{parent_variables(of="message")}} '
+                             '/ {{parent_variables}} / {{parent_variables(nth=9)}}')
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    await _press(app, channel, "10.1")
+
+    sent = app.client.chat_postMessage.call_args.kwargs["text"]
+    assert sent == "<@UAUTH> / DB down / <@UAUTH>, DB down / "
+
+
+@pytest.mark.asyncio
+async def test_the_parent_message_and_the_original_message_are_different_things():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel("parent: {{parent_message}} | original: {{message}}")
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    await _press(app, channel, "10.1")
+
+    sent = app.client.chat_postMessage.call_args.kwargs["text"]
+    assert sent == "parent: Ping <@UAUTH> about DB down | original: DB down"
+
+
+@pytest.mark.asyncio
+async def test_the_parent_datetime_is_when_the_parent_posted():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    # A real Slack ts for the posted message, which is what the date/time variables read.
+    app.client.chat_postMessage.return_value = {"ts": "1786453297.645799"}
+    channel = _chain_channel('{{parent_datetime(fmt="%Y-%m-%d %H:%M", tz="UTC")}}')
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    await _press(app, channel, "1786453297.645799")
+
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == "2026-08-11 13:01"
+
+
+@pytest.mark.asyncio
+async def test_an_escalation_timeout_reads_the_parent_the_same_way_a_press_does():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel("escalating {{parent_config}}: {{parent_message}}",
+                             src_extra={"escalation_kind": "config", "escalation_target": "tgt",
+                                        "escalation_timeout": 3600})
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    entry = hutbot.state.pending_buttons[("C12345", "10.1")]
+    entry["task"].cancel()
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("UAUTH", "ada", "Ada Author", "T"))):
+        await hutbot.buttons._run_escalation(app, "token", entry)
+
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == "escalating src: Ping <@UAUTH> about DB down"
+
+
+@pytest.mark.asyncio
+async def test_in_a_chain_of_three_the_parent_is_the_one_immediately_before():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    a_config = {**DEFAULT_CONFIG.copy(), "reply_message": "A speaks",
+                "buttons": [{"label": "Go", "action": "config", "value": "b"}]}
+    b_config = {**DEFAULT_CONFIG.copy(), "trigger": "manual", "reply_message": "B saw {{parent_config}}",
+                "buttons": [{"label": "Go", "action": "config", "value": "c"}]}
+    c_config = {**DEFAULT_CONFIG.copy(), "trigger": "manual",
+                "reply_message": "C saw {{parent_config}} say \"{{parent_message}}\", original {{message}}"}
+    channel = _mk_channel({"a": a_config, "b": b_config, "c": c_config})
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    await _post_the_buttoned_message(app, channel, context, "a")
+    app.client.chat_postMessage.return_value = {"ts": "11.1"}
+    await _press(app, channel, "10.1", "a")
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == "B saw a"
+
+    app.client.chat_postMessage.return_value = {"ts": "12.1"}
+    await _press(app, channel, "11.1", "b")
+
+    sent = app.client.chat_postMessage.call_args.kwargs["text"]
+    assert sent == 'C saw b say "B saw a", original DB down'
+
+
+@pytest.mark.asyncio
+async def test_the_parent_facts_survive_a_restart():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel('{{parent_config}}: {{parent_variables(of="message")}} '
+                             'to {{parent_recipients}}')
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+
+    # Through real serialization, so a value the record cannot hold fails here, not in production.
+    written = json.loads(json.dumps(list(hutbot.state._button_states_cache.values()), indent=2))
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    hutbot.state._button_states_cache.update({(e['posted_channel_id'], e['message_ts']): e for e in written})
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
+        await hutbot.buttons.restore_pending_buttons(app, "token")
+
+    await _press(app, channel, "10.1")
+
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == "src: DB down to #general"
+
+
+@pytest.mark.asyncio
+async def test_a_record_written_before_the_parent_facts_existed_still_answers_what_it_can():
+    """The button cache has no migration, so an older record has to degrade, not fail."""
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "11.1"}
+    channel = _chain_channel(
+        "{{parent_config}} | {{parent_message}} | {{parent_timestamp}} | "
+        '{{parent_datetime(fmt="%Y-%m-%d", tz="UTC")}} | {{parent_action}} | '
+        "{{parent_target}} | {{parent_recipients}} | {{parent_variables}}")
+    key = ("C12345", "1786453297.645799")
+    # Exactly the keys the current build writes — no `parent` key at all.
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "posted_channel_id": "C12345", "message_ts": "1786453297.645799",
+        "def_channel_id": "C12345", "config_name": "src", "posted_text": "Ping <@UAUTH> about DB down",
+        "buttons": channel.configs["src"]["buttons"], "orig": {"user_id": "UAUTH", "text": "DB down"},
+    }
+
+    await _press(app, channel, "1786453297.645799")
+
+    sent = app.client.chat_postMessage.call_args.kwargs["text"]
+    # The four facts the record does carry answer in full. The rest render empty rather than
+    # `<no-parent>`: there *was* a parent, this record just never recorded that much about it.
+    assert sent == "src | Ping <@UAUTH> about DB down | 1786453297.645799 | 2026-08-11 |  |  |  | "
+
+
+@pytest.mark.asyncio
+async def test_delaying_an_escalation_keeps_the_parent_facts():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel("{{parent_config}}", src_extra={
+        "buttons": [{"label": "Later", "action": "delay", "value": "30"},
+                    {"label": "Go", "action": "config", "value": "tgt"}],
+        "escalation_kind": "config", "escalation_target": "tgt", "escalation_timeout": 3600})
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    before = hutbot.state.pending_buttons[("C12345", "10.1")]["parent"]
+    hutbot.state.pending_buttons[("C12345", "10.1")]["task"].cancel()
+    await _press(app, channel, "10.1", index=0)
+
+    entry = hutbot.state.pending_buttons[("C12345", "10.1")]
+    assert entry["parent"] == before
+    entry["task"].cancel()
+
+
+@pytest.mark.asyncio
+async def test_in_an_ack_the_parent_is_the_message_the_button_sits_on():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel("unused", src_extra={
+        "buttons": [{"label": "Got it", "action": "ack",
+                     "value": "acknowledged: {{parent_message}}"}]})
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    await _press(app, channel, "10.1")
+
+    assert app.client.chat_postMessage.call_args.kwargs["text"] == "acknowledged: Ping <@UAUTH> about DB down"
+
+
+@pytest.mark.asyncio
+async def test_the_chain_depth_travels_with_the_record_across_a_hop():
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    app = AsyncMock()
+    app.client.chat_postMessage.return_value = {"ts": "10.1"}
+    channel = _chain_channel("second hop", target_extra={
+        "buttons": [{"label": "Go", "action": "config", "value": "tgt"}]})
+    context = {"user": User("UAUTH", "ada", "Ada Author", "T"), "text": "DB down", "ts": "9.1"}
+
+    await _post_the_buttoned_message(app, channel, context)
+    assert hutbot.state.pending_buttons[("C12345", "10.1")]["parent"]["depth"] == 1
+
+    app.client.chat_postMessage.return_value = {"ts": "11.1"}
+    await _press(app, channel, "10.1")
+
+    assert hutbot.state.pending_buttons[("C12345", "11.1")]["parent"]["depth"] == 2

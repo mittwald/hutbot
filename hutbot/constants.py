@@ -279,6 +279,9 @@ TEMPLATE_ARGUMENT_ALIASES = {
     "when": "at",
     # Which event relative to that moment: `next`, `prev`, or a count like `+2`/`-1`.
     "offset": "offset",
+    # Names one of the parent's variables, instead of counting to it with `nth`.
+    "of": "of",
+    "var": "of",
 }
 OPSGENIE_DATETIME_TEMPLATE_VARIABLES = {
     f"opsgenie_{period}_{bound}_{part}"
@@ -314,7 +317,6 @@ CALENDAR_LIST_TEMPLATE_VARIABLES = {
     for field in ("attendees", "attendee_emails", "attendee_users",
                   "other_attendees", "other_attendee_emails", "other_attendee_users")
 }
-LIST_TEMPLATE_VARIABLES = CALENDAR_LIST_TEMPLATE_VARIABLES
 CALENDAR_TEMPLATE_VARIABLES = {
     "calendar_name",
     *(
@@ -328,6 +330,38 @@ CALENDAR_TEMPLATE_VARIABLES = {
 # The ones that describe an event and therefore take `at`/`offset`. The feed's own name does
 # not depend on a moment, so it is the one that does not.
 CALENDAR_EVENT_TEMPLATE_VARIABLES = CALENDAR_TEMPLATE_VARIABLES - {"calendar_name"}
+# What the config that triggered this run did, when one did. A button press or an escalation
+# timeout runs another config, and these are how the config it runs can talk about it: what it
+# was called, what it said, when, to whom, and what its own variables came out as.
+PARENT_DATETIME_TEMPLATE_VARIABLES = {"parent_date", "parent_time", "parent_datetime"}
+# `parent_variables` holds one entry per `{{…}}` of the parent's reply message, in the order a
+# reader sees them, so `nth=1` is the first variable in the message. `of=` names one instead.
+PARENT_VARIABLES_TEMPLATE_VARIABLE = "parent_variables"
+PARENT_LIST_TEMPLATE_VARIABLES = {PARENT_VARIABLES_TEMPLATE_VARIABLE, "parent_recipients"}
+# The names behind `parent_variables`, positionally parallel to its entries, so `of=` can find
+# one by name. Internal (`__`-prefixed) because there is no public variable that renders names.
+PARENT_VARIABLE_NAMES_KEY = f"__{PARENT_VARIABLES_TEMPLATE_VARIABLE}_names"
+PARENT_TEMPLATE_VARIABLES = {
+    "parent_config",
+    "parent_message",
+    "parent_timestamp",
+    "parent_action",
+    "parent_target",
+    *PARENT_DATETIME_TEMPLATE_VARIABLES,
+    *PARENT_LIST_TEMPLATE_VARIABLES,
+}
+# A chained config may itself read `{{parent_variables}}`, and its values are persisted with the
+# buttoned message that can chain again — so a long chain would compound its own rendered text
+# into every following record. Bounded here rather than trusted to stay small.
+MAX_PARENT_VARIABLES = 50
+PARENT_VARIABLE_LENGTH_LIMIT = 500
+# How many configs a chain may run before it is cut off. A hop is a button press or an escalation
+# timer, so the stack unwinds between them and a call-depth counter would always read zero — the
+# count travels in the persisted parent facts instead. A config that escalates to itself would
+# otherwise post forever, once per timeout.
+MAX_ACTION_CHAIN_DEPTH = 10
+# Every variable that holds a list: rendered comma-separated, and `nth` picks one entry.
+LIST_TEMPLATE_VARIABLES = CALENDAR_LIST_TEMPLATE_VARIABLES | PARENT_LIST_TEMPLATE_VARIABLES
 # How far `offset` may count in either direction. The forward walk is bounded by the ICS
 # lookahead and the backward one by a window, so neither may be asked for an arbitrary count.
 MAX_EVENT_OFFSET = 20
@@ -396,12 +430,17 @@ def event_slice_prefix(at: str = "", offset: str = "") -> str:
     return event_slice_name("", at, offset)
 # Every variable that renders an instant and therefore accepts `fmt`/`tz`/`lc`
 # arguments. Both providers store their raw ISO value under `__<variable>_raw`.
-TEMPLATE_DATETIME_VARIABLES = OPSGENIE_DATETIME_TEMPLATE_VARIABLES | CALENDAR_DATETIME_TEMPLATE_VARIABLES
+TEMPLATE_DATETIME_VARIABLES = (OPSGENIE_DATETIME_TEMPLATE_VARIABLES | CALENDAR_DATETIME_TEMPLATE_VARIABLES
+                              | PARENT_DATETIME_TEMPLATE_VARIABLES)
 # Variables whose value is not settled until a rule actually fires: the two providers that
 # have to be fetched, plus the permalink, which would cost a Slack call per message to
 # resolve early. Everything else follows from the message, its sender, and the config, so a
 # condition on it can be judged the moment the message arrives.
 FIRE_TIME_TEMPLATE_VARIABLES = OPSGENIE_TEMPLATE_VARIABLES | CALENDAR_TEMPLATE_VARIABLES | {"message_link"}
+# The parent family is not in here on purpose. Only a `message` rule is judged at arrival
+# (`actions.conditions_ruled_out_at_arrival`, reached only from `routing.route_message`), and a
+# `message` rule is never the config a button or a timeout runs — so `parent_*` is the
+# placeholder both at arrival and at fire time, and the arrival gate cannot drift from it.
 # Formatted renderings of ``{{timestamp}}``: the triggering message's time, or the
 # time the rule ran when there is no message behind it. Like the OpsGenie date/time
 # variables they take `fmt`/`tz`/`lc` arguments.
@@ -415,6 +454,7 @@ SUPPORTED_TEMPLATE_VARIABLES = {
     "message_link",
     *OPSGENIE_TEMPLATE_VARIABLES,
     *CALENDAR_TEMPLATE_VARIABLES,
+    *PARENT_TEMPLATE_VARIABLES,
     "team",
     "timestamp",
     "user",
@@ -433,6 +473,11 @@ UNKNOWN_CALENDAR_PLACEHOLDER = "<no-calendar-set>"
 # quiet for that reason says so in `test` output and in whatever it renders.
 UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER = "<unknown-calendar>"
 UNKNOWN_CALENDAR_EVENT_PLACEHOLDER = "<no-event>"
+# Nothing triggered this run: it came from a message, a schedule, or a command rather than from
+# another config. `parent_config empty` is the natural way to ask, which is why this joins
+# `UNKNOWN_PLACEHOLDERS` below — and why `targets.resolve_user_targets` skips it instead of
+# trying to look it up as a person when `{{parent_recipients}}` is used as a target.
+NO_PARENT_PLACEHOLDER = "<no-parent>"
 # Every "nothing resolved" stand-in. A condition's `empty`/`not_empty` treats these as
 # empty, because the providers never hand back a bare "" and `opsgenie_current_user empty`
 # is the natural way to ask "is anyone on call?".
@@ -445,4 +490,5 @@ UNKNOWN_PLACEHOLDERS = {
     UNKNOWN_CALENDAR_PLACEHOLDER,
     UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
+    NO_PARENT_PLACEHOLDER,
 }

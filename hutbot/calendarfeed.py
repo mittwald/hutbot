@@ -25,6 +25,7 @@ import recurring_ical_events
 
 from employee_list import get_env_var, log, log_error, log_warning
 
+from . import conditionutil
 from . import datetimefmt
 from . import messaging
 from . import slackcache
@@ -832,17 +833,6 @@ def get_calendar_placeholder_variables(config: dict | None = None, selectors: Se
     return variables
 
 
-def _set_list_variable(variables: dict, key: str, items_key: str, items: list) -> None:
-    """Store a list variable: the aligned entries, plus the joined form a message renders.
-
-    The joined form leaves out the blanks — a reader wants "Nico Engelbrecht", not a stray
-    comma for the room mailbox that has no address — while the entries keep them so `nth`
-    lines up across the parallel lists.
-    """
-    variables[items_key] = list(items)
-    variables[key] = ", ".join(item for item in items if item)
-
-
 def fill_calendar_event_variables(variables: dict[str, str], config: dict | None, keys, event: CalendarEvent | None) -> None:
     """Overwrite one slice's placeholders from a resolved event."""
     if event is None:
@@ -861,7 +851,7 @@ def fill_calendar_event_variables(variables: dict[str, str], config: dict | None
                          ("other_attendees", event.other_attendees),
                          ("other_attendee_emails", event.other_attendee_emails)):
         value_key, _, items_key = keys(f"calendar_{field}")
-        _set_list_variable(variables, value_key, items_key, items)
+        conditionutil.set_list_variable(variables, value_key, items_key, items)
 
     for bound, value in (("start", event.start), ("end", event.end)):
         for part in ("date", "time", "datetime"):
@@ -904,7 +894,7 @@ async def fill_calendar_user_variables(app, variables: dict, keys, event: Calend
     for field, emails in (("attendee_users", event.attendee_emails),
                           ("other_attendee_users", event.other_attendee_emails)):
         value_key, _, items_key = keys(f"calendar_{field}")
-        _set_list_variable(variables, value_key, items_key, await _mentions(app, emails))
+        conditionutil.set_list_variable(variables, value_key, items_key, await _mentions(app, emails))
 
 
 async def get_calendar_template_variables(app, config: dict, now: datetime.datetime | None = None,

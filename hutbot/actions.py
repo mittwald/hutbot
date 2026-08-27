@@ -26,20 +26,31 @@ from .constants import (
     ACTIONS_REQUIRING_TARGET,
     ACTION_TARGET_HINTS,
     CALENDAR_TEMPLATE_VARIABLES,
+    MAX_ACTION_CHAIN_DEPTH,
+    MAX_PARENT_VARIABLES,
     OPSGENIE_TEMPLATE_VARIABLES,
+    PARENT_VARIABLE_LENGTH_LIMIT,
     TEAM_UNKNOWN,
 )
 from .models import Channel, User
 
 
-def _referenced_variables(config: dict) -> set[str]:
-    """Every variable name a run of this config could read.
+def _alert_is_live(config: dict) -> bool:
+    """Whether this run could really send an OpsGenie alert — the gate `maybe_post_opsgenie_alert` uses."""
+    return bool(state.opsgenie_configured and (config or {}).get('opsgenie'))
 
-    The union of the message template, the OpsGenie alert template, and the conditions, so
-    a single build serves the gate, the message, and the alert.
+
+def _referenced_variables(config: dict) -> set[str]:
+    """Every variable name this run of this config will read.
+
+    The union of the message template, the conditions, and — only when this run could really
+    send one — the OpsGenie alert template, so a single build serves the gate, the message and
+    the alert. Switching OpsGenie off does not clear `opsgenie_message`, and
+    `maybe_post_opsgenie_alert` returns before rendering it, so counting a dead alert template
+    here would buy a provider round-trip (and its timeout) for text nothing will render.
     """
     referenced = conditionutil.condition_variables(config)
-    for template in templating.config_templates(config):
+    for template in templating.config_templates(config, include_alert=_alert_is_live(config)):
         referenced |= templating.find_template_variables(template)
     return referenced
 
@@ -66,6 +77,7 @@ async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel,
         include_opsgenie=bool(OPSGENIE_TEMPLATE_VARIABLES.intersection(referenced)),
         include_calendar=bool(CALENDAR_TEMPLATE_VARIABLES.intersection(referenced)),
         calendar_selectors=calendar_selectors,
+        parent=context.get('parent'),
     )
 
 
@@ -111,6 +123,62 @@ async def maybe_post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel:
     await opsgenie.post_opsgenie_alert(app, opsgenie_token, channel, config, user, alert_text, alert_ts, context.get('permalink', ''))
 
 
+def _with_recipients(posted: dict | None, recipients: list[str]) -> dict | None:
+    """Tag a posted message with who received it, for `{{parent_recipients}}`.
+
+    `#name` for a channel and `<@U…>` for a person, which is what `{{channel}}` and `{{user}}`
+    already render — so a condition on a recipient compares against the name somebody would
+    write, not against an id.
+    """
+    return {**posted, 'recipients': recipients} if posted else None
+
+
+async def _channel_recipient(app: AsyncApp, channel_id: str) -> str:
+    """`#name` for a channel a config posted into.
+
+    `get_channel_name` is the lookup that does not touch `state.channel_config` — the
+    `get_channel_by_id` wrapper *creates* an entry for an id it does not know, which would
+    invent a phantom channel config. It falls back to the id, and `#C123` would render as
+    literal text, so an unresolved channel stays the `<#C123>` form Slack expands itself.
+    """
+    name = await slackcache.get_channel_name(app, channel_id)
+    return f"#{name}" if name and name != channel_id else f"<#{channel_id}>"
+
+
+def _chain_depth(context: dict | None) -> int:
+    """How many configs deep in a chain this run is. Zero for a message, a schedule, a command."""
+    try:
+        return int(((context or {}).get('parent') or {}).get('depth', 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def parent_run_facts(config: dict, action: str, target: str, posted: dict | None, variables: dict[str, str], context: dict | None = None) -> dict:
+    """What a config triggered by this run gets to know about it: the `{{parent_*}}` values.
+
+    Built here because this is the only place holding all of it at once — the namespace the
+    message was rendered with, the action that sent it, the target it was sent to, and who Slack
+    says it reached. Reduced to plain strings, because this is persisted verbatim with the
+    pending button record and read back after a restart.
+
+    The config's name, its rendered text and the posted timestamp are deliberately absent: the
+    record already stores all three under `config_name`, `posted_text` and `message_ts`, and
+    reading them back from there is what lets a record written before this existed still answer
+    `{{parent_config}}`, `{{parent_message}}` and the date/time variables.
+    """
+    names, values = templating.rendered_template_values(config.get('reply_message') or '', variables, config)
+    return {
+        'variable_names': names[:MAX_PARENT_VARIABLES],
+        'variables': [value[:PARENT_VARIABLE_LENGTH_LIMIT] for value in values[:MAX_PARENT_VARIABLES]],
+        'action': action,
+        'target': target,
+        'recipients': list((posted or {}).get('recipients') or ()),
+        # One hop further than whatever triggered *this* run. Persisted with the record, so a
+        # chain cannot launder its depth through a restart.
+        'depth': _chain_depth(context) + 1,
+    }
+
+
 async def action_reply(app: AsyncApp, channel: Channel, config: dict, context: dict | None, text: str, blocks: list | None) -> dict | None:
     context = context or {}
     candidate = context.get('thread_ts', '') or context.get('message_ts', '')
@@ -119,7 +187,9 @@ async def action_reply(app: AsyncApp, channel: Channel, config: dict, context: d
     # message_ts that is invalid as a thread_ts here, and Slack would reject it.
     ctx_channel = context.get('channel_id')
     thread_ts = candidate if candidate and (ctx_channel is None or ctx_channel == channel.id) else ""
-    return await messaging._post_message(app, channel.id, text, blocks, thread_ts)
+    posted = await messaging._post_message(app, channel.id, text, blocks, thread_ts)
+    # A reply lands in the config's own channel, whose name is already in hand.
+    return _with_recipients(posted, [f"#{channel.name}"])
 
 
 async def action_dm_user(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None, target: str | None = None) -> dict | None:
@@ -139,7 +209,10 @@ async def action_dm_user(app: AsyncApp, channel: Channel, config: dict, text: st
     except SlackApiError as e:
         log_error(f"Action dm_user: failed to open DM with {target}:", e)
         return None
-    return await messaging._post_message(app, dm_id, text, blocks)
+    posted = await messaging._post_message(app, dm_id, text, blocks)
+    # The posted `channel` is a `D…` id, which names nobody — and a target may name several
+    # people while this action DMs one of them, so only the action itself can answer who.
+    return _with_recipients(posted, [f"<@{user.id}>"])
 
 
 async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None, target: str | None = None) -> dict | None:
@@ -170,7 +243,9 @@ async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: s
     except SlackApiError as e:
         log_error(f"Action group_dm: failed to open group DM for '{target}':", e)
         return None
-    return await messaging._post_message(app, mpim_id, text, blocks)
+    posted = await messaging._post_message(app, mpim_id, text, blocks)
+    # Read after the 8-member trim above, so this reports who was opened, not who resolved.
+    return _with_recipients(posted, [f"<@{member}>" for member in members])
 
 
 async def action_post_channel(app: AsyncApp, channel: Channel, config: dict, text: str, blocks: list | None, target: str | None = None) -> dict | None:
@@ -179,7 +254,8 @@ async def action_post_channel(app: AsyncApp, channel: Channel, config: dict, tex
     if not channel_id:
         log_error(f"Action post_channel: invalid channel target '{target}'.")
         return None
-    return await messaging._post_message(app, channel_id, text, blocks)
+    posted = await messaging._post_message(app, channel_id, text, blocks)
+    return _with_recipients(posted, [await _channel_recipient(app, channel_id)] if posted else [])
 
 
 def target_is_templated(target: str) -> bool:
@@ -221,7 +297,8 @@ async def evaluate_conditions(app: AsyncApp, opsgenie_token: str, channel: Chann
     if variables is None:
         variables = await _build_variables(
             app, opsgenie_token, channel, config, config_name, context,
-            _referenced_variables(config), templating.config_calendar_selectors(config))
+            _referenced_variables(config),
+            templating.config_calendar_selectors(config, include_alert=_alert_is_live(config)))
     met, reason = conditionutil.evaluate_conditions(config, variables)
     return met, reason, variables
 
@@ -248,16 +325,17 @@ async def conditions_ruled_out_at_arrival(app: AsyncApp, opsgenie_token: str, ch
     return conditionutil.conditions_ruled_out(config, variables)
 
 
-async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None, _depth: int = 0) -> tuple[dict | None, str]:
+async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> tuple[dict | None, str]:
     """`run_action`, plus why nothing was sent — so callers can report it.
 
     The conditions gate lives here rather than at each trigger, so no entry point can
     forget it. It runs after `missing_target_reason` (which is free, and is a config error
     the user has to fix either way) and before anything is rendered or posted.
     """
-    if _depth > 5:
-        log_warning(f"Action chain too deep at config '{config_name}'; aborting to avoid loops.")
-        return None, "action chain too deep"
+    depth = _chain_depth(context)
+    if depth > MAX_ACTION_CHAIN_DEPTH:
+        log_warning(f"Config '{config_name}' is {depth} configs deep in a chain; stopping to avoid a loop.")
+        return None, f"action chain is more than {MAX_ACTION_CHAIN_DEPTH} configs deep"
     action = config.get('action', ACTION_REPLY)
     reason = missing_target_reason(config)
     if reason:
@@ -268,6 +346,16 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
     if not met:
         log(f"Config '{config_name}' in #{channel.name} did not run: {condition_reason}.")
         return None, condition_reason
+
+    if variables is None:
+        # A config with no conditions was not charged for a build by the gate, so this is the
+        # first one. Built here rather than inside each render so the message, the target and the
+        # alert cannot disagree — and so `parent_run_facts` below describes the namespace the
+        # message was actually rendered with.
+        variables = await _build_variables(
+            app, opsgenie_token, channel, config, config_name, context,
+            _referenced_variables(config),
+            templating.config_calendar_selectors(config, include_alert=_alert_is_live(config)))
 
     text = await render_action_text(app, opsgenie_token, channel, config, config_name, context, variables)
     # A target may name people through variables — `{{calendar_other_attendee_users}}`
@@ -289,7 +377,10 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
         log_error(f"Unknown action '{action}' for config '{config_name}'.")
         return None, f"unknown action `{action}`"
     if posted and posted.get('ts') and config.get('buttons'):
-        await buttons.register_escalation(app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config, context, posted_text=text)
+        await buttons.register_escalation(
+            app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config,
+            context, posted_text=text,
+            parent=parent_run_facts(config, action, target, posted, variables, context))
     # OpsGenie is just a config property: any config that runs and has it enabled alerts.
     await maybe_post_opsgenie_alert(app, opsgenie_token, channel, config, config_name, context, (posted or {}).get('ts', ''), variables)
     if not posted:
@@ -299,6 +390,6 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
     return {**posted, 'text': text}, ""
 
 
-async def run_action(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None, _depth: int = 0) -> dict | None:
-    posted, _ = await run_action_with_reason(app, opsgenie_token, channel, config, config_name, context, _depth)
+async def run_action(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> dict | None:
+    posted, _ = await run_action_with_reason(app, opsgenie_token, channel, config, config_name, context)
     return posted

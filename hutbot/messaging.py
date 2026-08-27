@@ -19,6 +19,7 @@ from .constants import (
     LIST_TEMPLATE_VARIABLES,
     MENTION_PATTERN,
     OPSGENIE_TEMPLATE_VARIABLES,
+    PARENT_TEMPLATE_VARIABLES,
     SUPPORTED_TEMPLATE_VARIABLES,
     TEMPLATE_DATETIME_VARIABLES,
 )
@@ -378,12 +379,14 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
     command = state.slash_command
     name = state.bot_name
     version = state.version
-    general_variables = SUPPORTED_TEMPLATE_VARIABLES - DATETIME_TEMPLATE_VARIABLES - OPSGENIE_TEMPLATE_VARIABLES - CALENDAR_TEMPLATE_VARIABLES
+    general_variables = (SUPPORTED_TEMPLATE_VARIABLES - DATETIME_TEMPLATE_VARIABLES - OPSGENIE_TEMPLATE_VARIABLES
+                         - CALENDAR_TEMPLATE_VARIABLES - PARENT_TEMPLATE_VARIABLES)
     variable_groups = [
         ("Message, sender and config", general_variables),
         ("Date and time", DATETIME_TEMPLATE_VARIABLES),
         ("OpsGenie", OPSGENIE_TEMPLATE_VARIABLES),
         ("Calendar", CALENDAR_TEMPLATE_VARIABLES),
+        ("The config that triggered this one", PARENT_TEMPLATE_VARIABLES),
     ]
     intro = (
         f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here are all the variables I know:\n\n"
@@ -420,6 +423,22 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         "renders comma-separated, and `nth` picks one entry counting from 1: "
         "`{{calendar_attendees(nth=2)}}` is the second. Asking for an entry that is not there "
         "renders empty.",
+        "The `{{parent_*}}` variables describe the config that *triggered* this one — they are "
+        "filled in only when a button press or an escalation timeout ran this config, and render "
+        "`<no-parent>` otherwise. `{{parent_config}}` is its name, `{{parent_message}}` the full "
+        "text it posted, and `{{parent_date}}`/`{{parent_time}}`/`{{parent_datetime}}` when it "
+        "posted. `{{message}}` still means the *original* message, so the two are different "
+        "things; and where one config runs another which runs a third, the parent is always the "
+        "one immediately before.",
+        "`{{parent_variables}}` holds what the parent's own `{{…}}` came out as, in the order its "
+        "message reads: `{{parent_variables(nth=1)}}` is the first one. `of` names one instead of "
+        "counting to it — `{{parent_variables(of=\"calendar_summary\")}}` is whatever the parent "
+        "rendered there — which survives someone reordering the parent's message.",
+        "`{{parent_recipients}}` is who received the parent's message: the channel for `reply` "
+        "and `post-channel`, the person for `dm-user`, and every member for `group-dm`. "
+        "`{{parent_action}}` and `{{parent_target}}` are how it was sent. Slack reports delivery "
+        "and not readership, so none of these say who *read* it — and for a channel post the "
+        "recipient is the conversation, not the people in it.",
         "`{{calendar_name}}` is the built-in calendar's title when a config uses one, and "
         "otherwise the feed's own name — or its redacted URL, when the feed does not name itself.",
         "You can `@mention` someone by email address (`@nico@example.com`) as well as by username, "
