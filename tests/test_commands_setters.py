@@ -787,10 +787,21 @@ async def test_a_reply_quotes_the_command_it_answers():
     hutbot.state.slash_command = "/hutbot"
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
         await process_command(app, "set wait-time 5", channel, user)
-    sent = app.client.chat_postEphemeral.await_args.kwargs["text"]
-    # The fence is outside the quote: Slack renders a `>` inside a code block literally.
-    # The fences are quoted too, so the code block sits inside the quote instead of below it.
-    assert sent.endswith("> Response to command:\n> ```\n> /hutbot set wait-time 5\n> ```")
+    kwargs = app.client.chat_postEphemeral.await_args.kwargs
+    # A `rich_text` block, because mrkdwn cannot put a code block inside a quote: the bar
+    # beside the command comes from `border: 1` on the code block itself.
+    assert kwargs["blocks"][-1] == {
+        "type": "rich_text",
+        "elements": [
+            {"type": "rich_text_quote",
+             "elements": [{"type": "text", "text": "Response to command:"}]},
+            {"type": "rich_text_preformatted", "border": 1,
+             "elements": [{"type": "text", "text": "/hutbot set wait-time 5"}]},
+        ],
+    }
+    # The notification fallback still spells the footer out, so a push notification is not
+    # missing the command the reply answers.
+    assert kwargs["text"].endswith("Response to command:\n```\n/hutbot set wait-time 5\n```")
 
 
 @pytest.mark.asyncio
@@ -802,8 +813,9 @@ async def test_a_mention_is_quoted_back_as_the_slash_command():
     hutbot.state.bot_user_id = "U0BOT"
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
         await process_command(app, "<@U0BOT> set wait-time 7", channel, user, allow_test_message=True)
-    sent = app.client.chat_postEphemeral.await_args.kwargs["text"]
-    assert "> Response to command:\n> ```\n> /hutbot set wait-time 7\n> ```" in sent
+    kwargs = app.client.chat_postEphemeral.await_args.kwargs
+    assert kwargs["blocks"][-1]["elements"][1]["elements"][0]["text"] == "/hutbot set wait-time 7"
+    assert "Response to command:\n```\n/hutbot set wait-time 7\n```" in kwargs["text"]
 
 
 @pytest.mark.asyncio
@@ -813,10 +825,13 @@ async def test_a_chunked_reply_is_quoted_once_at_the_end():
     channel = _mk_channel()
     user = User("U1", "dave", "Dave", "T")
     await process_command(app, "help", channel, user)
-    messages = [c.kwargs["text"] for c in app.client.chat_postEphemeral.await_args_list]
-    assert len(messages) > 1
-    assert sum("Response to command:" in m for m in messages) == 1
-    assert "Response to command:" in messages[-1]
+    calls = app.client.chat_postEphemeral.await_args_list
+    footers = [[b for b in c.kwargs["blocks"] if b["type"] == "rich_text"] for c in calls]
+    assert len(calls) > 1
+    assert sum(bool(f) for f in footers) == 1
+    assert footers[-1]
+    # Every message still fits one section, so no chunk is cut in half by the 3000-char cap.
+    assert all(sum(b["type"] == "section" for b in c.kwargs["blocks"]) == 1 for c in calls)
 
 
 @pytest.mark.asyncio
@@ -931,3 +946,37 @@ async def test_an_ack_button_without_text_says_nothing_about_where_text_lands():
 
     for call in send.await_args_list:
         assert "When pressed, its text is posted" not in call.args[3], call.args[3]
+
+
+def test_message_text_is_split_into_sections_on_line_boundaries():
+    """A section holds 3000 characters, and a cut inside a code fence breaks the rest."""
+    limit = hutbot.messaging.SLACK_SECTION_TEXT_LIMIT
+    text = "\n".join(["x" * 1000] * 5)
+
+    blocks = hutbot.messaging.section_blocks(text)
+
+    # 1000-char lines: two per section, since a third would pass the cap.
+    assert [len(b["text"]["text"]) for b in blocks] == [2001, 2001, 1000]
+    assert all(len(b["text"]["text"]) <= limit for b in blocks)
+    # Every line survives whole, and in order.
+    assert "\n".join(b["text"]["text"] for b in blocks) == text
+
+
+def test_a_line_longer_than_a_section_is_sliced_because_it_has_no_boundary():
+    limit = hutbot.messaging.SLACK_SECTION_TEXT_LIMIT
+
+    blocks = hutbot.messaging.section_blocks("y" * (limit + 10))
+
+    assert [len(b["text"]["text"]) for b in blocks] == [limit, 10]
+
+
+def test_empty_text_still_produces_a_postable_section():
+    """Slack rejects an empty section, and a reply is always sent as blocks."""
+    assert hutbot.messaging.section_blocks("") == [
+        {"type": "section", "text": {"type": "mrkdwn", "text": " "}}]
+
+
+def test_there_is_no_footer_outside_a_command():
+    hutbot.state.current_command.set("")
+    assert hutbot.messaging.command_footer_blocks() == []
+    assert hutbot.messaging.command_footer() == ""

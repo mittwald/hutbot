@@ -58,6 +58,16 @@ def decode_escaped_newlines(text: str) -> str:
     return ESCAPE_SEQUENCE_PATTERN.sub(replace, text or "")
 
 
+def escape_newlines(text: str) -> str:
+    r"""A value on one line, its line breaks shown as `\n` — the spelling commands use for them.
+
+    For printing a stored template back to somebody: a real line break would break whatever
+    layout it is printed in (a column-aligned table, a one-per-line list). Other backslashes
+    are left alone, like `decode_escaped_newlines` leaves them.
+    """
+    return (text or "").replace("\n", "\\n")
+
+
 # Slack turns any URL a user types into `<https://...>` or `<https://...|label>` before
 # the slash command reaches the bot. `strip_quotes` does not touch that, and
 # `messaging.clean_slack_text` would replace it with the literal string "[URL]".

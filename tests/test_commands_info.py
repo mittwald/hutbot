@@ -689,3 +689,71 @@ def test_an_argument_wider_than_the_column_still_gets_its_own_line():
         "/hutbot set thing  Set it.",
         "            <a-very-long-single-argument-nothing-can-split>",
     ]
+
+
+@pytest.mark.asyncio
+async def test_show_config_keeps_a_code_block_in_the_message_out_of_the_quote():
+    """Slack prints a `>` inside a code block, so the block steps out of the quote instead."""
+    app = AsyncMock()
+    message = ("Nicht bestätigt :x:\n{{user}} steht im Kalender.\n"
+               "```\nBeginn: {{date}}\nEnde:   {{time}}\n```\n")
+    config = {**DEFAULT_CONFIG.copy(), "trigger": "manual", "reply_message": message}
+    channel = Channel(id="C123", name="general", configs={"default": config})
+    user = User(id="U1", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sent_message = sent_messages(mock_send_message)
+    assert ("> *Reply message*:\n"
+            "> Nicht bestätigt :x:\n"
+            "> {{user}} steht im Kalender.\n"
+            "```\n"
+            "Beginn: {{date}}\n"
+            "Ende:   {{time}}\n"
+            "```\n"
+            ">\n") in sent_message
+    # The lines around it are still quoted, and the trailing newline adds no stray `>`.
+    assert "> *Trigger*: `manual`" in sent_message
+    assert "\n>\n>\n" not in sent_message
+
+
+def test_quote_lines_quotes_everything_but_a_fenced_block():
+    quote = hutbot.messaging.quote_lines
+
+    assert quote("a\n\nb") == "> a\n>\n> b"
+    assert quote("before\n```\nx\n> y\n```\nafter") == "> before\n```\nx\n> y\n```\n> after"
+    # An unterminated fence leaves the rest unquoted rather than quoting into the block.
+    assert quote("before\n```\nx") == "> before\n```\nx"
+    # A fence opened and closed on one line is not a block, so the next line is quoted again.
+    assert quote("`​``x```\nafter".replace("\u200b", "")) == "```x```\n> after"
+
+
+@pytest.mark.asyncio
+async def test_show_config_keeps_the_settings_table_intact_around_awkward_values():
+    """A template can carry line breaks and a fence of its own; the table survives both."""
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(), "opsgenie": True, "opsgenie_message": "Line one\nLine two",
+              "buttons": [{"label": "Got it", "action": "ack", "value": "On it\n```\nfenced\n```"}]}
+    channel = Channel(id="C123", name="general", configs={"default": config})
+    user = User(id="U1", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await show_config(app, channel, user, "")
+
+    sent_message = sent_messages(mock_send_message)
+    # The settings block opens and closes once: the value's own fence no longer ends it.
+    assert sent_message.count("```") == 2
+    assert "OpsGenie message   Line one\\nLine two" in sent_message
+    assert "Got it → ack:On it\\n" in sent_message
+    # Broken up with zero-width spaces rather than dropped.
+    assert "```\nfenced" not in sent_message.split("*Settings*")[1]
+
+
+def test_a_table_cell_shows_line_breaks_and_cannot_close_the_code_block():
+    cell = hutbot.commands.info.table_cell
+
+    assert cell("a\nb") == "a\\nb"
+    assert "```" not in cell("x ``` y")
+    # A non-string (a list is handled by the caller) passes through untouched.
+    assert cell(5) == 5

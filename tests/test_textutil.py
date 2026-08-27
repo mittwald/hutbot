@@ -184,3 +184,14 @@ async def test_set_message_accepts_an_email_mention():
          patch('hutbot.messaging.send_message'):
         await process_command(app, "set message Ping @d.grieser@mittwald.de now", channel, user)
     assert channel.configs["default"]["reply_message"] == "Ping <@U9> now"
+
+
+def test_escape_newlines_shows_line_breaks_the_way_commands_spell_them():
+    escape = hutbot.textutil.escape_newlines
+
+    assert escape("a\nb") == "a\\nb"
+    assert escape("") == "" and escape(None) == ""
+    # Other backslashes are left alone, like the decoder leaves them.
+    assert escape("%Y\\%m") == "%Y\\%m"
+    # Round-trips through the decoder the command input goes through.
+    assert hutbot.textutil.decode_escaped_newlines(escape("a\nb")) == "a\nb"

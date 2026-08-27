@@ -51,7 +51,7 @@ from ..constants import (
     parse_event_offset,
 )
 from ..models import TemplateExpressionError
-from ..textutil import decode_escaped_newlines, log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
+from ..textutil import decode_escaped_newlines, escape_newlines, log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
 
 try:
     from croniter import croniter
@@ -300,8 +300,11 @@ async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config
         calendar_selectors=selectors,
     )
     reply_message = templating.render_reply_message_template(reply_message_template, template_variables, config)
+    # One variable per line, so a value that carries line breaks of its own — a multi-line
+    # `{{parent_message}}`, a calendar description — shows them as `\n` instead of splitting
+    # into lines nothing names.
     variable_lines = [
-        f"`{{{{{variable}}}}}`: {template_variables.get(variable, '')}"
+        f"`{{{{{variable}}}}}`: {escape_newlines(str(template_variables.get(variable, '')))}"
         for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES)
     ]
     sections = [

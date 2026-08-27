@@ -30,7 +30,12 @@ from .textutil import log_debug
 
 # Slack cuts a message this long into several, wherever the break happens to fall —
 # mid code fence included. Anything longer has to be split by us, on our own lines.
-SLACK_MESSAGE_CHARACTER_LIMIT = 3800
+# One `section` block holds 3000 characters, and a reply is rendered as section blocks (so the
+# footer can be a `rich_text` block beside them) — so a message is chunked below that, and a
+# whole message is one section. Splitting a message across two sections would have to cut
+# somewhere, and the cut lands inside a code fence often enough to be worth avoiding.
+SLACK_SECTION_TEXT_LIMIT = 3000
+SLACK_MESSAGE_CHARACTER_LIMIT = 2900
 
 
 def pack_message_chunks(parts: list[str], separator: str = "\n\n", limit: int = SLACK_MESSAGE_CHARACTER_LIMIT) -> list[str]:
@@ -53,24 +58,90 @@ def pack_message_chunks(parts: list[str], separator: str = "\n\n", limit: int = 
     return chunks
 
 
-def command_footer() -> str:
-    """`Response to command:` plus the command being answered, or "" outside a command.
+def section_blocks(text: str) -> list[dict]:
+    """Message text as `section` blocks, split on line boundaries under Slack's 3000-char cap.
 
-    Appended by `send_message` at the API boundary rather than by each of its ~120 callers.
+    Lines are kept whole because a cut inside a code fence breaks the block for the rest of
+    the message; a single line longer than the cap has no boundary to use and is sliced.
+    """
+    blocks: list[dict] = []
+    current = ""
+    for line in (text or " ").split("\n"):
+        while len(line) > SLACK_SECTION_TEXT_LIMIT:
+            if current:
+                blocks.append(current)
+                current = ""
+            blocks.append(line[:SLACK_SECTION_TEXT_LIMIT])
+            line = line[SLACK_SECTION_TEXT_LIMIT:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > SLACK_SECTION_TEXT_LIMIT:
+            blocks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current or not blocks:
+        blocks.append(current)
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": block or " "}} for block in blocks]
+
+
+def quote_lines(text: str) -> str:
+    """`text` as a Slack quote, with any fenced code block left out of the quote.
+
+    Slack does not strip a `>` from inside a code block: quoting those lines prints the
+    prefixes as content, and a quoted closing fence leaves a stray `>` line behind in the
+    block. mrkdwn cannot put a code block inside a quote at all (only a `rich_text` block can,
+    via `border` — see `command_footer_blocks`), so a fenced block breaks out of the quote
+    instead of being quoted wrongly. Everything around it stays quoted.
+    """
+    lines = []
+    fenced = False
+    for line in text.split("\n"):
+        fences = line.count("```")
+        if fences:
+            # The fence line itself is never quoted, on either side of the block.
+            lines.append(line)
+            fenced ^= bool(fences % 2)
+            continue
+        lines.append(line if fenced else f"> {line}".rstrip())
+    return "\n".join(lines)
+
+
+def command_footer() -> str:
+    """The footer as plain text, for the notification fallback and for logs."""
+    command = state.current_command.get()
+    return f"\n\nResponse to command:\n```\n{command}\n```" if command else ""
+
+
+def command_footer_blocks() -> list[dict]:
+    """`Response to command:` plus the command being answered, or none outside a command.
+
+    Added by `send_message` at the API boundary rather than by each of its ~120 callers.
+
+    A `rich_text` block, because mrkdwn cannot put a code block inside a quote: quoting the
+    fence lines leaves their `>` in the rendered block, and quoting only the opening fence
+    leaves the block outside the bar. `rich_text_quote` is no help either — it takes inline
+    elements only — so the bar comes from `border: 1` on the code block itself, which is what
+    Slack's own composer produces for a quote with a code block in it.
     """
     command = state.current_command.get()
     if not command:
-        return ""
-    # Every line carries the quote prefix, the fences and the command between them included:
-    # that is what keeps the code block *inside* the quote, sharing its bar, instead of
-    # breaking out below it. Slack strips the prefix from the block's own lines when it
-    # renders them, so the command itself is not printed with a `>` in front.
-    quoted = "\n".join(f"> {line}".rstrip() for line in command.split("\n"))
-    return f"\n\n> Response to command:\n> ```\n{quoted}\n> ```"
+        return []
+    return [{
+        "type": "rich_text",
+        "elements": [
+            {"type": "rich_text_quote",
+             "elements": [{"type": "text", "text": "Response to command:"}]},
+            {"type": "rich_text_preformatted", "border": 1,
+             "elements": [{"type": "text", "text": command}]},
+        ],
+    }]
 
 
 async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "", footer: bool = True) -> None:
     """Reply to a command. `footer` is off for all but the last part of a chunked reply."""
+    # Blocks render the message; `text` stays the notification fallback, and carries the footer
+    # in its plain-text spelling so a push notification is not missing the command it answers.
+    blocks = section_blocks(text) + (command_footer_blocks() if footer else [])
     if footer:
         text += command_footer()
     log_debug(channel, f"Attempting to send message to #{channel.name}, user @{user.name}: {text.replace(chr(10), '\\n')}")
@@ -83,6 +154,7 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
                     channel=channel.id,
                     thread_ts=thread_ts,
                     text=text,
+                    blocks=blocks,
                     mrkdwn=True
                 )
             else:
@@ -90,6 +162,7 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
                     channel=channel.id,
                     user=user.id,
                     text=text,
+                    blocks=blocks,
                     mrkdwn=True
                 )
             log_debug(channel, f"Successfully sent message to #{channel.name}, user @{user.name}")

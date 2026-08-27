@@ -30,17 +30,12 @@ from .constants import (
 from .models import User
 
 
-SLACK_SECTION_TEXT_LIMIT = 3000
 SLACK_ACTIONS_ELEMENT_LIMIT = 25
 
 
 def _section_blocks(text: str) -> list[dict]:
     """Split message text into Slack-valid section blocks."""
-    text = text or ' '
-    return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text[offset:offset + SLACK_SECTION_TEXT_LIMIT]}}
-        for offset in range(0, len(text), SLACK_SECTION_TEXT_LIMIT)
-    ]
+    return messaging.section_blocks(text)
 
 
 def build_button_blocks(config: dict, def_channel_id: str, config_name: str, text: str) -> list | None:

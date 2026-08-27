@@ -38,7 +38,7 @@ from ..constants import (
     TRIGGER_MESSAGE,
     TRIGGER_CRON,
 )
-from ..textutil import log_debug
+from ..textutil import escape_newlines, log_debug
 
 
 async def list_teams(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
@@ -133,6 +133,25 @@ async def get_team_of(app: AsyncApp, channel, username: str, user, thread_ts: st
         await messaging.send_message(app, channel, user, f"Unknown user: `{username}`.", thread_ts)
 
 
+# Zero-width spaces, so a value carrying a fence of its own cannot close the code block the
+# settings table prints in. They are invisible in Slack, and a fence in a template is rare
+# enough that a copy of it coming back with them attached is the better trade against the rest
+# of the print falling out of the block.
+_BROKEN_FENCE = "`\u200b`\u200b`"
+
+
+def table_cell(value) -> str:
+    """One cell of the settings table, made safe for the code block it is printed in.
+
+    A template can hold newlines and a fence of its own — an `ack` button text, an
+    `opsgenie-message`. A newline would misalign the table (the cells are column-aligned
+    text), and a fence would end the block early and drop everything after it out of it.
+    """
+    if not isinstance(value, str):
+        return value
+    return escape_newlines(value.replace("```", _BROKEN_FENCE))
+
+
 async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
     if not channel.configs:
         message = f"There is no configuration for #{channel.name}."
@@ -143,8 +162,8 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
         if isinstance(value, list):
             if not value:
                 return '<none>'
-            return f"\n{' ' * (key_width + 2)}".join(value)
-        return value
+            return f"\n{' ' * (key_width + 2)}".join(table_cell(entry) for entry in value)
+        return table_cell(value)
 
     def format_target(target: str) -> str:
         """Render an action target as a Slack mention when it looks like an id."""
@@ -304,7 +323,9 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             for group in groups
         )
         message_label = 'Reply message' if action == ACTION_REPLY else 'Message'
-        reply_line = f"*{message_label}*:\n{reply_message}" if reply_message else f"*{message_label}*: <none>"
+        # Trailing newlines are invisible in Slack but would print as extra `>` lines here.
+        reply_line = (f"*{message_label}*:\n{reply_message.rstrip()}" if reply_message
+                      else f"*{message_label}*: <none>")
         destinations = "\n".join(destination_lines(config, action, trigger))
         if replies_enabled:
             enabled_label = 'enabled'
@@ -317,15 +338,10 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             # The expression is part of the trigger, and it fires in the
             # Date/time timezone printed with the settings below.
             trigger_line += f" `{config.get('cron') or '<none>'}`"
-        quoted_block = (
-            f"> {trigger_line}\n"
-            f">\n"
-            f"> {reply_line.replace('\n', '\n> ')}\n"
-            f">\n"
-            f"> {destinations.replace('\n', '\n> ')}\n"
-            f">\n"
-            f"> *Settings*:\n"
-        )
+        # Quoted as one block, so a fenced code block in the reply message can step out of the
+        # quote rather than have every line prefixed — see `messaging.quote_lines`.
+        quoted_block = messaging.quote_lines(
+            "\n".join([trigger_line, "", reply_line, "", destinations, "", "*Settings*:"])) + "\n"
         config_sections.append(
             f"*Configuration*: `{config_name}` ({enabled_label})\n"
             f"{quoted_block}"
