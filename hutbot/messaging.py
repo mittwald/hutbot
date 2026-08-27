@@ -248,6 +248,127 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
     await send_message(app, channel, user, update_text, thread_ts)
 
 
+def tokenize_command(command: str) -> list[str]:
+    """A command spelling split into words, keeping a bracketed or quoted group whole.
+
+    `[<tz> <locale>]` is one argument and `<button "<label>"|config <name>>` is one too, so the
+    split has to count `<`/`[` depth and skip over quotes rather than cut at every space.
+    """
+    tokens: list[str] = []
+    current: list[str] = []
+    depth = 0
+    quote = ""
+    for character in command:
+        if quote:
+            current.append(character)
+            if character == quote:
+                quote = ""
+            continue
+        if character in ('"', "'", "`"):
+            quote = character
+            current.append(character)
+            continue
+        if character in "<[":
+            depth += 1
+        elif character in ">]":
+            depth = max(0, depth - 1)
+        if character.isspace() and depth == 0:
+            if current:
+                tokens.append("".join(current))
+                current = []
+            continue
+        current.append(character)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _is_argument(token: str) -> bool:
+    """Whether a token is a value the reader has to fill in, rather than a word they type."""
+    return "<" in token or token.startswith("[")
+
+
+def split_command_spec(command: str) -> tuple[str, list[str]]:
+    """A command as `(head, arguments)`: the words to type, then the values to fill in.
+
+    The head is what a reader scans the column for, so the arguments can move to their own
+    lines when a command would otherwise push every description to the right. A keyword that
+    introduces a value (`config <config>`) stays with it, because neither half means anything
+    alone.
+    """
+    tokens = tokenize_command(command)
+    # `[config]` is part of every command's head: it sits between the command word and the
+    # keywords, so cutting there would leave the keywords hanging under it.
+    first = next((index for index, token in enumerate(tokens) if index > 1 and _is_argument(token)),
+                 len(tokens))
+    head_tokens, argument_tokens = tokens[:first], tokens[first:]
+    arguments = []
+    index = 0
+    while index < len(argument_tokens):
+        token = argument_tokens[index]
+        following = argument_tokens[index + 1] if index + 1 < len(argument_tokens) else ""
+        if not _is_argument(token) and following and _is_argument(following):
+            arguments.append(f"{token} {following}")
+            index += 2
+        else:
+            arguments.append(token)
+            index += 1
+    return " ".join(head_tokens), arguments
+
+
+def command_head(command: str) -> str:
+    return split_command_spec(command)[0]
+
+
+# How wide the command column may get before the descriptions beside it are squeezed. A few
+# commands are far longer than the rest (`set datetime-format "<date>" "<time>" [<tz> <locale>]`),
+# and sizing the column to those pushes every description across the screen — so past this they
+# wrap their arguments instead. It is a ceiling, not a target: a table of short commands keeps a
+# short column.
+COMMAND_COLUMN_LIMIT = 56
+
+
+def command_column_width(commands: list[str]) -> int:
+    """The column every description lines up in: wide enough for the commands that fit in it.
+
+    The heads are the floor — a head has nowhere else to go, so the column can never be
+    narrower than the longest one — and `COMMAND_COLUMN_LIMIT` is the ceiling. In between it is
+    the longest command that fits, so only the commands past the limit wrap.
+    """
+    if not commands:
+        return 0
+    longest_head = max(len(command_head(command)) for command in commands)
+    fitting = [len(command) for command in commands if len(command) <= COMMAND_COLUMN_LIMIT]
+    return max(longest_head, max(fitting, default=0))
+
+
+def format_command_rows(rows: list[tuple[str, str]], width: int, gap: int = 2) -> list[str]:
+    """The help table's rows: each command, its description, and any wrapped arguments.
+
+    A command that fits the column is printed as one line. A longer one keeps its head in the
+    column — beside the description, where the eye looks for it — and stacks its arguments
+    underneath, indented to the head's last word so they read as belonging to it. Without this
+    a single long command (`set datetime-format "<date>" "<time>" [<tz> <locale>]`) sets the
+    column width for the whole table and pushes every description off to the right.
+
+    Commands sharing a head wrap together, even where one of them would have fitted: the three
+    `add button "<label>" <action>` spellings are one command with three endings, and wrapping
+    two of them while the third stays inline reads as three unrelated rows.
+    """
+    specs = [(command, description, *split_command_spec(command)) for command, description in rows]
+    wrapping_heads = {head for command, _, head, arguments in specs
+                      if arguments and len(command) > width}
+    lines = []
+    for command, description, head, arguments in specs:
+        if not arguments or (len(command) <= width and head not in wrapping_heads):
+            lines.append(f"{command:<{width}}{' ' * gap}{description}")
+            continue
+        indent = len(head) - len(head.rsplit(" ", 1)[-1]) if " " in head else 0
+        lines.append(f"{head:<{width}}{' ' * gap}{description}")
+        lines.extend(f"{' ' * indent}{argument}" for argument in arguments)
+    return lines
+
+
 async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
     command = state.slash_command
     name = state.bot_name
@@ -338,9 +459,10 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} help variables", "List all {{variables}} and condition operators."),
         ]),
     ]
-    command_width = max(len(command) for _, rows in command_groups for command, _ in rows)
+    command_width = command_column_width(
+        [command for _, rows in command_groups for command, _ in rows])
     group_blocks = [
-        f"# {title}\n" + "\n".join(f"{command:<{command_width}}  {description}" for command, description in rows)
+        f"# {title}\n" + "\n".join(format_command_rows(rows, command_width))
         for title, rows in command_groups
     ]
     intro = (
@@ -358,11 +480,6 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         "Any value can be quoted with `\"`, `'` or a backtick.",
         f"`{command} help variables` lists every `{{{{variable}}}}` you can put in a message or a "
         "condition, and every condition operator.",
-        "An `ack` button's text is *not* private: it is posted as a thread reply under the "
-        "message the buttons are on, so it lands wherever that message went — this channel, "
-        "another channel, or a DM — and everyone who can see that conversation can read it. "
-        "Whoever pressed is named in the message itself, where the buttons were, and is "
-        f"available to the text as `{{{{press_user}}}}` (`{command} help variables`).",
     ]
     # The command table alone is well past Slack's per-message limit, and Slack
     # splits an oversized message wherever it happens to land — which cuts the code

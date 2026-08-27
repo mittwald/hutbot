@@ -141,8 +141,9 @@ async def test_process_command_help_uses_compact_command_reference():
     # Commands are grouped, each group headed and separated by a blank line.
     assert "# Configurations\n/hutbot show config" in sent_message
     assert "\n\n# Trigger\n" in sent_message
-    assert "\n\n# OpsGenie\n" in sent_message
-    assert "\n\n# Help\n/hutbot news" in sent_message
+    # Not "\n\n# OpsGenie": a group can land at the top of a continuation message.
+    assert "# OpsGenie\n/hutbot [config] enable opsgenie" in sent_message
+    assert "# Help\n/hutbot news" in sent_message
     assert sent_message.index("# Trigger") < sent_message.index("# When to react") < sent_message.index("# Buttons")
     assert "/hutbot [config] clear work-hours" in sent_message
     assert "/hutbot [config] set trigger cron \"<expr>\"" in sent_message
@@ -152,7 +153,9 @@ async def test_process_command_help_uses_compact_command_reference():
         assert stale not in sent_message, stale
     # Every dispatched command is documented.
     assert "/hutbot [config] clear opsgenie-message" in sent_message
-    assert '/hutbot [config] set escalation <minutes> button "<label>"' in sent_message
+    # Past the column limit a command stacks its arguments; see the wrapping test below.
+    assert "/hutbot [config] set escalation " in sent_message
+    assert '\n                     button "<label>"' in sent_message
     assert "/hutbot [config] clear escalation" in sent_message
     assert "/hutbot [config] clear pattern" in sent_message
     assert "@Hutbot [config] test <message>" in sent_message
@@ -573,20 +576,6 @@ async def test_show_config_omits_the_ack_note_when_no_ack_button_posts_text():
 
 
 @pytest.mark.asyncio
-async def test_help_says_an_ack_text_is_public_and_where_it_lands():
-    app = AsyncMock()
-    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
-    user = User("U1", "test", "Test User", "Testers")
-
-    with patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "help", channel, user)
-
-    sent_message = sent_messages(mock_send_message)
-    assert "is *not* private: it is posted as a thread reply under the" in sent_message
-    assert "`{{press_user}}`" in sent_message
-
-
-@pytest.mark.asyncio
 async def test_help_variables_groups_and_explains_the_press_family():
     app = AsyncMock()
     channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
@@ -603,3 +592,68 @@ async def test_help_variables_groups_and_explains_the_press_family():
     # from a timeout that pressed for them.
     assert "`{{press_kind}}` is `user` when a person pressed and `timeout` when nobody did" in sent_message
     assert "`<no-press>` anywhere else" in sent_message
+
+
+# ----- the help table's command column -----
+
+def test_a_command_splits_into_the_words_to_type_and_the_values_to_fill_in():
+    split = hutbot.messaging.split_command_spec
+
+    assert split("/hutbot [config] add condition <var> <operator> [value] [0|1]") == (
+        "/hutbot [config] add condition", ["<var>", "<operator>", "[value]", "[0|1]"])
+    # A keyword that introduces a value stays with it: neither half means anything alone.
+    assert split('/hutbot [config] set escalation <minutes> button "<label>"') == (
+        "/hutbot [config] set escalation", ["<minutes>", 'button "<label>"'])
+    # A bracketed group is one argument, quotes and nesting included.
+    assert split('/hutbot [config] set datetime-format "<date>" "<time>" [<tz> <locale>]') == (
+        "/hutbot [config] set datetime-format", ['"<date>"', '"<time>"', "[<tz> <locale>]"])
+    # `[config]` belongs to the head; a command without arguments is all head.
+    assert split("/hutbot [config] clear buttons") == ("/hutbot [config] clear buttons", [])
+
+
+def test_the_command_column_is_capped_but_never_narrower_than_the_longest_head():
+    width = hutbot.messaging.command_column_width
+    limit = hutbot.messaging.COMMAND_COLUMN_LIMIT
+
+    # Short commands keep a short column: the limit is a ceiling, not a target.
+    assert width(["/hutbot help", "/hutbot news"]) == len("/hutbot help")
+    # A command past the limit does not set the width — it wraps, so only its head has to
+    # fit the column.
+    outlier = '/hutbot [config] set datetime-format "<date>" "<time>" [<tz> <locale>]'
+    assert len(outlier) > limit
+    assert width(["/hutbot [config] clear buttons", outlier]) == len("/hutbot [config] set datetime-format")
+    # A head longer than the limit still gets its column, or it would have nowhere to go.
+    head = "/hutbot [config] " + "a" * limit
+    assert width([f"{head} <value>"]) == len(head)
+
+
+def test_a_long_command_stacks_its_arguments_under_its_head():
+    rows = [('/hutbot [config] set datetime-format "<date>" "<time>" [<tz> <locale>]',
+             "Date/time output."),
+            ("/hutbot [config] clear calendar", "Stop reading a calendar feed.")]
+    width = hutbot.messaging.command_column_width([command for command, _ in rows])
+
+    assert hutbot.messaging.format_command_rows(rows, width) == [
+        "/hutbot [config] set datetime-format  Date/time output.",
+        '                     "<date>"',
+        '                     "<time>"',
+        "                     [<tz> <locale>]",
+        "/hutbot [config] clear calendar       Stop reading a calendar feed.",
+    ]
+
+
+def test_commands_sharing_a_head_wrap_together():
+    """Three spellings of one command, so wrapping two and inlining the third reads as three."""
+    rows = [('/hutbot [config] add button "<label>" config <config>', "Run another config."),
+            ('/hutbot [config] add button "<label>" ack [text]', "Mark it handled.")]
+    # A column the short spelling fits in and the long one does not.
+    lines = hutbot.messaging.format_command_rows(rows, len('/hutbot [config] add button "<label>" ack [text]'))
+
+    assert lines == [
+        '/hutbot [config] add button                       Run another config.',
+        '                     "<label>"',
+        "                     config <config>",
+        '/hutbot [config] add button                       Mark it handled.',
+        '                     "<label>"',
+        "                     ack [text]",
+    ]
