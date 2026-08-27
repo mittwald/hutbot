@@ -121,6 +121,8 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.set_replies_enabled(app, channel, config_name, True, user, thread_ts)
     elif patterns.DISABLE_REPLIES_PATTERN.match(command_text):
         await setters.set_replies_enabled(app, channel, config_name, False, user, thread_ts)
+    elif (match := patterns.RENAME_CONFIG_PATTERN.match(command_text)):
+        await setters.rename_config(app, channel, strip_quotes(match.group("name")), strip_quotes(match.group("new_name") or ""), user, thread_ts)
     elif (match := patterns.DELETE_CONFIG_PATTERN.match(command_text)):
         name = strip_quotes(match.group("name"))
         await setters.delete_config(app, channel, name, user, thread_ts)

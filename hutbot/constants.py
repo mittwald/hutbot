@@ -260,7 +260,7 @@ CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-_\.:/]+$")
 # `set enable` would create a config called "set" instead of failing.
 RESERVED_CONFIG_NAMES = {
     "set", "clear", "unset", "remove", "add", "enable", "disable",
-    "show", "delete", "list", "run", "fire", "test", "help", "news",
+    "show", "delete", "rename", "list", "run", "fire", "test", "help", "news",
 }
 TEMPLATE_VARIABLE_NAME_PATTERN = re.compile(r'[a-z_][a-z0-9_]*')
 TEMPLATE_ARGUMENT_NAME_PATTERN = re.compile(r'[a-z_][a-z0-9_]*')

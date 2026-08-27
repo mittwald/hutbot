@@ -97,6 +97,60 @@ def _reachable_config_names(config: dict) -> set[str]:
     return names
 
 
+def rename_config_references(config: dict, old_name: str, new_name: str) -> bool:
+    """Point one config's button and escalation targets at a renamed config.
+
+    The counterpart to `_reachable_config_names`: those are the two places a config writes
+    another config's name down, so these are the two a rename has to rewrite. Returns whether
+    anything changed, so a caller can report how many rules it touched.
+    """
+    changed = False
+    for button in config.get('buttons') or []:
+        action, value = normalize_button(button)
+        if action == BUTTON_ACTION_CONFIG and value == old_name:
+            button['value'] = new_name
+            changed = True
+    kind, target = _escalation_kind(config)
+    if kind == ESCALATION_CONFIG and target == old_name:
+        config['escalation_target'] = new_name
+        changed = True
+    return changed
+
+
+def rename_pending_buttons(channel_id: str, old_name: str, new_name: str) -> int:
+    """Point already-posted buttoned messages at a renamed config; returns how many changed.
+
+    A buttoned message can sit unpressed for as long as a reminder waits, and its record names
+    the config that posted it, the configs its buttons can run, and the conditions frozen for
+    each of those — all by name. A press or a timeout resolves those names against the live
+    channel, so a rename that skipped these would strand every message already out there.
+
+    The live record and its persisted mirror are separate dicts that share their nested
+    objects, so both are walked; rewriting a shared list or dict twice is a no-op the second
+    time round.
+
+    Synchronous on purpose: a press claims a record between any two awaits, so the caller
+    rewrites every reference before it yields and flushes the mirror afterwards.
+    """
+    touched_messages = set()
+    for records in (state.pending_buttons, state._button_states_cache):
+        for key, entry in records.items():
+            if entry.get('def_channel_id') != channel_id:
+                continue
+            touched = rename_config_references(entry, old_name, new_name)
+            if entry.get('config_name') == old_name:
+                entry['config_name'] = new_name
+                touched = True
+            conditions = entry.get('target_conditions')
+            if isinstance(conditions, dict) and old_name in conditions:
+                conditions[new_name] = conditions.pop(old_name)
+                touched = True
+            if touched:
+                # Keyed by the message, so a record held in both dicts counts once.
+                touched_messages.add(key)
+    return len(touched_messages)
+
+
 def _target_conditions(def_channel_id: str, config: dict) -> dict:
     """The conditions of each reachable config, frozen when the message is posted.
 
@@ -484,6 +538,10 @@ async def handle_button_press(app: AsyncApp, opsgenie_token: str, body: dict, ac
     presser_name = presser.name if presser else '?'
 
     channel = await slackcache.get_channel_by_id(app, def_channel_id)
+    # The payload was baked into the Slack message when it was posted, so a rename since then
+    # left the name in it stale. The record is rewritten by the rename, so it is the authority
+    # on which config posted this; the payload only stands in for a record without the field.
+    src_config_name = entry.get('config_name') or src_config_name
     src_config = channel.configs.get(src_config_name)
     # Resolve the pressed button from the snapshot taken when the message was posted
     # (falling back to the live config for messages predating the snapshot), so an

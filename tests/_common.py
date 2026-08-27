@@ -50,7 +50,8 @@ from hutbot.routing import (
     cancel_channel_scheduled_replies, is_bot_membership_event,
 )
 from hutbot.webui_backend import (
-    validate_config_payload, list_user_config_channels, ui_create_config, ui_delete_config, ui_meta,
+    validate_config_payload, list_user_config_channels, ui_create_config, ui_delete_config,
+    ui_rename_config, ui_meta,
     ui_snapshot_configs,
 )
 from hutbot.commands.dispatch import process_command

@@ -199,7 +199,7 @@ function openNewRuleForm() {
     const res = await api("POST", `/api/channels/${encodeURIComponent(state.channelId)}/configs`, { name });
     if (!res.ok) return toast(res.data?.error || "Couldn't create that rule.", true);
     state.configs[name] = res.data.config;
-    state.openName = name;
+    openCard(name);
     renderRules();
     toast(`Created rule “${name}”.`);
   };
@@ -268,11 +268,17 @@ function tagsFor(cfg) {
   return tags;
 }
 
-function toggleCard(name) {
-  if (state.openName === name) { state.openName = null; renderRules(); return; }
+function openCard(name) {
+  // The editor renders from the draft, so opening a card without seeding one throws — which
+  // is why every path that opens a card goes through here rather than assigning openName.
   state.openName = name;
   state.errors[name] = {};
   state.drafts[name] = JSON.parse(JSON.stringify(state.configs[name]));
+}
+
+function toggleCard(name) {
+  if (state.openName === name) { state.openName = null; renderRules(); return; }
+  openCard(name);
   renderRules();
 }
 
@@ -689,6 +695,7 @@ function applyBar(name) {
   else bar.append(h("span", { class: "status", text: "All changes applied" }));
   bar.append(h("span", { class: "spacer" }));
   if (name !== state.meta.default_config_name) {
+    bar.append(h("button", { class: "btn ghost", onclick: () => openRenameForm(name, bar) }, "Rename"));
     bar.append(h("button", { class: "btn danger-text", onclick: () => deleteRule(name) }, "Delete rule"));
   }
   bar.append(h("button", { class: "btn ghost", disabled: !dirty, onclick: () => revertRule(name) }, "Revert"));
@@ -724,6 +731,36 @@ async function applyRule(name) {
   state.errors[name] = {};
   structuralRefresh();
   toast(`Applied “${name}”.`);
+}
+
+function openRenameForm(name, bar) {
+  // Renaming reloads the channel, because it rewrites the buttons and escalations of other
+  // rules too — so an unapplied draft would be thrown away without asking.
+  if (isDirty(name)) return toast("Apply or revert your changes before renaming.", true);
+  const input = h("input", { type: "text", value: name, "aria-label": `New name for rule ${name}` });
+  const close = () => bar.replaceWith(applyBar(name));
+  const submit = async () => {
+    const next = input.value.trim();
+    if (!next || next === name) return close();
+    const path = `/api/channels/${encodeURIComponent(state.channelId)}/configs/${encodeURIComponent(name)}/rename`;
+    const res = await api("POST", path, { name: next });
+    if (!res.ok) return toast(res.data?.error || "Couldn't rename that rule.", true);
+    // The whole channel comes back, because other rules' targets moved with it.
+    state.configs = res.data.configs || {};
+    state.drafts = {};
+    state.errors = {};
+    openCard(next);
+    renderRules();
+    toast(`Renamed “${name}” to “${next}”.`);
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") close(); });
+  bar.replaceChildren(
+    h("span", { class: "status", text: "Rename to" }),
+    h("div", { class: "newrule-form" }, input,
+      h("button", { class: "btn primary", onclick: submit }, "Rename"),
+      h("button", { class: "btn ghost", onclick: close }, "Cancel")));
+  input.focus();
+  input.select();
 }
 
 async function deleteRule(name) {

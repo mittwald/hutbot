@@ -52,6 +52,10 @@ ENABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'enable\s+(only[_ -]?)?w
 DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)?work[_ -]?days')
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)')
+# The old name is one word, because a config name cannot contain a space. The new one takes
+# the rest of the line so that a name with a space in it is *rejected by name*, rather than
+# failing to look like this command at all — and so a missing new name says so.
+RENAME_CONFIG_PATTERN = create_command_pattern(r'rename\s+config\s+(?P<name>\S+)(?:\s+(?P<new_name>.+?))?\s*$')
 ENABLE_REPLIES_PATTERN = create_command_pattern(r'enable$')
 DISABLE_REPLIES_PATTERN = create_command_pattern(r'disable$')
 # The cron expression belongs to the `cron` trigger, so both arrive together.

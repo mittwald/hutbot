@@ -21,6 +21,7 @@ from . import calendarfeed
 from . import conditionutil
 from . import datetimefmt
 from . import persistence
+from . import renaming
 from .constants import (
     ACTION_DM_USER,
     ACTION_GROUP_DM,
@@ -467,7 +468,12 @@ async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payl
             if not explicit_reenable:
                 clean['enabled'] = False
                 clean['disabled_reason'] = DISABLED_REASON_REMOVED
-        configs[config_name] = clean
+        # Mutated in place rather than replaced: a queued reminder and a pending buttoned
+        # message hold this dict object, which is how an edit reaches work already in flight
+        # (see `scheduling.schedule_reply`) and how a rename can still find it by identity.
+        # `clean` starts from a full `DEFAULT_CONFIG`, so this drops nothing.
+        previous.clear()
+        previous.update(clean)
         await persistence.save_configuration()
     log(f"Config UI: applied rule `{config_name}` in channel {channel_id}.")
     return True, {}
@@ -488,6 +494,16 @@ async def ui_create_config(app: AsyncApp, channel_id: str, config_name: str) -> 
         configs[config_name] = copy.deepcopy(DEFAULT_CONFIG)
         await persistence.save_configuration()
     log(f"Config UI: created rule `{config_name}` in channel {channel_id}.")
+    return True, ""
+
+
+async def ui_rename_config(app: AsyncApp, channel_id: str, config_name: str, new_name: str) -> tuple[bool, str]:
+    """Rename a rule and every reference to it. The rules live in `renaming.rename_error`, so
+    the UI and the slash command cannot disagree about what may be renamed."""
+    ok, error, _ = await renaming.rename_config(channel_id, config_name, (new_name or "").strip())
+    if not ok:
+        return False, error
+    log(f"Config UI: renamed rule `{config_name}` to `{new_name}` in channel {channel_id}.")
     return True, ""
 
 
@@ -571,6 +587,7 @@ async def maybe_start_web_ui(app: AsyncApp):
         apply_config=lambda channel_id, name, payload: ui_apply_config(app, channel_id, name, payload),
         create_config=lambda channel_id, name: ui_create_config(app, channel_id, name),
         delete_config=lambda channel_id, name: ui_delete_config(app, channel_id, name),
+        rename_config=lambda channel_id, name, new_name: ui_rename_config(app, channel_id, name, new_name),
         meta=ui_meta,
         bot_name=state.bot_name,
     )

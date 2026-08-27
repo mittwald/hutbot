@@ -16,6 +16,7 @@ from .. import templating
 from .. import datetimefmt
 from .. import slackcache
 from .. import actions
+from .. import renaming
 from .. import targets
 from ..buttonutil import _find_button_index, normalize_button
 from ..constants import (
@@ -378,6 +379,17 @@ async def delete_config(app: AsyncApp, channel, config_name: str, user, thread_t
     del channel.configs[config_name]
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"Configuration `{config_name}` has been deleted.", thread_ts)
+
+
+async def rename_config(app: AsyncApp, channel, config_name: str, new_name: str, user, thread_ts: str = "") -> None:
+    ok, error, changed = await renaming.rename_config(channel.id, config_name, new_name)
+    if not ok:
+        await messaging.send_message(app, channel, user, error, thread_ts)
+        return
+    await messaging.send_message(
+        app, channel, user,
+        f"Configuration `{config_name}` has been renamed to `{new_name}`{renaming.describe_changes(changed)}.",
+        thread_ts)
 
 
 async def set_trigger(app: AsyncApp, channel, config_name: str, value: str, expression: str, user, thread_ts: str = "") -> None:

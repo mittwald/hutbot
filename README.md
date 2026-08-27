@@ -246,6 +246,28 @@ setting, not something a channel can set, and it exempts one name rather than a 
 `NETWORKPOLICY_RULES` entry for the host is still needed as well: the allow-list lets the bot try,
 the egress rule lets the packet leave.
 
+## Renaming a config
+
+```bash
+/hutbot rename config <name> <new-name>
+/hutbot delete config <name>
+```
+
+A config's name is its identity — there is no separate name field — so renaming one moves
+everything that points at it in the same step:
+
+- the button targets (`add button "<label>" config <name>`) and escalation targets
+  (`set escalation <minutes> config <name>`) of every config in the channel, including the
+  renamed one where it escalates to itself;
+- buttoned messages already posted and still waiting for a press, so a press or a timeout
+  minutes later still runs the right config;
+- reminders already queued for an unanswered message, which keep their deadline.
+
+The reply says what else moved, e.g. *"also updated 2 rules and 1 posted message"*. The
+`default` config cannot be renamed, a name already in use is refused, and so is a name that
+starts a command (`set`, `delete`, `rename`, …) — the same rules the web UI applies, where
+renaming is the **Rename** button next to **Delete rule**.
+
 ## Triggers, conditions, and actions
 
 Beyond the classic "reply if a message goes unanswered" behavior, each named config is a **rule**

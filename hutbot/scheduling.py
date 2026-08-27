@@ -27,6 +27,44 @@ def format_minutes(seconds: float) -> str:
     return f"{minutes} min" if minutes == 1 else f"{minutes} mins"
 
 
+def _current_config_name(channel_id: str, config: dict, started_as: str) -> str:
+    """The name this config is filed under now, which a rename may have changed.
+
+    A rename moves the *key*; the config dict itself is the same object a waiting reply was
+    handed, so identity finds it again under whatever it is now called. Falling back to the
+    name the reply started with covers a config that was deleted rather than renamed, whose
+    records are still filed under the old key.
+    """
+    for name, candidate in (state.channel_config.get(channel_id) or {}).items():
+        if candidate is config:
+            return name
+    return started_as
+
+
+def rename_scheduled_replies(channel_id: str, old_name: str, new_name: str) -> int:
+    """Move a renamed config's pending reminders onto the new name; returns how many moved.
+
+    Re-keying is all it takes — a waiting task holds the config *object*, which the rename
+    moves intact, so the reminder still fires with the right settings and still cleans up after
+    itself. The name in the key is what `routing` reads back to decide whether a thread reply
+    cancels this reminder, and what `restore_scheduled_replies` looks up after a restart, so
+    leaving it stale would quietly change what an already-queued reminder does.
+
+    Synchronous on purpose, like `buttons.rename_pending_buttons`: the caller rewrites every
+    reference before it yields, and flushes the persisted mirror afterwards.
+    """
+    moved = set()
+    for key in [key for key in state.scheduled_messages if key[0] == channel_id and key[2] == old_name]:
+        state.scheduled_messages[(channel_id, key[1], new_name)] = state.scheduled_messages.pop(key)
+        moved.add(key[1])
+    for key in [key for key in state._scheduled_replies_cache if key[0] == channel_id and key[2] == old_name]:
+        entry = state._scheduled_replies_cache.pop(key)
+        entry['config_name'] = new_name
+        state._scheduled_replies_cache[(channel_id, key[1], new_name)] = entry
+        moved.add(key[1])
+    return len(moved)
+
+
 async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None, original_wait_time: float | None = None, conditions_snapshot: dict | None = None) -> None:
     # Captured before the wait so an edit during it cannot retroactively cancel this
     # reminder; a restored reply brings its original snapshot along.
@@ -58,7 +96,10 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: di
         # Everything except the conditions is read live, so a changed message or action
         # still applies; the conditions are the ones this reply was scheduled with.
         run_config = {**config, **frozen_conditions}
-        posted = await actions.run_action(app, opsgenie_token, channel, run_config, config_name, context={
+        # A rename during the wait moved this config, and the reply belongs to whatever it is
+        # called now — that is the name `{{config}}` renders, and the name any buttons this
+        # reply posts record as theirs.
+        posted = await actions.run_action(app, opsgenie_token, channel, run_config, _current_config_name(channel.id, config, config_name), context={
             'user': user,
             'text': text,
             'ts': ts,
@@ -74,8 +115,11 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: di
     except Exception as e:
         log_error(f"Failed to send scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
     finally:
-        state.scheduled_messages.pop(scheduled_message_key, None)
-        state._scheduled_replies_cache.pop(scheduled_message_key, None)
+        # Not `scheduled_message_key`: a rename during the wait moved this reply onto a new
+        # name, and the records to drop are the ones filed under it now.
+        cleanup_key = (channel.id, ts, _current_config_name(channel.id, config, config_name))
+        state.scheduled_messages.pop(cleanup_key, None)
+        state._scheduled_replies_cache.pop(cleanup_key, None)
         await persistence.flush_replies_cache()
 
 

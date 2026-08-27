@@ -260,6 +260,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} show config", "Show all configurations."),
             (f"{command} [config] enable", "Enable this config."),
             (f"{command} [config] disable", "Disable this config."),
+            (f"{command} rename config <name> <new-name>", "Rename a configuration, and everything pointing at it."),
             (f"{command} delete config <name>", "Delete a configuration."),
         ]),
         ("Trigger", [
