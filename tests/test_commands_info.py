@@ -712,10 +712,12 @@ async def test_show_config_keeps_a_code_block_in_the_message_out_of_the_quote():
             "Beginn: {{date}}\n"
             "Ende:   {{time}}\n"
             "```\n"
-            ">\n") in sent_message
-    # The lines around it are still quoted, and the trailing newline adds no stray `>`.
+            "> *Replied in*") in sent_message
+    # The lines around it are still quoted, and no separator is left stranded next to the
+    # block, where it would render as a bare `>` of its own.
     assert "> *Trigger*: `manual`" in sent_message
-    assert "\n>\n>\n" not in sent_message
+    assert "```\n>\n" not in sent_message
+    assert "\n>\n```" not in sent_message
 
 
 def test_quote_lines_quotes_everything_but_a_fenced_block():
@@ -723,6 +725,10 @@ def test_quote_lines_quotes_everything_but_a_fenced_block():
 
     assert quote("a\n\nb") == "> a\n>\n> b"
     assert quote("before\n```\nx\n> y\n```\nafter") == "> before\n```\nx\n> y\n```\n> after"
+    # A blank line beside the block would open or close a quote with nothing in it, which
+    # Slack renders as a bare `>`; between two quoted lines it is a real gap and stays.
+    assert quote("before\n\n```\nx\n```\n\nafter") == "> before\n```\nx\n```\n> after"
+    assert quote("\nbefore\n\nafter\n") == "> before\n>\n> after"
     # An unterminated fence leaves the rest unquoted rather than quoting into the block.
     assert quote("before\n```\nx") == "> before\n```\nx"
     # A fence opened and closed on one line is not a block, so the next line is quoted again.

@@ -93,17 +93,30 @@ def quote_lines(text: str) -> str:
     via `border` — see `command_footer_blocks`), so a fenced block breaks out of the quote
     instead of being quoted wrongly. Everything around it stays quoted.
     """
-    lines = []
+    entries: list[tuple[bool, str]] = []
     fenced = False
     for line in text.split("\n"):
         fences = line.count("```")
         if fences:
             # The fence line itself is never quoted, on either side of the block.
-            lines.append(line)
+            entries.append((False, line))
             fenced ^= bool(fences % 2)
             continue
-        lines.append(line if fenced else f"> {line}".rstrip())
-    return "\n".join(lines)
+        entries.append((not fenced, line))
+
+    kept: list[tuple[bool, str]] = []
+    for index, entry in enumerate(entries):
+        quoted, line = entry
+        if quoted and not line.strip():
+            # A blank quoted line is a gap *inside* a quote. Opening or closing one with it
+            # instead — which is what a separator next to a code block does, since the block
+            # ends the quote — renders as a stray `>` on a line of its own.
+            previous = kept[-1] if kept else None
+            following = next((e for e in entries[index + 1:] if e[1].strip()), None)
+            if not (previous and previous[0]) or not (following and following[0]):
+                continue
+        kept.append(entry)
+    return "\n".join(f"> {line}".rstrip() if quoted else line for quoted, line in kept)
 
 
 def command_footer() -> str:
