@@ -23,6 +23,7 @@ from .constants import (
     BUTTON_ACTION_PREFIX,
     DISABLED_REASON_REMOVED,
     IGNORED_MESSAGE_SUBTYPES,
+    SLACK_SYSTEM_USER_IDS,
     TRIGGER_MESSAGE,
 )
 from .models import ScheduledReply
@@ -61,7 +62,7 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
     user = None
     if user_id:
         user = await slackcache.get_user_by_id(app, user_id)
-        actor_is_bot = actor_is_bot or user_id == 'USLACKBOT' or bool(getattr(user, 'is_bot', False))
+        actor_is_bot = actor_is_bot or user_id in SLACK_SYSTEM_USER_IDS or bool(getattr(user, 'is_bot', False))
     elif bot_id and (thread_ts or any(c.get('include_bots', False) for c in channel.configs.values())):
         user = await slackcache.get_user_by_id(app, bot_id)
 

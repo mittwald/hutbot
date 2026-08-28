@@ -137,6 +137,12 @@ ACTIONS_REQUIRING_TARGET = set(ACTION_TARGET_HINTS)
 # name the same people the action will actually open the conversation with.
 GROUP_DM_MEMBER_LIMIT = 8
 
+# Slack's own accounts, which the users API does not flag as bots: Slackbot (`USLACKBOT`) and
+# `USLACK`, the system user behind workflow and platform messages. Nothing about them is an
+# employee, so they are treated as bots everywhere — otherwise every user-cache refresh warns
+# that they could not be mapped to one, and `include_bots` would not cover what they post.
+SLACK_SYSTEM_USER_IDS = {"USLACKBOT", "USLACK"}
+
 BUTTON_ACTION_PREFIX = "hutbot_btn"
 
 # Marker written to a config's ``disabled_reason`` when the bot disabled it by

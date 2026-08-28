@@ -19,7 +19,7 @@ from employee_list import (
 )
 
 from . import state
-from .constants import TEAM_UNKNOWN
+from .constants import SLACK_SYSTEM_USER_IDS, TEAM_UNKNOWN
 from .models import Channel, User, Usergroup
 from .textutil import log_debug
 
@@ -93,7 +93,7 @@ def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
     user_email_alias_normalized = normalize_user_name(user_email_alias)
     user_real_name = user.get('real_name', '').strip()
     user_real_name_normalized = normalize_real_name(user_real_name)
-    user_is_bot = bool(user.get('is_bot')) or user_id == 'USLACKBOT'
+    user_is_bot = bool(user.get('is_bot')) or user_id in SLACK_SYSTEM_USER_IDS
     user_team = TEAM_UNKNOWN
 
     if len(employees) > 0 and not user_is_bot:

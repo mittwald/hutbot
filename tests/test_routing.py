@@ -476,11 +476,16 @@ def test_build_user_marks_bots_and_skips_employee_mapping():
         _, bot = hutbot.slackcache.build_user(
             {"id": "U0A9NGY2U5B", "name": "mping", "is_bot": True, "real_name": "mPing"}, employees, {})
         _, slackbot = hutbot.slackcache.build_user({"id": "USLACKBOT", "name": "slackbot"}, employees, {})
+        # Slack's own system user: the API does not flag it as a bot, and it is nobody's
+        # employee record either.
+        _, slack = hutbot.slackcache.build_user(
+            {"id": "USLACK", "name": "slack", "is_bot": False, "is_app_user": False}, employees, {})
         _, human = hutbot.slackcache.build_user(
             {"id": "U1", "name": "nobody", "real_name": "No Body"}, employees, {})
 
     assert bot.is_bot is True and bot.team == TEAM_UNKNOWN
     assert slackbot.is_bot is True
+    assert slack.is_bot is True and slack.team == TEAM_UNKNOWN
     assert human.is_bot is False
     # Only the human is worth an employee-mapping warning.
     assert mock_log_warning.call_count == 1
