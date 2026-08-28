@@ -635,6 +635,38 @@ def test_a_selector_is_dropped_from_a_condition_that_cannot_use_one():
 
 
 @pytest.mark.asyncio
+async def test_add_condition_accepts_the_same_day_offset():
+    """The rota check: is the day two weeks out covered from the run onwards?"""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(
+            app, "add condition calendar_other_attendee_emails(at=+2w,offset=same-day) empty", channel, user)
+
+    assert channel.configs["default"]["conditions"] == [
+        {"variable": "calendar_other_attendee_emails", "operator": "empty", "value": "",
+         "case_sensitive": False, "at": "+2w", "offset": "same-day"}]
+    assert "offset=same-day" in send.call_args.args[3]
+
+
+def test_a_same_day_condition_and_a_message_read_one_slice():
+    from hutbot.constants import event_slice_name as slice_name
+
+    stem = slice_name("calendar_other_attendee_emails", "+2w", "same-day")
+    variables = {"calendar_other_attendee_emails": "ann@example.com",
+                 "__calendar_other_attendee_emails_items": ["ann@example.com"],
+                 f"__{stem}": "<no-event>", f"__{stem}_items": []}
+    uncovered = {"variable": "calendar_other_attendee_emails", "operator": "empty",
+                 "at": "+2w", "offset": "same-day"}
+
+    assert hutbot.conditionutil.evaluate_conditions({"conditions": [uncovered]}, variables)[0] is True
+    assert hutbot.conditionutil.condition_calendar_selectors({"conditions": [uncovered]}) == [("+2w", "same-day")]
+
+
+@pytest.mark.asyncio
 async def test_add_condition_accepts_a_moment_on_a_clock_variable():
     app = AsyncMock()
     channel = _mk_channel()

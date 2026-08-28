@@ -663,6 +663,11 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         "`{{calendar_summary(at=\"+1d\", offset=next)}}` the event after whatever runs this time "
         "tomorrow. In a gap between events the plain form renders `<no-event>`, and `offset=-1`/"
         "`offset=next` are still the events either side.",
+        "`offset=same-day` counts nothing: it is the event running at that moment, or the first "
+        "one starting later *the same day*, and `<no-event>` once the day is out. The rota "
+        "question — is this day covered from here on? — which `offset=next` answers wrongly by "
+        "reporting an entry days later: `{{calendar_other_attendee_emails(at=\"+2w\", "
+        "offset=same-day)}}` is empty exactly when nobody has that day.",
         "Write `at` as `2026-08-27 09:00` (a `T` and seconds are both fine), as `2026-08-27` for "
         "midnight that day, as `09:00` for today at that hour, or as a signed offset from now: "
         "`+2h`, `-30m`, `+1d`, `+2w`. `+1d` is this time tomorrow while `+24h` is 24 real hours, "

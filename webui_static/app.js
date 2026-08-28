@@ -637,7 +637,7 @@ function conditionRow(cond, i) {
       oninput: (e) => { cond.at = e.target.value; liveRefresh(); } }));
     if (readsAnEvent) {
       parts.push(h("input", { type: "text", class: "mono cond-offset", value: cond.offset || "", placeholder: "offset",
-        title: "Which event: next, prev, or a count like +2",
+        title: "Which event: next, prev, same-day (running one, else the next that day), or a count like +2",
         oninput: (e) => { cond.offset = e.target.value; liveRefresh(); } }));
     }
   }

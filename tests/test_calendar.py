@@ -27,8 +27,10 @@ from hutbot.constants import (
     CALENDAR_DATETIME_TEMPLATE_VARIABLES,
     CALENDAR_SELECTIONS_KEY,
     CALENDAR_TEMPLATE_VARIABLES,
+    EVENT_OFFSET_SAME_DAY,
     event_slice_name,
     event_slice_prefix,
+    parse_event_offset,
     UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
     UNKNOWN_CALENDAR_PLACEHOLDER,
 )
@@ -1508,6 +1510,118 @@ def test_an_offset_past_the_last_event_resolves_to_nothing(offset_cal):
     assert _event_at(offset_cal, CONFIG, _at(9, 30), 20) is None
     assert _event_at(offset_cal, CONFIG, _at(5, 0), -1) is None
     assert _event_at(offset_cal, CONFIG, _at(5, 0), 1).summary == "first"
+
+
+# A rota-shaped feed: an evening entry on the 19th, nothing at all on the 20th, and a daytime
+# entry on the 21st. Berlin is +02:00 here, so 16:00Z is 18:00 local.
+ROTA_ICS = "\r\n".join([
+    "BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-CALNAME:Notfallhotline",
+    "BEGIN:VEVENT", "UID:evening", "SUMMARY:evening",
+    "DTSTART:20260819T160000Z", "DTEND:20260819T200000Z", "END:VEVENT",
+    "BEGIN:VEVENT", "UID:daytime", "SUMMARY:daytime",
+    "DTSTART:20260821T060000Z", "DTEND:20260821T160000Z", "END:VEVENT",
+    "END:VCALENDAR", "",
+])
+
+
+@pytest.fixture
+def rota_cal():
+    return icalendar.Calendar.from_ical(ROTA_ICS)
+
+
+@pytest.mark.parametrize("day,hour,expected", [
+    # 10:00 Berlin on the 19th: nothing is running, but the day's entry starts at 18:00.
+    (19, 8, "evening"),
+    # 19:00 Berlin: that entry is running.
+    (19, 17, "evening"),
+    # 10:00 Berlin on the 20th: nobody has the hotline that day at all.
+    (20, 8, None),
+    # 10:00 Berlin on the 21st, inside an entry that started at 08:00.
+    (21, 8, "daytime"),
+])
+def test_same_day_reads_the_running_entry_or_the_next_one_that_day(rota_cal, day, hour, expected):
+    moment = datetime.datetime(2026, 8, day, hour, tzinfo=datetime.timezone.utc)
+
+    event = _event_at(rota_cal, CONFIG, moment, EVENT_OFFSET_SAME_DAY)
+
+    assert (event.summary if event else None) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_same_day_selector_gets_its_own_slice(rota_cal):
+    """The whole path: a selector the templates name, resolved into `event(...;offset=same_day)`."""
+    uncovered = datetime.datetime(2026, 8, 20, 8, tzinfo=datetime.timezone.utc)
+
+    with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(rota_cal, "Notfallhotline"))):
+        variables = await hutbot.calendarfeed.get_calendar_template_variables(
+            None, CONFIG, uncovered, selectors=[("", "same-day"), ("", "next")])
+
+    # Nobody has the hotline that day, while `next` reports the entry two days on.
+    assert variables[f"__{event_slice_name('calendar_summary', '', 'same-day')}"] == "<no-event>"
+    assert variables[f"__{event_slice_name('calendar_summary', '', 'next')}"] == "daytime"
+
+
+def test_same_day_is_what_next_cannot_answer(rota_cal):
+    """`offset=next` reports the entry two days on, hiding the day that has none."""
+    uncovered = datetime.datetime(2026, 8, 20, 8, tzinfo=datetime.timezone.utc)
+
+    assert _event_at(rota_cal, CONFIG, uncovered, 1).summary == "daytime"
+    assert _event_at(rota_cal, CONFIG, uncovered, EVENT_OFFSET_SAME_DAY) is None
+
+
+def test_same_day_counts_the_day_in_the_config_timezone(rota_cal):
+    """22:30 UTC on the 20th is already the 21st in Berlin, so that day's entry is the answer."""
+    late = datetime.datetime(2026, 8, 20, 22, 30, tzinfo=datetime.timezone.utc)
+
+    assert _event_at(rota_cal, CONFIG, late, EVENT_OFFSET_SAME_DAY).summary == "daytime"
+    assert _event_at(rota_cal, {"datetime_timezone": "UTC"}, late, EVENT_OFFSET_SAME_DAY) is None
+
+
+# Two entries whose UTC date is not their Berlin date: 23:00Z on the 19th is 01:00 on the 20th
+# locally, and 22:00Z on the 20th is 00:00 on the 21st.
+MIDNIGHT_ICS = "\r\n".join([
+    "BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-CALNAME:Notfallhotline",
+    "BEGIN:VEVENT", "UID:after-midnight", "SUMMARY:after-midnight",
+    "DTSTART:20260819T230000Z", "DTEND:20260820T010000Z", "END:VEVENT",
+    "BEGIN:VEVENT", "UID:next-local-day", "SUMMARY:next-local-day",
+    "DTSTART:20260820T220000Z", "DTEND:20260821T020000Z", "END:VEVENT",
+    "END:VCALENDAR", "",
+])
+
+
+@pytest.fixture
+def midnight_cal():
+    return icalendar.Calendar.from_ical(MIDNIGHT_ICS)
+
+
+def test_same_day_dates_a_utc_dtstart_by_the_configured_day(midnight_cal):
+    """The day is the config's, on both sides of the comparison — not the feed's UTC date."""
+    # 00:30 on the 20th in Berlin. The 01:00 entry is later that *local* day, though its
+    # DTSTART is dated the 19th in UTC.
+    just_after_midnight = datetime.datetime(2026, 8, 19, 22, 30, tzinfo=datetime.timezone.utc)
+    assert _event_at(midnight_cal, CONFIG, just_after_midnight, EVENT_OFFSET_SAME_DAY).summary == "after-midnight"
+
+    # 10:00 on the 20th in Berlin. The 22:00Z entry is 00:00 on the 21st locally, so the 20th
+    # has nothing left — even though its DTSTART is dated the 20th in UTC.
+    morning = datetime.datetime(2026, 8, 20, 8, tzinfo=datetime.timezone.utc)
+    assert _event_at(midnight_cal, CONFIG, morning, EVENT_OFFSET_SAME_DAY) is None
+    # Same feed read in UTC: there the 22:00Z entry *is* the rest of that day.
+    assert _event_at(midnight_cal, {"datetime_timezone": "UTC"}, morning,
+                     EVENT_OFFSET_SAME_DAY).summary == "next-local-day"
+
+
+@pytest.mark.parametrize("spelling", ["same-day", "same_day", "SAME DAY", "that-day", "today", "day"])
+def test_the_same_day_offset_has_one_canonical_form(spelling):
+    """Every spelling shares a slice key, so one selection serves them all."""
+    assert parse_event_offset(spelling) == EVENT_OFFSET_SAME_DAY
+    assert event_slice_name("calendar_summary", "+2w", spelling) == \
+        "event(at=+2w;offset=same_day)_calendar_summary"
+
+
+def test_the_offset_error_names_same_day(offset_cal):
+    with pytest.raises(ValueError) as e:
+        parse_event_offset("2h")
+    assert "`same-day`" in str(e.value)
 
 
 def test_a_previous_event_beyond_the_lookback_window_is_not_found(offset_cal):

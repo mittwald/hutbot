@@ -307,7 +307,7 @@ TEMPLATE_ARGUMENT_ALIASES = {
     # The moment a calendar variable asks about, instead of when the rule runs.
     "at": "at",
     "when": "at",
-    # Which event relative to that moment: `next`, `prev`, or a count like `+2`/`-1`.
+    # Which event relative to that moment: `next`, `prev`, `same-day`, or a count like `+2`/`-1`.
     "offset": "offset",
     # Names one of the parent's variables, instead of counting to it with `nth`.
     "of": "of",
@@ -409,34 +409,49 @@ LIST_TEMPLATE_VARIABLES = CALENDAR_LIST_TEMPLATE_VARIABLES | PARENT_LIST_TEMPLAT
 # How far `offset` may count in either direction. The forward walk is bounded by the ICS
 # lookahead and the backward one by a window, so neither may be asked for an arbitrary count.
 MAX_EVENT_OFFSET = 20
-EVENT_OFFSET_WORDS = {"next": 1, "previous": -1, "prev": -1, "current": 0}
+# The one `offset` that is not a count: the entry covering the anchor's own calendar day from
+# the anchor onwards — the event running then, or the first one starting later *that day*, and
+# nothing at all once the day is out. What a rota check wants: `offset=next` would happily
+# report the entry three days later, which is precisely the uncovered day it was asked about.
+EVENT_OFFSET_SAME_DAY = "same_day"
+EVENT_OFFSET_WORDS = {
+    "next": 1, "previous": -1, "prev": -1, "current": 0,
+    # Spellings all reduced to underscores before the lookup, so `same-day` and `same day`
+    # arrive here too.
+    "same_day": EVENT_OFFSET_SAME_DAY, "sameday": EVENT_OFFSET_SAME_DAY,
+    "that_day": EVENT_OFFSET_SAME_DAY, "thatday": EVENT_OFFSET_SAME_DAY,
+    "today": EVENT_OFFSET_SAME_DAY, "day": EVENT_OFFSET_SAME_DAY,
+}
 
 
-def parse_event_offset(value: str) -> int:
-    """The event `offset` argument as a number, or a ``ValueError`` explaining why not.
+def parse_event_offset(value: str) -> int | str:
+    """The event `offset` argument as a count, or ``EVENT_OFFSET_SAME_DAY``, or a ``ValueError``.
 
-    `next`/`prev` are the spellings for the two common cases; everything else is a count, so
-    `offset=+2` is the event after next and `offset=-2` the one before last. The error names
-    events explicitly, because `at` sits in the same expression and an offset written as a
-    duration is the likely slip.
+    `next`/`prev` are the spellings for the two common cases and `same-day` bounds the forward
+    walk to the anchor's own day; everything else is a count, so `offset=+2` is the event after
+    next and `offset=-2` the one before last. The error names events explicitly, because `at`
+    sits in the same expression and an offset written as a duration is the likely slip.
     """
     text = " ".join((value or "").split()).casefold()
     if not text:
         raise ValueError("`offset` must be non-empty")
-    if text in EVENT_OFFSET_WORDS:
-        return EVENT_OFFSET_WORDS[text]
+    # Only for the word lookup: `int` accepts `_` as a digit separator, so normalising the
+    # number itself would make `1_0` mean ten.
+    word = text.replace("-", "_").replace(" ", "_")
+    if word in EVENT_OFFSET_WORDS:
+        return EVENT_OFFSET_WORDS[word]
     try:
         offset = int(text)
     except ValueError:
-        raise ValueError("`offset` counts events: `next`, `prev`, or a number like `+1` or "
-                         f"`-2`, not `{value}`")
+        raise ValueError("`offset` counts events: `next`, `prev`, `same-day`, or a number like "
+                         f"`+1` or `-2`, not `{value}`")
     if abs(offset) > MAX_EVENT_OFFSET:
         raise ValueError(f"`offset` counts at most {MAX_EVENT_OFFSET} events either way, "
                          f"not `{value}`")
     return offset
 
 
-def normalize_selector(at: str = "", offset: str = "") -> tuple[str, int]:
+def normalize_selector(at: str = "", offset: str = "") -> tuple[str, int | str]:
     """An `(at, offset)` pair reduced to the form the namespace key is built from.
 
     Whitespace-collapsed and casefolded, so two spellings of one request share a key — and
@@ -456,7 +471,10 @@ def event_slice_name(variable: str, at: str = "", offset: str = "") -> str:
     clock, a config or an index.
     """
     at_text, offset_value = normalize_selector(at, offset)
-    return f"event(at={at_text};offset={offset_value:+d})_{variable}"
+    # `same_day` names itself in the key; a count is signed, so `+1` and `1` cannot split one
+    # selection in two.
+    offset_text = offset_value if isinstance(offset_value, str) else f"{offset_value:+d}"
+    return f"event(at={at_text};offset={offset_text})_{variable}"
 
 
 def clock_slice_name(variable: str, at: str = "") -> str:

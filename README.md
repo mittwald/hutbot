@@ -75,6 +75,7 @@ two attendees still reads when there is only one:
 {{calendar_summary(offset=+2)}}             # the one after next; `-2` counts back
 {{calendar_summary(at="2026-08-27 09:00")}} # what is on at 09:00 on the 27th
 {{calendar_summary(at="+1d", offset=next)}} # the event after whatever runs this time tomorrow
+{{calendar_summary(offset=same-day)}}       # running now, else the next one *today* — nothing after midnight
 ```
 
 In a gap between events the plain form renders `<no-event>` — it never silently reports the
@@ -82,6 +83,18 @@ upcoming one — while `offset=prev` and `offset=next` are still the events eith
 moment. With an event running, `prev` and `next` are its two neighbours. An offset counts at most
 20 events either way, and `prev` searches back 90 days (`HUTBOT_CALENDAR_LOOKBACK_DAYS`), so a
 longer gap reports `<no-event>` too.
+
+`offset=same-day` is the one value that counts nothing: it is the event running at that moment,
+or the first one starting **later the same calendar day** (the day in the config's timezone), and
+`<no-event>` once the day is out. That is the question a rota check asks — *is this day covered
+from here on?* — and the one `offset=next` cannot answer, because it happily reports an entry
+three days later, which is exactly the uncovered day it was asked about. Spelled `same-day`,
+`same_day`, `that-day`, `today` or `day`.
+
+```bash
+# nobody has the hotline on the day two weeks out — checked at 10:00 for an 18:00 entry
+/hutbot notfallhotline-check add condition calendar_other_attendee_emails(at=+2w, offset=same-day) empty
+```
 
 `at` accepts:
 

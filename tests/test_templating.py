@@ -193,6 +193,16 @@ def test_clock_variables_reject_an_at_or_offset_they_cannot_use(template, expect
     assert expected in hutbot.templating.validate_template_expressions(template)
 
 
+def test_a_calendar_variable_takes_the_same_day_offset():
+    import hutbot
+
+    assert hutbot.templating.validate_template_expressions('{{calendar_summary(at="+2w", offset=same-day)}}') == ""
+    assert hutbot.templating.find_calendar_selectors('{{calendar_summary(offset=same-day)}}') == [("", "same-day")]
+    # Every spelling shares one selection, so a message asking twice costs one query.
+    assert hutbot.templating.find_calendar_selectors(
+        '{{calendar_summary(offset=same-day)}} {{calendar_location(offset=today)}}') == [("", "same-day")]
+
+
 def test_a_clock_variable_with_an_at_asks_the_calendar_for_nothing():
     """`{{date(at=...)}}` is arithmetic on a timestamp, so it must not cost a feed selection."""
     import hutbot

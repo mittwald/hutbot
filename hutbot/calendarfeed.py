@@ -40,6 +40,7 @@ from .constants import (
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
     UNKNOWN_CALENDAR_PLACEHOLDER,
     UNKNOWN_PERIOD_PLACEHOLDER,
+    EVENT_OFFSET_SAME_DAY,
     event_slice_prefix,
     normalize_selector,
 )
@@ -307,6 +308,30 @@ def _event_after(query, timezone, instant, count: int):
     return None
 
 
+def _event_on_same_day(query, timezone, instant):
+    """The first event starting after `instant` on `instant`'s own calendar day, in `timezone`.
+
+    The day is the one a reader means: the anchor's date where the config lives, so a rota
+    entry at 18:00 belongs to the day the 10:00 check asks about. `after()` yields the events
+    ongoing at the instant first and the future ones in start order, so the first future start
+    past that date ends the search — there can be no later-yielded event back inside the day.
+    """
+    day = instant.astimezone(timezone).date()
+    upcoming = (event for event in itertools.islice(query.after(instant.astimezone(timezone)),
+                                                    _CALENDAR_LOOKAHEAD_EVENTS)
+                if _is_usable(event))
+    for event in _distinct_by_occurrence(upcoming, timezone):
+        # Moved into the config's zone before its *date* is read: `_aware` keeps whatever
+        # tzinfo the feed carried, so a `DTSTART` in UTC would otherwise be dated by the UTC
+        # day. 23:00Z is already tomorrow in Berlin, and 22:00Z the day before is not.
+        start = _aware(event.start, timezone).astimezone(timezone)
+        if start <= instant:
+            # Ongoing when the anchor hit: `_covering_event` is what reports those.
+            continue
+        return event if start.date() == day else None
+    return None
+
+
 def _event_before(query, timezone, boundary, count: int):
     """The `count`-th event starting before `boundary`, counting backwards.
 
@@ -326,7 +351,7 @@ def _event_before(query, timezone, boundary, count: int):
     return None
 
 
-def select_event(query, config: dict | None, instant: datetime.datetime, offset: int = 0) -> CalendarEvent | None:
+def select_event(query, config: dict | None, instant: datetime.datetime, offset: int | str = 0) -> CalendarEvent | None:
     """The event `offset` places from the one covering `instant`.
 
     `0` is the event running then; `+n` counts forward over the events starting after that
@@ -334,6 +359,11 @@ def select_event(query, config: dict | None, instant: datetime.datetime, offset:
     backwards is the covering event's start when there is one, so `-1` and `+1` are the
     neighbours either side of a running event — and in a gap they are still the events either
     side of the moment.
+
+    ``EVENT_OFFSET_SAME_DAY`` is the exception that counts nothing: the event running at
+    `instant`, or the first one starting later on `instant`'s own day, and nothing once that
+    day is out. "Is this day covered from here on?", which `+1` cannot ask — it would answer
+    with an entry days later.
     """
     if query is None:
         return None
@@ -353,6 +383,16 @@ def select_event(query, config: dict | None, instant: datetime.datetime, offset:
     if offset == 0:
         return build_calendar_event(covering, config) if covering is not None else None
 
+    if offset == EVENT_OFFSET_SAME_DAY:
+        if covering is not None:
+            return build_calendar_event(covering, config)
+        try:
+            found = _event_on_same_day(query, timezone, instant)
+        except Exception as e:
+            log_error("Failed to resolve the calendar event later on the requested day:", e)
+            return None
+        return build_calendar_event(found, config) if found is not None else None
+
     try:
         if offset > 0:
             found = _event_after(query, timezone, instant, offset)
@@ -360,7 +400,9 @@ def select_event(query, config: dict | None, instant: datetime.datetime, offset:
             boundary = _aware(covering.start, timezone) if covering is not None else instant
             found = _event_before(query, timezone, boundary, -offset)
     except Exception as e:
-        log_error(f"Failed to resolve the calendar event at offset {offset:+d}:", e)
+        # Plain, not `:+d`: a word offset would make the error handler itself raise and hide
+        # whatever actually went wrong.
+        log_error(f"Failed to resolve the calendar event at offset {offset}:", e)
         return None
     return build_calendar_event(found, config) if found is not None else None
 
