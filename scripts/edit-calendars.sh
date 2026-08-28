@@ -95,7 +95,11 @@ else
 fi
 
 jq -j --arg field "$FIELD" "${fields_filter}[\$field] // empty" "${workdir}/vault.json" > "$file"
-[[ -s "$file" ]] || printf '[]\n' > "$file"
+seeded=false
+if [[ ! -s "$file" ]]; then
+  seeded=true
+  printf '[]\n' > "$file"
+fi
 
 write_field() {
   local source=$1
@@ -115,8 +119,29 @@ write_field() {
 }
 
 if $show; then
+  $seeded && echo "note: ${vault_path} has no ${FIELD}; this instance has no built-in calendars." >&2
   jq . "$file"
   exit 0
+fi
+
+# An empty list is a blank page in the editor, and a blank page says nothing about the shape
+# expected of it. Seed the buffer with one example entry instead: it is what an operator
+# without the field yet has to write anyway, and `validate` refuses to store it half-edited.
+if $seeded; then
+  cat > "$file" <<'EXAMPLE'
+[
+  {
+    "name": "notfallhotline",
+    "title": "Notfallhotline",
+    "url": "https://REPLACE-ME.example.com/calendars/notfallhotline.ics?token=REPLACE-ME"
+  }
+]
+EXAMPLE
+  echo "==> ${vault_path} has no ${FIELD} yet; the editor opens with an example to replace:" >&2
+  echo "      name   a slug (a-z, 0-9, '.', '-', '_'), what a config points at" >&2
+  echo "      title  what Slack shows instead of the URL" >&2
+  echo "      url    the https feed, token and all" >&2
+  echo "    Leave it as it is to write nothing, or make it [] for an empty list." >&2
 fi
 
 validate() {
@@ -137,6 +162,11 @@ validate() {
     echo "error: two entries share a name" >&2
     return 1
   fi
+  # A half-edited example would be stored as a real calendar and fail at fetch time instead.
+  if jq -e 'any(.[]; .url | test("REPLACE-ME"))' "$target" >/dev/null 2>&1; then
+    echo "error: the example URL is still in the list — put the real feed URL in its place" >&2
+    return 1
+  fi
 }
 
 before=$(jq -S . "$file" 2>/dev/null || cat "$file")
@@ -150,13 +180,20 @@ report_and_cleanup() {
 trap report_and_cleanup EXIT
 "${EDITOR:-vi}" "$file"
 
+# Before validating: handing the buffer straight back — the seeded example included — is a
+# decision not to change anything, and must not be reported as a rejected edit.
+after=$(jq -S . "$file" 2>/dev/null || cat "$file")
+if [[ "$after" == "$before" ]]; then
+  if $seeded; then
+    echo "the example was left as it is; nothing was written."
+  else
+    echo "unchanged; nothing was written."
+  fi
+  exit 0
+fi
 if ! validate "$file"; then
   echo "nothing was written; your edit is lost (re-run and paste it back)" >&2
   exit 1
-fi
-if [[ "$(jq -S . "$file")" == "$before" ]]; then
-  echo "unchanged; nothing was written."
-  exit 0
 fi
 
 echo "==> built-in calendars after this edit:"

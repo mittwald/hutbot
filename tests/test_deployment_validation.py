@@ -744,6 +744,8 @@ def test_edit_calendars_never_puts_a_value_on_the_command_line(tmp_path):
     '[{"name":"Notfallhotline","title":"N","url":"https://bridge.example.com/x.ics"}]',
     '[{"name":"rota","title":"","url":"https://bridge.example.com/x.ics"}]',
     '[{"name":"rota","title":"R","url":"http://bridge.example.com/x.ics"}]',
+    # The seeded example, renamed but with its placeholder URL left in place.
+    '[{"name":"rota","title":"R","url":"https://REPLACE-ME.example.com/x.ics"}]',
 ])
 def test_edit_calendars_refuses_to_write_an_invalid_list(tmp_path, edit):
     result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}}, edit)
@@ -752,6 +754,46 @@ def test_edit_calendars_refuses_to_write_an_invalid_list(tmp_path, edit):
     assert result.payload is None
     # The temp file is shredded on exit, so say plainly that the edit is gone.
     assert "was NOT saved" in result.stderr
+
+
+def test_edit_calendars_seeds_an_example_when_the_field_is_unset(tmp_path):
+    """A blank page says nothing about the shape; the buffer starts as one example entry."""
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    state_file = tmp_path / "vault-state.json"
+    state_file.write_text('{"data": {"SLACK_APP_TOKEN": "xapp-a"}}')
+    calls = tmp_path / "vault-calls"
+    _stub(bin_dir, "vault", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$1 $2" in
+  "kv get") cat {state_file} ;;
+esac
+exit 0
+''')
+    # `cat` as the editor: it prints the buffer it was handed and changes nothing.
+    result = subprocess.run([str(EDIT_CALENDARS), "--env", "dev"], cwd=ROOT,
+                            capture_output=True, text=True, check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                                 "EDITOR": "cat"})
+
+    assert result.returncode == 0, result.stderr
+    assert '"name": "notfallhotline"' in result.stdout
+    assert "REPLACE-ME" in result.stdout
+    assert "the editor opens with an example" in result.stderr
+    # Handing the example straight back is not an edit.
+    assert "the example was left as it is; nothing was written." in result.stdout
+    assert "kv put" not in calls.read_text() and "kv patch" not in calls.read_text()
+
+
+def test_edit_calendars_shows_an_empty_list_rather_than_the_example(tmp_path):
+    result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}}, CALENDARS_JSON,
+                                 "--show")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
+    assert "has no HUTBOT_BUILTIN_CALENDARS" in result.stderr
 
 
 def test_edit_calendars_writes_nothing_when_the_list_is_unchanged(tmp_path):
