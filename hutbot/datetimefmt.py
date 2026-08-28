@@ -560,8 +560,27 @@ def render_datetime(
 
 
 def format_timestamp_value(value: str, part: str = "datetime", config: dict | None = None, args: dict[str, str] | None = None) -> str:
-    """Render a Slack message timestamp for `{{date}}` / `{{time}}` / `{{datetime}}`."""
+    """Render a Slack message timestamp for `{{date}}` / `{{time}}` / `{{datetime}}`.
+
+    An `at=` argument moves the instant: `{{date(at="+2w")}}` is two weeks from the one the
+    plain variable reports, and `{{date(at="2026-09-01")}}` is that day whatever fired the
+    rule. It is anchored on the message's timestamp rather than the clock so every variable in
+    one message describes one moment -- and so a `+1d` in a reply sent from a queue is a day
+    after the message it answers, not a day after the send.
+    """
+    args = args or {}
     parsed = parse_slack_timestamp(value)
+    at = args.get("at", "")
+    if at:
+        # `None` for an `at` that does not parse or lands outside `datetime`'s range. Rendering
+        # "now" instead would answer about the present when someone named another moment, so
+        # this reports the same placeholder an unresolved date/time variable does. A missing
+        # timestamp leaves the anchor to `resolve_at_time`, which reads the clock -- an absolute
+        # `at` then still renders, and a relative one still means what it says.
+        moved = resolve_at_time(at, config, now=parsed)
+        if moved is None:
+            return UNKNOWN_PERIOD_PLACEHOLDER
+        return render_datetime(moved, part, config, args)
     if not parsed:
         return ""
     return render_datetime(parsed, part, config, args)

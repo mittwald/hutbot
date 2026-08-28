@@ -606,11 +606,10 @@ function conditionsSection() {
 function conditionRow(cond, i) {
   const varSel = h("select", { class: "mono", onchange: (e) => {
     cond.variable = e.target.value;
-    // The moment and the offset only mean something for a calendar event.
-    if (!(state.meta.template_variables_with_selector || []).includes(cond.variable)) {
-      delete cond.at;
-      delete cond.offset;
-    }
+    // A moment applies to a calendar event and to the clock family; counting events only to
+    // a calendar event.
+    if (!(state.meta.template_variables_with_moment || []).includes(cond.variable)) delete cond.at;
+    if (!(state.meta.template_variables_with_selector || []).includes(cond.variable)) delete cond.offset;
     structuralRefresh();
   } });
   for (const v of state.meta.template_variables) varSel.append(h("option", { value: v, selected: cond.variable === v }, v));
@@ -627,15 +626,20 @@ function conditionRow(cond, i) {
       onchange: (e) => { cond.case_sensitive = e.target.checked; liveRefresh(); } });
     parts.push(h("label", { class: "case-toggle", title: "Match case exactly" }, caseBox, h("span", { text: "Aa" })));
   }
-  // Which event a calendar condition reads: `at` moves the moment, `offset` counts events.
-  // `liveRefresh` rather than a structural one, so typing here cannot steal the focus.
-  if ((state.meta.template_variables_with_selector || []).includes(cond.variable)) {
+  // Which moment a condition reads: `at` moves it, `offset` counts events from it. A
+  // `{{date}}`/`{{time}}`/`{{datetime}}` condition takes the moment alone — it has no events
+  // to count. `liveRefresh` rather than a structural one, so typing here cannot steal the focus.
+  if ((state.meta.template_variables_with_moment || []).includes(cond.variable)) {
+    const readsAnEvent = (state.meta.template_variables_with_selector || []).includes(cond.variable);
     parts.push(h("input", { type: "text", class: "mono cond-at", value: cond.at || "", placeholder: "at (+1d)",
-      title: "Read the calendar at another moment, e.g. +1d or 2026-08-27T09:00",
+      title: readsAnEvent ? "Read the calendar at another moment, e.g. +1d or 2026-08-27T09:00"
+                          : "Move the instant this reports, e.g. +2w or 2026-08-27T09:00",
       oninput: (e) => { cond.at = e.target.value; liveRefresh(); } }));
-    parts.push(h("input", { type: "text", class: "mono cond-offset", value: cond.offset || "", placeholder: "offset",
-      title: "Which event: next, prev, or a count like +2",
-      oninput: (e) => { cond.offset = e.target.value; liveRefresh(); } }));
+    if (readsAnEvent) {
+      parts.push(h("input", { type: "text", class: "mono cond-offset", value: cond.offset || "", placeholder: "offset",
+        title: "Which event: next, prev, or a count like +2",
+        oninput: (e) => { cond.offset = e.target.value; liveRefresh(); } }));
+    }
   }
   parts.push(h("div", { class: "drop" }, h("button", { class: "icon-btn", type: "button", title: "Remove condition", "aria-label": "Remove condition",
     onclick: () => { draft().conditions.splice(i, 1); structuralRefresh(); } }, "×")));

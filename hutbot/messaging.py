@@ -651,6 +651,11 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         "Every date/time variable takes `fmt`/`format`, `tz`/`timezone` and `lc`/`locale` arguments, e.g. "
         "`{{opsgenie_next_start_datetime(fmt=\"%d.%m.%Y %H:%M\", tz=\"Europe/Berlin\", lc=\"de_DE\")}}`. "
         f"Without them the config's `{command} [config] set datetime-format` values are used.",
+        "`{{date}}`, `{{time}}` and `{{datetime}}` also take `at`, which moves the instant they "
+        "render: `{{date(at=\"+2w\")}}` is a fortnight after the triggering message's time, "
+        "`{{datetime(at=\"+90m\")}}` an hour and a half after it, and `{{date(at=\"2026-09-01\")}}` "
+        "that day. Written the same way as a calendar `at` (below), but counted from the message "
+        "rather than from the run — and they take no `offset`, having no events to count.",
         "Every calendar variable describes *one* event, and two arguments choose which. "
         "`offset` counts events — `next`, `prev`, or a number like `+2`/`-1` — and `at` names "
         "the moment to count from: `{{calendar_summary}}` is what is running now, "
@@ -709,6 +714,10 @@ async def send_variables_help_message(app: AsyncApp, channel: Channel, user: Use
         f"`{command} [config] add condition calendar_summary(at=+1d) contains Wartung` gates the rule "
         "on tomorrow's event rather than today's. Write a date and time without a space there "
         "(`at=2026-08-27T09:00`), because the operator is split off first.",
+        f"`{{{{date}}}}`, `{{{{time}}}}` and `{{{{datetime}}}}` take `at` in a condition too — "
+        f"`{command} [config] add condition date(at=+2w) equals 25.08.2026` — and no `offset`. The "
+        "value compared is the one the same expression renders in a message, so it is written in "
+        f"the config's `{command} [config] set datetime-format`.",
         "Conditions are checked when the rule fires — for a `message` rule that is after the "
         "reminder delay, judged against the conditions as they were when the message arrived. "
         "A condition that reads only the message or its sender is checked straight away, so no "

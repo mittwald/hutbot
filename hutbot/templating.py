@@ -26,6 +26,7 @@ from .constants import (
     TEMPLATE_DATETIME_VARIABLES,
     TEMPLATE_VARIABLE_NAME_PATTERN,
     UNKNOWN_PERIOD_PLACEHOLDER,
+    clock_slice_name,
     event_slice_name,
     invalid_slice_name,
     normalize_selector,
@@ -175,11 +176,19 @@ def validate_template_expressions(message: str) -> str:
         holds_a_list = expr.variable in LIST_TEMPLATE_VARIABLES
         names_the_parents_variables = expr.variable == PARENT_VARIABLES_TEMPLATE_VARIABLE
         reads_an_event = expr.variable in CALENDAR_EVENT_TEMPLATE_VARIABLES
+        renders_the_clock = expr.variable in DATETIME_TEMPLATE_VARIABLES
         for argument in expr.args:
-            if argument in ("at", "offset"):
+            if argument == "at":
+                # On a clock variable `at` moves the instant that is rendered; on a calendar
+                # variable it picks which event is read. Nothing else holds a moment to move.
+                if not (reads_an_event or renders_the_clock):
+                    return (f"template variable `{{{{{expr.variable}}}}}` does not read a calendar "
+                            f"event, so it does not take `at`")
+            elif argument == "offset":
+                # Counting events only means something where there are events to count.
                 if not reads_an_event:
                     return (f"template variable `{{{{{expr.variable}}}}}` does not read a calendar "
-                            f"event, so it does not take `{argument}`")
+                            f"event, so it does not take `offset`")
             elif argument == "nth":
                 if not holds_a_list:
                     return f"template variable `{{{{{expr.variable}}}}}` is not a list, so it does not take `nth`"
@@ -547,6 +556,21 @@ def press_template_variables(press: dict | None = None, config: dict | None = No
     return variables
 
 
+def clock_slice_variables(config: dict | None, ts: str) -> dict[str, str]:
+    """The `clock(at=...)_<variable>` slices this config's conditions are judged against.
+
+    A template needs none of these — `render_template_expression` moves the instant itself —
+    but a condition reads the namespace, and only the namespace build knows the config whose
+    date/time format the value has to be written in. Resolving them here is what keeps
+    `{{date(at="+2w")}}` in a message and the condition gating it on one value.
+    """
+    values = {}
+    for variable, at in conditionutil.condition_clock_moments(config):
+        values[f"__{clock_slice_name(variable, at)}"] = datetimefmt.format_timestamp_value(
+            ts, variable, config, {"at": at})
+    return values
+
+
 async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False, include_calendar: bool = False, calendar_selectors: list[tuple[str, str]] | None = None, parent: dict | None = None, press: dict | None = None) -> dict[str, str]:
     wait_time = config.get('wait_time') or 0
     opsgenie_template_variables = {}
@@ -570,6 +594,7 @@ async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, cha
         "datetime": datetimefmt.format_timestamp_value(ts, "datetime", config),
         # The raw timestamp, so `{{date(tz=...)}}` and friends can re-render it.
         "__timestamp_raw": ts,
+        **clock_slice_variables(config, ts),
         "channel": f"#{channel.name}",
         "channel_name": channel.name,
         "config": config_name,

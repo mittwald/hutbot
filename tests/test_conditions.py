@@ -634,6 +634,93 @@ def test_a_selector_is_dropped_from_a_condition_that_cannot_use_one():
     assert hutbot.conditionutil.normalize_condition(condition)[4:] == ("", "")
 
 
+@pytest.mark.asyncio
+async def test_add_condition_accepts_a_moment_on_a_clock_variable():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "add condition date(at=+2w) equals 25.08.2026", channel, user)
+
+    assert channel.configs["default"]["conditions"] == [
+        {"variable": "date", "operator": "equals", "value": "25.08.2026",
+         "case_sensitive": False, "at": "+2w"}]
+    assert 'at="+2w"' in send.call_args.args[3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec,expected", [
+    ("date(offset=next) equals x", "no events to count"),
+    ("time(at=tomorrow) equals x", "must look like"),
+    ("datetime(nth=1) equals x", "takes only `at` and `offset`"),
+])
+async def test_add_condition_rejects_what_a_clock_variable_cannot_use(spec, expected):
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, f"add condition {spec}", channel, user)
+
+    assert expected in send.call_args.args[3]
+    assert not channel.configs["default"]["conditions"]
+
+
+def test_a_clock_condition_judges_the_moment_its_at_names():
+    """The condition and `{{date(at="+2w")}}` in the message read one resolved value."""
+    from hutbot.constants import clock_slice_name
+
+    config = {"date_format": "%d.%m.%Y", "time_format": "%H:%M", "datetime_timezone": "Europe/Berlin"}
+    variables = {"__timestamp_raw": "1786453297.645799", "date": "11.08.2026",
+                 **hutbot.templating.clock_slice_variables(
+                     {**config, "conditions": [{"variable": "date", "operator": "equals",
+                                                "value": "x", "at": "+2w"}]},
+                     "1786453297.645799")}
+
+    assert variables[f"__{clock_slice_name('date', '+2w')}"] == "25.08.2026"
+    judge = hutbot.conditionutil.evaluate_conditions
+    fortnight = {"variable": "date", "operator": "equals", "value": "25.08.2026", "at": "+2w"}
+    today = {"variable": "date", "operator": "equals", "value": "25.08.2026"}
+
+    assert judge({**config, "conditions": [fortnight]}, variables)[0] is True
+    assert judge({**config, "conditions": [today]}, variables)[0] is False
+
+
+def test_an_offset_is_dropped_from_a_clock_condition_but_the_moment_is_kept():
+    """`at` moves the instant a clock variable reports; there are no events to count."""
+    condition = {"variable": "datetime", "operator": "equals", "value": "x", "at": "+2w", "offset": "next"}
+
+    assert hutbot.conditionutil.normalize_condition(condition)[4:] == ("+2w", "")
+
+
+def test_a_clock_condition_with_an_unreadable_moment_fails_closed():
+    """Only a hand-edited config gets here, and `empty` must not pass on a missing slice."""
+    condition = {"variable": "date", "operator": "empty", "at": "next week"}
+
+    met, reason = hutbot.conditionutil.evaluate_conditions(
+        {"conditions": [condition]}, {"date": "11.08.2026", "__timestamp_raw": "1786453297.645799"})
+
+    assert met is False
+    assert "cannot be read" in reason
+
+
+def test_condition_clock_moments_are_deduped_and_calendar_free():
+    config = {"conditions": [
+        {"variable": "date", "operator": "equals", "value": "a", "at": "+2w"},
+        {"variable": "date", "operator": "equals", "value": "b", "at": " +2W "},
+        {"variable": "time", "operator": "equals", "value": "c", "at": "09:00"},
+        # No `at`: the plain variable is already in the namespace.
+        {"variable": "datetime", "operator": "not_empty", "value": ""},
+        {"variable": "calendar_summary", "operator": "contains", "value": "d", "at": "+1d"},
+    ]}
+
+    assert hutbot.conditionutil.condition_clock_moments(config) == [("date", "+2w"), ("time", "09:00")]
+    assert hutbot.conditionutil.condition_calendar_selectors(config) == [("+1d", "")]
+
+
 def test_condition_calendar_selectors_are_deduped():
     config = {"conditions": [
         {"variable": "calendar_summary", "operator": "contains", "value": "a", "at": "+1d"},
@@ -675,6 +762,20 @@ async def test_the_migration_keeps_a_conditions_selector():
     assert conditions == [{"variable": "calendar_summary", "operator": "contains", "value": "x",
                            "case_sensitive": False, "at": "+1D", "offset": "NEXT"}]
     assert "calendar_next_summary" in log_warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_the_migration_keeps_a_clock_conditions_moment_and_drops_its_offset():
+    app = AsyncMock()
+    config = {"C1": {"clock": {**DEFAULT_CONFIG.copy(), "conditions": [
+        {"variable": "date", "operator": "equals", "value": "25.08.2026", "at": "+2w", "offset": "next"},
+    ]}}}
+
+    migrated = await hutbot.persistence.migrate_and_apply_defaults(app, config)
+
+    assert migrated["C1"]["clock"]["conditions"] == [
+        {"variable": "date", "operator": "equals", "value": "25.08.2026",
+         "case_sensitive": False, "at": "+2w"}]
 
 
 # ----- a condition may read the config that triggered this one -----

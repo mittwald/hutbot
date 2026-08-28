@@ -34,10 +34,12 @@ from .constants import (
     CONDITION_OPERATOR_ALIASES,
     CONDITION_OPERATORS,
     CONDITION_OPERATORS_WITHOUT_VALUE,
+    DATETIME_TEMPLATE_VARIABLES,
     FIRE_TIME_TEMPLATE_VARIABLES,
     LIST_TEMPLATE_VARIABLES,
     UNKNOWN_PLACEHOLDERS,
     CALENDAR_EVENT_TEMPLATE_VARIABLES,
+    clock_slice_name,
     event_slice_name,
     normalize_selector,
 )
@@ -135,8 +137,11 @@ def normalize_condition(condition) -> tuple[str, str, str, bool, str, str]:
     case_sensitive = bool(condition.get('case_sensitive', False))
     at = str(condition.get('at') or '').strip()
     offset = str(condition.get('offset') or '').strip()
-    if variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES:
-        # Only a calendar event has neighbours or another moment to read it at.
+    if variable in DATETIME_TEMPLATE_VARIABLES:
+        # A clock variable has a moment -- `at` moves it -- but no neighbouring events.
+        offset = ''
+    elif variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+        # Everything else reports what it reports; there is no other moment to read it at.
         at, offset = '', ''
     if operator in CONDITION_OPERATORS_WITHOUT_VALUE:
         # Nothing to compare against, so neither a value nor a case flag can matter.
@@ -161,6 +166,8 @@ def condition_variable_stem(condition) -> str:
             # here rather than left to the missing slice: an absent value would let `empty`
             # pass, which is the opposite of failing closed.
             datetimefmt.validate_at_time(at)
+        if variable in DATETIME_TEMPLATE_VARIABLES:
+            return clock_slice_name(variable, at)
         return event_slice_name(variable, at, offset)
     except ValueError:
         return ""
@@ -184,6 +191,10 @@ def condition_calendar_selectors(config: dict | None) -> list[tuple[str, str]]:
         variable, operator, _, _, at, offset = normalize_condition(condition)
         if not (variable and operator) or not (at or offset):
             continue
+        if variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+            # A clock variable's `at` is arithmetic on the timestamp -- it must not cost a
+            # calendar selection, let alone the fetch that a first selector triggers.
+            continue
         try:
             key = normalize_selector(at, offset)
         except ValueError:
@@ -193,6 +204,32 @@ def condition_calendar_selectors(config: dict | None) -> list[tuple[str, str]]:
         seen.add(key)
         selectors.append((at, offset))
     return selectors
+
+
+def condition_clock_moments(config: dict | None) -> list[tuple[str, str]]:
+    """The distinct `(variable, at)` pairs the config's conditions read the clock at.
+
+    What `templating.build_reply_template_variables` resolves into `clock(at=...)_<variable>`
+    slices. Only conditions are listed: a template renders `{{date(at="+2w")}}` from the
+    timestamp it already holds, while a condition is judged against the namespace, so this is
+    the one place the two have to be brought together. Free of any fetch, unlike its calendar
+    sibling — the cost is a `strftime` per pair.
+    """
+    moments = []
+    seen = set()
+    for condition in (config or {}).get('conditions') or []:
+        variable, operator, _, _, at, _ = normalize_condition(condition)
+        if not (variable and operator and at) or variable not in DATETIME_TEMPLATE_VARIABLES:
+            continue
+        try:
+            key = (variable, normalize_selector(at)[0])
+        except ValueError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        moments.append((variable, at))
+    return moments
 
 
 def describe_condition(condition, code: bool = False) -> str:

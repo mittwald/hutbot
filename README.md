@@ -18,7 +18,7 @@ is resolved to their Slack user when the message is set, alongside the existing 
 form. An address that maps to nobody is reported there and then rather than rendering wrongly
 later.
 
-Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. `{{date}}`, `{{time}}`, and `{{datetime}}` render the triggering message's time — or the time the rule ran, for `cron`/`manual` triggers and for `test`/`run` — using the config's date/time format, timezone, and locale, and take the same `fmt`/`tz`/`lc` arguments as the Opsgenie date/time variables below. `{{timestamp}}` is the raw Slack timestamp of the same instant. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
+Reply messages support built-in placeholders such as `{{user}}`, `{{channel}}`, and `{{message_link}}`. `{{date}}`, `{{time}}`, and `{{datetime}}` render the triggering message's time — or the time the rule ran, for `cron`/`manual` triggers and for `test`/`run` — using the config's date/time format, timezone, and locale, and take the same `fmt`/`tz`/`lc` arguments as the Opsgenie date/time variables below, plus the `at` argument of the calendar variables — `{{date(at="+2w")}}` is a fortnight after the instant the plain form reports. `{{timestamp}}` is the raw Slack timestamp of the same instant. If a channel config also has an Opsgenie schedule configured via `/hutbot [config] set opsgenie-schedule <name>`, Hutbot can resolve the current on-call person and expose:
 
 - `{{opsgenie_schedule_name}}` for the configured schedule
 - `{{opsgenie_current_user}}` for a Slack `@mention`
@@ -98,8 +98,16 @@ change, those differ by an hour. A time without a `Z` or a `+02:00` is read in t
 timezone, never UTC, and `tz` only decides how the answer is **printed**, so an explicit offset is
 how you name a moment in another zone. A moment in the past is fine. A relative `at` is measured
 from when the rule runs, so a message reminder with a 30-minute delay measures `+1d` from the
-reminder, not from the message. `{{date}}`, `{{time}}` and `{{datetime}}` still mean the
-triggering message's time and take neither argument, and nor does `{{calendar_name}}`.
+reminder, not from the message. `{{calendar_name}}` takes neither argument.
+
+`{{date}}`, `{{time}}` and `{{datetime}}` take `at` too — but not `offset`, having no events to
+count. Their `at` is counted from the instant they already report, the triggering message's time
+(or the run's, for `cron`/`manual` and `test`/`run`), which is the one place a relative `at` is not
+measured from the run: `{{date(at="+0m")}}` is always the plain form, and the same 30-minute
+reminder measures `{{date(at="+1d")}}` from the message it answers. An `at` naming a moment
+outside the range a date can hold renders `<unknown>`. A *condition* takes it the same way, written
+on the variable — `add condition date(at="+2w") equals 25.08.2026` — and is judged against the very
+value the same expression renders in a message.
 
 Calendar date/time variables take the same `fmt`/`tz`/`lc` arguments as the Opsgenie ones. For an
 **all-day** event the end is the *inclusive* last day, not the exclusive `DTEND` the ICS file
@@ -333,6 +341,8 @@ existing configs keep working unchanged.
     /hutbot oncall add condition calendar_attendee_emails equals nico@example.com
     # …and `at`/`offset` work here too, written on the variable:
     /hutbot oncall add condition calendar_summary(at=+1d) contains Wartung
+    # `at` on the clock family as well — no `offset`, they have no events to count
+    /hutbot oncall add condition date(at=+2w) equals 25.08.2026
     # nobody from outside the company is on it
     /hutbot oncall add condition calendar_attendee_emails not_contains @external.com
     ```
@@ -348,8 +358,10 @@ existing configs keep working unchanged.
     posted for a button or an escalation. Editing a rule never retroactively changes what an
     already-queued reminder or an already-posted buttoned message does, the same way a press
     is resolved against the buttons that were posted. Both snapshots survive a restart.
-  - A condition that reads only settled values — the message, its sender, their team — is
-    checked **immediately**, and no reminder is queued at all when it already cannot pass.
+  - A condition that reads only settled values — the message, its sender, their team, and the
+    `{{date}}`/`{{time}}`/`{{datetime}}` family, `at` and all, which count from the message's own
+    timestamp — is checked **immediately**, and no reminder is queued at all when it already
+    cannot pass.
     Conditions on `{{calendar_*}}`, `{{opsgenie_*}}` or `{{message_link}}` can only be
     answered later, so those always wait.
   - `/hutbot [config] test` prints each condition with ✓/✗ and whether the rule would run.

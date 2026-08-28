@@ -586,6 +586,11 @@ async def test_ui_meta_names_the_variables_that_take_a_selector():
     assert "calendar_summary" in meta["template_variables_with_selector"]
     assert "calendar_name" not in meta["template_variables_with_selector"]
     assert "message" not in meta["template_variables_with_selector"]
+    # A clock variable takes the moment but not the offset, so the editor offers only the one.
+    assert "date" in meta["template_variables_with_moment"]
+    assert "date" not in meta["template_variables_with_selector"]
+    assert "calendar_summary" in meta["template_variables_with_moment"]
+    assert "message" not in meta["template_variables_with_moment"]
 
 
 @pytest.mark.asyncio
@@ -604,13 +609,31 @@ async def test_the_ui_keeps_a_conditions_moment_and_offset():
 
 
 @pytest.mark.asyncio
+async def test_the_ui_keeps_a_moment_on_a_clock_condition():
+    """`{{date}}` and friends take `at` — no `offset`, so the UI offers only the moment."""
+    _seed_user_caches()
+    condition = {"variable": "date", "operator": "equals", "value": "25.08.2026", "at": "+2w"}
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": [condition]}
+
+    cfg, errors = await validate_config_payload(payload, _ui_app(), "C1", None)
+
+    assert errors == {}
+    assert cfg["conditions"] == [{"variable": "date", "operator": "equals", "value": "25.08.2026",
+                                 "case_sensitive": False, "at": "+2w"}]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("condition,expected", [
     ({"variable": "message", "operator": "contains", "value": "x", "at": "+1d"},
-     "Only a calendar event variable"),
+     "Only a calendar event or a date/time variable takes a moment"),
     ({"variable": "calendar_summary", "operator": "contains", "value": "x", "at": "tomorrow"},
      "must look like"),
     ({"variable": "calendar_summary", "operator": "contains", "value": "x", "offset": "2h"},
      "counts events"),
+    ({"variable": "date", "operator": "equals", "value": "x", "at": "tomorrow"},
+     "must look like"),
+    ({"variable": "date", "operator": "equals", "value": "x", "offset": "next"},
+     "no events to count"),
 ])
 async def test_the_ui_rejects_an_unusable_condition_selector(condition, expected):
     _seed_user_caches()
@@ -624,8 +647,19 @@ async def test_the_ui_rejects_an_unusable_condition_selector(condition, expected
 @pytest.mark.asyncio
 async def test_the_ui_rejects_a_selector_on_a_non_calendar_template_variable():
     _seed_user_caches()
-    payload = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": '{{date(at="+1d")}}'}
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": '{{parent_date(at="+1d")}}'}
 
     _, errors = await validate_config_payload(payload, _ui_app(), "C1", None)
 
     assert "does not read a calendar event" in errors["reply_message"]
+
+
+@pytest.mark.asyncio
+async def test_the_ui_rejects_an_event_offset_on_a_clock_template_variable():
+    """`{{date}}` takes `at`, which moves its instant, but has no events to count."""
+    _seed_user_caches()
+    payload = {**copy.deepcopy(DEFAULT_CONFIG), "reply_message": '{{date(at="+1d")}} {{date(offset=next)}}'}
+
+    _, errors = await validate_config_payload(payload, _ui_app(), "C1", None)
+
+    assert "does not take `offset`" in errors["reply_message"]

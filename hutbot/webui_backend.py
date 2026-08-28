@@ -53,6 +53,7 @@ from .constants import (
     TRIGGER_CRON,
     TRIGGERS,
     CALENDAR_EVENT_TEMPLATE_VARIABLES,
+    DATETIME_TEMPLATE_VARIABLES,
     parse_event_offset,
 )
 from .models import User
@@ -247,8 +248,12 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
             if variable not in SUPPORTED_TEMPLATE_VARIABLES:
                 errors[f'conditions.{i}'] = "Pick a supported template variable."
                 continue
-            if (at or offset) and variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES:
-                errors[f'conditions.{i}'] = "Only a calendar event variable takes a moment or an offset."
+            reads_a_clock = variable in DATETIME_TEMPLATE_VARIABLES
+            if (at or offset) and variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES and not reads_a_clock:
+                errors[f'conditions.{i}'] = "Only a calendar event or a date/time variable takes a moment, and only a calendar event an offset."
+                continue
+            if offset and reads_a_clock:
+                errors[f'conditions.{i}'] = "A date/time variable has no events to count, so it takes a moment but no offset."
                 continue
             if at:
                 try:
@@ -555,6 +560,9 @@ def ui_meta() -> dict:
         'template_variables': sorted(SUPPORTED_TEMPLATE_VARIABLES),
         # Which variables the editor may offer a moment and an offset for.
         'template_variables_with_selector': sorted(CALENDAR_EVENT_TEMPLATE_VARIABLES),
+        # Which variables take a moment: the calendar events, plus the clock family, whose
+        # `at` moves the instant it reports rather than picking an event.
+        'template_variables_with_moment': sorted(CALENDAR_EVENT_TEMPLATE_VARIABLES | DATETIME_TEMPLATE_VARIABLES),
         'opsgenie_configured': state.opsgenie_configured,
         'default_config': copy.deepcopy(DEFAULT_CONFIG),
         'default_config_name': DEFAULT_CONFIG_NAME,

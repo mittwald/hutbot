@@ -459,6 +459,19 @@ def event_slice_name(variable: str, at: str = "", offset: str = "") -> str:
     return f"event(at={at_text};offset={offset_value:+d})_{variable}"
 
 
+def clock_slice_name(variable: str, at: str = "") -> str:
+    """`clock(at=+2w)_date` — one clock variable read at one moment.
+
+    The `{{date}}` family's counterpart to `event_slice_name`, and a separate prefix because
+    these hold no event: nothing that walks the calendar selections may find one of these, and
+    nothing that reads a clock slice may land on an event. Only a *condition* needs the name —
+    a template renders `{{date(at="+2w")}}` straight from the timestamp — so this is where a
+    condition and the namespace built for it meet.
+    """
+    at_text, _ = normalize_selector(at)
+    return f"clock(at={at_text})_{variable}"
+
+
 def invalid_slice_name(variable: str) -> str:
     """The stem for a selector that does not parse — a key nothing ever writes.
 
@@ -494,7 +507,9 @@ FIRE_TIME_TEMPLATE_VARIABLES = OPSGENIE_TEMPLATE_VARIABLES | CALENDAR_TEMPLATE_V
 # are the placeholder both at arrival and at fire time, and the arrival gate cannot drift from it.
 # Formatted renderings of ``{{timestamp}}``: the triggering message's time, or the
 # time the rule ran when there is no message behind it. Like the OpsGenie date/time
-# variables they take `fmt`/`tz`/`lc` arguments.
+# variables they take `fmt`/`tz`/`lc` arguments, and like the calendar variables they
+# take `at` -- which moves the instant rendered, counted from that same base, so
+# `at="+0m"` is the plain form and `{{date(at="+2w")}}` is a fortnight after it.
 DATETIME_TEMPLATE_VARIABLES = {"date", "time", "datetime"}
 SUPPORTED_TEMPLATE_VARIABLES = {
     *DATETIME_TEMPLATE_VARIABLES,

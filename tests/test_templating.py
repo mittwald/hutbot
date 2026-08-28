@@ -153,6 +153,54 @@ def test_date_time_variables_take_format_timezone_and_locale_arguments():
     assert "does not support arguments" in hutbot.templating.validate_template_expressions("{{user(tz='Asia/Tokyo')}}")
 
 
+def test_date_time_variables_take_an_at_argument():
+    import hutbot
+    config = {**DEFAULT_CONFIG.copy(), "date_format": "%d.%m.%Y", "time_format": "%H:%M", "datetime_timezone": "Europe/Berlin"}
+    variables = {"__timestamp_raw": "1786453297.645799"}
+
+    rendered = hutbot.templating.render_reply_message_template(
+        '{{date}} | {{date(at="+2w")}} | {{datetime(at="+90m")}} | {{time(at="09:00")}} '
+        '| {{date(at="2026-09-01", fmt="%d.%m.%Y")}}',
+        variables,
+        config,
+    )
+
+    assert rendered == "11.08.2026 | 25.08.2026 | 11.08.2026 16:31 | 09:00 | 01.09.2026"
+
+
+def test_the_at_of_a_clock_variable_is_counted_from_the_message():
+    """So `at="+0m"` is the plain form -- the same invariant the calendar slices keep."""
+    import hutbot
+    config = {**DEFAULT_CONFIG.copy(), "date_format": "%d.%m.%Y", "time_format": "%H:%M", "datetime_timezone": "Europe/Berlin"}
+    variables = {"__timestamp_raw": "1786453297.645799"}
+
+    rendered = hutbot.templating.render_reply_message_template(
+        '{{datetime}} | {{datetime(at="+0m")}}', variables, config,
+    )
+
+    plain, moved = rendered.split(" | ")
+    assert plain == moved == "11.08.2026 15:01"
+
+
+@pytest.mark.parametrize("template,expected", [
+    ('{{date(offset=next)}}', "does not take `offset`"),
+    ('{{datetime(offset="+2")}}', "does not take `offset`"),
+    ('{{time(at="next week")}}', "`at` must look like"),
+    ('{{user(at="+1d")}}', "does not read a calendar event"),
+])
+def test_clock_variables_reject_an_at_or_offset_they_cannot_use(template, expected):
+    import hutbot
+    assert expected in hutbot.templating.validate_template_expressions(template)
+
+
+def test_a_clock_variable_with_an_at_asks_the_calendar_for_nothing():
+    """`{{date(at=...)}}` is arithmetic on a timestamp, so it must not cost a feed selection."""
+    import hutbot
+
+    assert hutbot.templating.find_calendar_selectors('{{date(at="+1d")}} {{time(at="09:00")}}') == []
+    assert hutbot.templating.find_calendar_selectors('{{date(at="+1d")}} {{calendar_summary(at="+1d")}}') == [("+1d", "")]
+
+
 def test_date_time_variables_are_supported_and_listed():
     import hutbot
     assert hutbot.templating.validate_template_expressions("{{date}} {{time}} {{datetime}}") == ""

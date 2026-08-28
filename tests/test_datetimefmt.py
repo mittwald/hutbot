@@ -354,3 +354,47 @@ def test_at_survives_arithmetic_at_the_edge_of_the_range():
     resolved = hutbot.datetimefmt.resolve_at_time("+3653d", BERLIN, late)
 
     assert resolved is None
+
+
+def test_format_timestamp_value_moves_the_instant_by_at():
+    """`at` on a clock variable is counted from the timestamp, not from the clock."""
+    import hutbot
+    config = {**DEFAULT_CONFIG.copy(), "date_format": "%d.%m.%Y", "time_format": "%H:%M",
+              "datetime_timezone": "Europe/Berlin"}
+    ts = "1786453297.645799"
+
+    def rendered(part, **args):
+        return hutbot.datetimefmt.format_timestamp_value(ts, part, config, args or None)
+
+    assert rendered("datetime") == "11.08.2026 15:01"
+    assert rendered("datetime", at="+0m") == "11.08.2026 15:01"
+    assert rendered("date", at="+2w") == "25.08.2026"
+    assert rendered("datetime", at="+90m") == "11.08.2026 16:31"
+    assert rendered("time", at="09:00") == "09:00"
+    assert rendered("date", at="2026-09-01") == "01.09.2026"
+    # `tz` still only decides how the moved instant is printed.
+    assert rendered("datetime", at="+2h", tz="Asia/Tokyo") == "12.08.2026 00:01"
+
+
+def test_format_timestamp_value_without_a_timestamp_reads_the_clock_for_an_absolute_at():
+    """No message behind the run is no reason to drop a moment the writer named outright."""
+    import hutbot
+    config = {**DEFAULT_CONFIG.copy(), "date_format": "%d.%m.%Y", "datetime_timezone": "Europe/Berlin"}
+
+    assert hutbot.datetimefmt.format_timestamp_value("", "date", config, {"at": "2026-09-01"}) == "01.09.2026"
+    assert hutbot.datetimefmt.format_timestamp_value("", "date", config) == ""
+
+
+@pytest.mark.parametrize("timestamp,at", [
+    # Only a hand-edited config gets here: `validate_template_expressions` refuses both.
+    ("1786453297.645799", "next week"),
+    # An offset that runs off the end of `datetime`.
+    ("253402300799", "+3653d"),
+])
+def test_format_timestamp_value_fails_closed_on_an_at_it_cannot_resolve(timestamp, at):
+    """`<unknown>` rather than the present: answering about now would be a wrong answer."""
+    import hutbot
+
+    rendered = hutbot.datetimefmt.format_timestamp_value(timestamp, "datetime", BERLIN, {"at": at})
+
+    assert rendered == hutbot.constants.UNKNOWN_PERIOD_PLACEHOLDER

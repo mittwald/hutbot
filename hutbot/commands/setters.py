@@ -50,6 +50,7 @@ from ..constants import (
     TRIGGER_CRON,
     TRIGGERS,
     CALENDAR_EVENT_TEMPLATE_VARIABLES,
+    DATETIME_TEMPLATE_VARIABLES,
     parse_event_offset,
 )
 from ..models import TemplateExpressionError
@@ -422,8 +423,13 @@ async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, use
         supported = ", ".join(f"`{{{{{v}}}}}`" for v in sorted(SUPPORTED_TEMPLATE_VARIABLES))
         await messaging.send_message(app, channel, user, f"Unknown *condition variable* `{{{{{variable}}}}}`. Supported variables: {supported}.", thread_ts)
         return
-    if (at or offset) and variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+    reads_a_clock = variable in DATETIME_TEMPLATE_VARIABLES
+    if (at or offset) and variable not in CALENDAR_EVENT_TEMPLATE_VARIABLES and not reads_a_clock:
         await messaging.send_message(app, channel, user, f"`{{{{{variable}}}}}` does not read a calendar event, so it takes neither `at` nor `offset`.", thread_ts)
+        return
+    if offset and reads_a_clock:
+        # `at` moves the instant it reports, which is the whole of what a clock variable has.
+        await messaging.send_message(app, channel, user, f"`{{{{{variable}}}}}` has no events to count, so it takes `at` but not `offset`.", thread_ts)
         return
     if at:
         try:

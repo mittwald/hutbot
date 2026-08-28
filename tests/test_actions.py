@@ -106,6 +106,51 @@ async def test_blocked_config_does_not_page_opsgenie():
 
 
 @pytest.mark.asyncio
+async def test_a_clock_condition_gates_on_the_moment_its_at_names():
+    """One resolution serves both: the gate reads `at="+2w"` and so does the message."""
+    app = AsyncMock()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["date_format"] = "%d.%m.%Y"
+    config["datetime_timezone"] = "Europe/Berlin"
+    config["reply_message"] = 'in two weeks: {{date(at="+2w")}}'
+    config["conditions"] = [{"variable": "date", "operator": "equals", "value": "25.08.2026", "at": "+2w"}]
+    channel = _mk_channel({"fortnight": config})
+    context = {"text": "hi", "ts": "1786453297.645799", "permalink": ""}
+
+    with patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})) as post:
+        posted, reason = await hutbot.actions.run_action_with_reason(
+            app, "token", channel, config, "fortnight", context=context)
+        assert posted is not None and reason == ""
+        assert post.await_args.args[2] == "in two weeks: 25.08.2026"
+
+        # The same instant, judged against the day the message was sent: not a fortnight later.
+        config["conditions"] = [{"variable": "date", "operator": "equals", "value": "11.08.2026", "at": "+2w"}]
+        posted, reason = await hutbot.actions.run_action_with_reason(
+            app, "token", channel, config, "fortnight", context=context)
+        assert posted is None and "did not match" in reason
+        assert post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_clock_condition_is_settled_at_arrival_and_asks_no_calendar():
+    """It reads the message's own timestamp, so a reminder that cannot pass is never queued."""
+    app = AsyncMock()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["date_format"] = "%d.%m.%Y"
+    config["datetime_timezone"] = "Europe/Berlin"
+    config["conditions"] = [{"variable": "date", "operator": "equals", "value": "01.01.2026", "at": "+2w"}]
+    channel = _mk_channel({"fortnight": config})
+    context = {"text": "hi", "ts": "1786453297.645799", "permalink": ""}
+
+    with patch('hutbot.calendarfeed.get_calendar_template_variables', new=AsyncMock(return_value={})) as calendar:
+        ruled_out, reason = await hutbot.actions.conditions_ruled_out_at_arrival(
+            app, "token", channel, config, "fortnight", context=context)
+
+    assert ruled_out is True and "did not match" in reason
+    calendar.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_conditions_build_variables_once():
     """The gate, the message, and the alert share one resolution — never three."""
     app = AsyncMock()

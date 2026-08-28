@@ -217,6 +217,26 @@ async def test_the_preview_lists_the_variables_each_field_reads():
 
 
 @pytest.mark.asyncio
+async def test_the_preview_prints_a_clock_condition_at_the_moment_it_reads():
+    """The condition line and the message read one value, so the verdict cannot disagree."""
+    app = AsyncMock()
+    config = {**copy.deepcopy(DEFAULT_CONFIG), "date_format": "%d.%m.%Y",
+              "datetime_timezone": "Europe/Berlin",
+              "reply_message": 'Deadline {{date(at="+2w")}}',
+              "conditions": [{"variable": "date", "operator": "not_empty", "at": "+2w", "value": ""}]}
+    channel = _mk_channel({"deadline": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    text = await _preview(app, "deadline test", channel, user)
+
+    assert '`{{date(at="+2w")}}` not_empty' in text
+    # One rendered value, printed under both the message and the conditions.
+    rendered = text[text.index("*Variables used:*"):]
+    assert rendered.count('`{{date(at="+2w")}}`: ') == 2
+    assert "would run" in text.lower()
+
+
+@pytest.mark.asyncio
 async def test_a_configuration_without_variables_says_so():
     app = AsyncMock()
     config = {**DEFAULT_CONFIG.copy(), "reply_message": "Anybody?"}
