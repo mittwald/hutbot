@@ -272,6 +272,24 @@ def test_builtin_calendars_are_projected_as_one_file():
     assert mount["mountPath"] == "/etc/hutbot" and mount["readOnly"] is True
 
 
+def test_the_employee_fallback_file_sits_beside_the_cache_on_the_state_volume():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    env = _container(result)["env"]
+    assert {"name": "HUTBOT_EMPLOYEE_CACHE_FILE", "value": "/data/employees.json"} in env
+    assert {"name": "HUTBOT_EMPLOYEE_FALLBACK_FILE",
+            "value": "/data/employees-fallback.json"} in env
+
+
+def test_no_state_volume_means_no_employee_fallback_path():
+    """Absent, not empty: without the volume the bot falls back to its own default."""
+    result = _render("v1.2.3", "--set", "persistence.enabled=false")
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_EMPLOYEE_FALLBACK_FILE" not in result.stdout
+
+
 def test_calendar_allowed_hosts_reach_the_container_as_one_variable():
     result = _render("v1.2.3", "--set",
                      "calendar.allowedHosts={bridge.internal.example,other.internal.example}")

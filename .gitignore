@@ -4,6 +4,7 @@ __pycache__
 hutmensch.json
 bot.json
 employees.json
+employees-fallback.json
 .env
 .codex
 scheduled_replies.json

@@ -71,6 +71,11 @@ spec:
               value: {{ printf "%s/%s" .Values.persistence.mountPath "bot.json" }}
             - name: HUTBOT_EMPLOYEE_CACHE_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "employees.json" }}
+            # Hand-placed beside the cache, never written by the bot: records for people the
+            # employee API does not return. The cache above is rewritten on every successful
+            # fetch, so the fallback needs a file of its own.
+            - name: HUTBOT_EMPLOYEE_FALLBACK_FILE
+              value: {{ printf "%s/%s" .Values.persistence.mountPath "employees-fallback.json" }}
             - name: HUTBOT_SCHEDULED_REPLIES_CACHE_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "scheduled_replies.json" }}
             - name: HUTBOT_BUTTON_CACHE_FILE

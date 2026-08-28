@@ -490,3 +490,26 @@ def test_build_user_marks_bots_and_skips_employee_mapping():
     # Only the human is worth an employee-mapping warning.
     assert mock_log_warning.call_count == 1
     assert "@nobody" in mock_log_warning.call_args.args[0]
+
+
+def test_build_user_ignores_users_mapped_to_the_ignore_sentinel():
+    import hutbot
+    employees = {"jwiese": {"fullname": "Jan-Lukas Wiese", "group": "Platform"}}
+    mappings = {"ks-bereitschaft": "-", "l.wiese": "jwiese"}
+
+    with patch('hutbot.slackcache.log_warning') as mock_log_warning:
+        _, ignored = hutbot.slackcache.build_user(
+            {"id": "U4R8WESSC", "name": "ks-bereitschaft", "is_bot": False}, employees, mappings)
+        _, mapped = hutbot.slackcache.build_user(
+            {"id": "U2", "name": "l.wiese", "real_name": "Jan-Lukas Wiese"}, employees, mappings)
+        _, unmapped = hutbot.slackcache.build_user(
+            {"id": "U3", "name": "e.binek", "real_name": "Eva Binek"}, employees, mappings)
+
+    # The sentinel is not a name: the user keeps their own, so `get_user_by_name` still finds them.
+    assert ignored.name == "ks-bereitschaft"
+    assert ignored.team == TEAM_UNKNOWN
+    assert mapped.name == "jwiese" and mapped.team == "Platform"
+    # Only the unmapped, unignored user is worth a warning.
+    assert mock_log_warning.call_count == 1
+    assert "@e.binek" in mock_log_warning.call_args.args[0]
+    assert unmapped.team == TEAM_UNKNOWN

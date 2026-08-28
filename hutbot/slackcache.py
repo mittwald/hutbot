@@ -7,6 +7,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_sdk.errors import SlackApiError
 
 from employee_list import (
+    EMPLOYEE_MAPPING_IGNORE,
     load_employee_mappings,
     load_employees,
     log,
@@ -84,9 +85,13 @@ async def update_usergroup_cache(app: AsyncApp) -> None:
 def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
     user_id = user.get('id', '')
     user_name = normalize_id(user.get('name', ''))
-    if user_name in mappings:
-        log(f"Applying employee mapping: {user_name} -> {mappings[user_name]}")
-        user_name = mappings[user_name]
+    mapped_name = mappings.get(user_name, '')
+    # The ignore sentinel is not a name: renaming the user to it would key the caches in
+    # `cache_user` under "-" and make `get_user_by_name` lose them.
+    user_is_ignored = mapped_name == EMPLOYEE_MAPPING_IGNORE
+    if mapped_name and not user_is_ignored:
+        log(f"Applying employee mapping: {user_name} -> {mapped_name}")
+        user_name = mapped_name
     user_name_normalized = normalize_user_name(user_name)
     user_email = normalize_id(user.get('profile', {}).get('email', ''))
     user_email_alias = normalize_id(user_email.split('@')[0])
@@ -119,7 +124,7 @@ def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
                     user_key = employee_key
                     # finally!
                     break
-            if not user_key:
+            if not user_key and not user_is_ignored:
                 user_json = json.dumps(user)
                 if len(user_json) > 100:
                     user_json = user_json[:97] + '...'

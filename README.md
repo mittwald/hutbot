@@ -755,6 +755,9 @@ python query_employees.py john.slack --cache-only
 python query_employees.py john --json
 ```
 
+The helper reads the same employee cache and `employees-fallback.json` as the bot, so a fallback
+record can be checked locally before it is copied onto the state volume.
+
 ### Secret sync
 
 Source of truth is Vault at <https://vault.m3.services>: `secrets-coabkube/production/hutbot` for
@@ -770,7 +773,7 @@ as an environment variable.
 | `OPSGENIE_HEARTBEAT_NAME` | no | Heartbeat to ping; empty on dev so it cannot ping production's |
 | `EMPLOYEE_LIST_USERNAME` | no | Employee-list credentials for team lookups |
 | `EMPLOYEE_LIST_PASSWORD` | no | " |
-| `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping |
+| `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record |
 | `HUTBOT_BUILTIN_CALENDARS` | no | The built-in calendar list (see below) |
 
 ```bash
@@ -1055,6 +1058,31 @@ persistence:
 
 When persistence is enabled (default: `true`), the chart will automatically set the `HUTBOT_CONFIG_FILE` environment variable so Hutbot reads and writes its config from the mounted volume (at `<mountPath>/bot.json`).
 Additionally, Hutbot stores its employee list cache in a JSON file (`employees.json`) on the same mounted volume. The chart will set the `HUTBOT_EMPLOYEE_CACHE_FILE` environment variable so Hutbot reads and writes its employee cache from the mounted volume (at `<mountPath>/employees.json`).
+
+Beside that cache the chart also points `HUTBOT_EMPLOYEE_FALLBACK_FILE` at
+`<mountPath>/employees-fallback.json`. That file is optional and Hutbot never writes it: it holds
+records for people the employee API does not return — someone whose record is flagged deleted,
+or who is missing from it entirely — so that they still get a team instead of `<unknown>`. It has
+the same shape as `employees.json`, a JSON array of employee records, and only four fields
+matter:
+
+```json
+[
+  {"ad_name": "rmantler", "fullname": "Rudi Mantler", "group": "Support", "is_deleted": false}
+]
+```
+
+The employee list wins every collision: a fallback entry is used only for an `ad_name` the API
+has no live record for. Set `is_deleted` to `true` to retire an entry without removing it. Place
+the file and restart, since the employee list is read when the user cache is cold:
+
+```bash
+kubectl -n mw-internal cp employees-fallback.json <hutbot-pod>:/data/employees-fallback.json
+kubectl -n mw-internal rollout restart deploy/hutbot
+```
+
+Accounts that are nobody — shared or functional Slack users — belong in `EMPLOYEE_LIST_MAPPINGS`
+as `user=-` instead, which silences the "cannot be mapped" warning without inventing a record.
 
 > **Note:** The PersistentVolumeClaim created by this chart is annotated with `helm.sh/resource-policy: keep`, so it will not be deleted when you run `helm uninstall`. You can manually remove the PVC (and its underlying volume) by running `kubectl delete pvc <release-name>-pvc`. Keep in mind that if your StorageClass has a `Delete` reclaimPolicy, the underlying storage will still be deleted by the provisioner; to prevent this, use a StorageClass with `ReclaimPolicy: Retain`.
 
