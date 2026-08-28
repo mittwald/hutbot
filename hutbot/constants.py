@@ -132,6 +132,10 @@ ACTION_TARGET_HINTS = {
     ACTION_POST_CHANNEL: "<#channel>",
 }
 ACTIONS_REQUIRING_TARGET = set(ACTION_TARGET_HINTS)
+# How many people a `group_dm` can reach: Slack allows at most 8 members besides the bot in a
+# multi-person DM. One definition, because the action trims to it and the `test` preview has to
+# name the same people the action will actually open the conversation with.
+GROUP_DM_MEMBER_LIMIT = 8
 
 BUTTON_ACTION_PREFIX = "hutbot_btn"
 
@@ -462,6 +466,13 @@ def invalid_slice_name(variable: str) -> str:
 def event_slice_prefix(at: str = "", offset: str = "") -> str:
     """`event(at=+1d;offset=+1)_` — the namespace prefix one selector's values live under."""
     return event_slice_name("", at, offset)
+
+
+# Where the resolved calendar selections travel inside the variable namespace: a list of
+# `models.CalendarSelection`, one per moment the build read the feed at. Internal, like the
+# `__<name>_items` companions, because it holds objects rather than something a template can
+# render — `test` reads it to print the events behind the values.
+CALENDAR_SELECTIONS_KEY = "__calendar_selections"
 # Every variable that renders an instant and therefore accepts `fmt`/`tz`/`lc`
 # arguments. Both providers store their raw ISO value under `__<variable>_raw`.
 TEMPLATE_DATETIME_VARIABLES = (OPSGENIE_DATETIME_TEMPLATE_VARIABLES | CALENDAR_DATETIME_TEMPLATE_VARIABLES

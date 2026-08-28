@@ -15,6 +15,7 @@ from ..constants import CONFIG_NAME_PATTERN, DEFAULT_CONFIG_NAME, RESERVED_CONFI
 from ..textutil import log_debug, strip_quotes
 
 from . import patterns
+from . import preview
 from . import setters
 from . import info
 
@@ -27,7 +28,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await messaging.send_help_message(app, channel, user, thread_ts)
     elif (match := (patterns.TEST_WITH_MESSAGE_PATTERN if allow_test_message else patterns.TEST_PATTERN).match(command_text)):
         test_message = match.group("message") if allow_test_message and match.groupdict().get("message") is not None else ""
-        await setters.test_reply_message(app, opsgenie_token, channel, config_name, user, test_message, command_ts, thread_ts)
+        await preview.test_reply_message(app, opsgenie_token, channel, config_name, user, test_message, command_ts, thread_ts)
     elif (match := patterns.SET_WAIT_TIME_PATTERN.match(command_text)):
         await setters.set_wait_time(app, channel, config_name, match.group("wait_time"), user, thread_ts)
     elif (match := patterns.SET_REPLY_MESSAGE_PATTERN.match(command_text)):

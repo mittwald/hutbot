@@ -1,4 +1,7 @@
-"""Slash-command handlers that mutate configuration (and run/test commands)."""
+"""Slash-command handlers that mutate configuration (and the `run` command).
+
+The `test` command is a report rather than a change, so it lives in ``preview``.
+"""
 
 import copy
 import re
@@ -46,12 +49,11 @@ from ..constants import (
     TRIGGER_MESSAGE,
     TRIGGER_CRON,
     TRIGGERS,
-    event_slice_prefix,
     CALENDAR_EVENT_TEMPLATE_VARIABLES,
     parse_event_offset,
 )
 from ..models import TemplateExpressionError
-from ..textutil import decode_escaped_newlines, escape_newlines, log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
+from ..textutil import decode_escaped_newlines, log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
 
 try:
     from croniter import croniter
@@ -275,67 +277,6 @@ async def set_reply_message(app: AsyncApp, channel, config_name: str, message: s
     channel.configs[config_name]['reply_message'] = message
     await persistence.save_configuration()
     await messaging.send_message(app, channel, user, f"*Reply message* set to: {message} in configuration `{config_name}`.", thread_ts)
-
-
-async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config_name: str, user, text: str = "", ts: str = "", thread_ts: str = "") -> None:
-    config = channel.configs.get(config_name) or copy.deepcopy(DEFAULT_CONFIG)
-    reply_message_template = config.get('reply_message')
-    permalink = await slackcache.get_message_permalink(app, channel, ts) if ts else ""
-    # The widest set: every template *and* the conditions, so the preview cannot judge a
-    # condition against a slice it never built. A run may resolve fewer — it skips the alert
-    # text when it cannot send one — but `test` is a diagnostic and shows every value.
-    selectors = templating.config_calendar_selectors(config)
-    template_variables = await templating.build_reply_template_variables(
-        app,
-        opsgenie_token,
-        channel,
-        config,
-        config_name,
-        user,
-        text,
-        ts,
-        permalink,
-        include_opsgenie=True,
-        include_calendar=True,
-        calendar_selectors=selectors,
-    )
-    reply_message = templating.render_reply_message_template(reply_message_template, template_variables, config)
-    # One variable per line, so a value that carries line breaks of its own — a multi-line
-    # `{{parent_message}}`, a calendar description — shows them as `\n` instead of splitting
-    # into lines nothing names.
-    variable_lines = [
-        f"`{{{{{variable}}}}}`: {escape_newlines(str(template_variables.get(variable, '')))}"
-        for variable in sorted(SUPPORTED_TEMPLATE_VARIABLES)
-    ]
-    sections = [
-        f"*Reply preview for configuration `{config_name}`:*\n{reply_message}",
-    ]
-    conditions = config.get('conditions') or []
-    if conditions:
-        mode = config.get('conditions_mode') or CONDITION_MODE_ALL
-        met, reason = conditionutil.evaluate_conditions(config, template_variables)
-        condition_lines = []
-        for condition in conditions:
-            single_met, _ = conditionutil.evaluate_conditions({'conditions': [condition]}, template_variables)
-            condition_lines.append(f"{':white_check_mark:' if single_met else ':x:'} {conditionutil.describe_condition(condition, code=True)}")
-        verdict = "would run" if met else f"would *not* run — {reason}"
-        header = "all must apply" if mode == CONDITION_MODE_ALL else "any may apply"
-        sections.append(f"*Conditions* ({header}):\n" + "\n".join(condition_lines) + f"\n\nThis rule {verdict}.")
-    sections.append("*Template variables:*\n" + "\n".join(variable_lines))
-    if selectors:
-        # What each `at`/`offset` actually resolved to, which is the one thing a preview can
-        # show that the template itself cannot: a relative moment is a different instant here
-        # than it will be when the rule fires.
-        selector_lines = []
-        for at, offset in selectors:
-            prefix = event_slice_prefix(at, offset)
-            arguments = ", ".join(part for part in (f'at="{at}"' if at else "",
-                                                    f"offset={offset}" if offset else "") if part)
-            instant = template_variables.get(f"__{prefix}instant", "")
-            summary = template_variables.get(f"__{prefix}calendar_summary", "")
-            selector_lines.append(f"`{arguments}` → {instant or '<unresolved>'}: {summary}")
-        sections.append("*Read at another moment:*\n" + "\n".join(selector_lines))
-    await messaging.send_message(app, channel, user, "\n\n".join(sections), thread_ts)
 
 
 async def clear_pattern(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:

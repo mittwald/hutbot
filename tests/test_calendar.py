@@ -25,6 +25,7 @@ from hutbot.calendarfeed import (
 )
 from hutbot.constants import (
     CALENDAR_DATETIME_TEMPLATE_VARIABLES,
+    CALENDAR_SELECTIONS_KEY,
     CALENDAR_TEMPLATE_VARIABLES,
     event_slice_name,
     event_slice_prefix,
@@ -1538,8 +1539,15 @@ async def test_a_selector_reads_the_calendar_at_another_moment(cal):
 
     assert variables["calendar_summary"] == "Composerbereitstellung"
     assert variables[f"__{event_slice_name('calendar_summary', '2026-08-19T12:15:00Z', '')}"] == "Mit Dauer"
-    # The moment each slice resolved to, so `test` can report it without a clock.
-    assert variables[f"__{event_slice_prefix('2026-08-19T12:15:00Z', '')}instant"].startswith("2026-08-19T14:15")
+    # Every selection travels with the variables it filled, so `test` can report the moment it
+    # resolved to — and the event behind it — without a clock or a second fetch.
+    selections = variables[CALENDAR_SELECTIONS_KEY]
+    assert [(selection.at, selection.offset) for selection in selections] == [
+        ("", ""), ("2026-08-19T12:15:00Z", ""), ("", "prev")]
+    assert selections[0].event.summary == "Composerbereitstellung"
+    assert selections[1].event.summary == "Mit Dauer"
+    assert selections[1].instant.isoformat().startswith("2026-08-19T14:15")
+    assert selections[1].prefix == event_slice_prefix("2026-08-19T12:15:00Z", "")
 
 
 @pytest.mark.asyncio
@@ -1643,14 +1651,13 @@ async def test_the_test_command_names_what_each_moment_resolved_to(cal):
         await process_command(app, "test", channel, user)
 
     text = sent_messages(send)
-    assert "*Read at another moment:*" in text
-    assert 'at="+1d"' in text
-    # The resolved instant, so an odd expression is obvious at a glance.
-    assert re.search(r'at="\+1d"` → \d{4}-\d{2}-\d{2}T', text)
+    # The moment the selector resolved to, beside the event it found there.
+    assert re.search(r'\*Event\* `at="\+1d"`, read at \w', text)
 
 
 @pytest.mark.asyncio
-async def test_the_test_command_says_nothing_extra_without_a_selector(cal):
+async def test_the_test_command_reads_the_neighbouring_events_too(cal):
+    """A rule that names no moment still gets the previous and next event, to compare against."""
     app = _ui_app()
     _seed_user_caches()
     config = {**copy.deepcopy(DEFAULT_CONFIG), **CONFIG, "reply_message": "now: {{calendar_summary}}"}
@@ -1661,7 +1668,13 @@ async def test_the_test_command_says_nothing_extra_without_a_selector(cal):
          patch('hutbot.messaging.send_message') as send:
         await process_command(app, "test", channel, user)
 
-    assert "Read at another moment" not in sent_messages(send)
+    text = sent_messages(send)
+    assert "*Event* now, read at" in text
+    assert "*Event* `offset=next`, read at" in text
+    assert "*Event* `offset=prev`, read at" in text
+    # And the whole namespace at those two moments, which is the reference half of `test`.
+    assert "*Calendar variables at `offset=next`:*" in text
+    assert "`{{calendar_summary(offset=prev)}}`: " in text
 
 
 def test_an_invalid_selector_renders_a_placeholder_not_the_current_event():

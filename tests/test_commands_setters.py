@@ -193,72 +193,6 @@ async def test_set_reply_message_rejects_unknown_arg_invalid_timezone_and_locale
 
 
 @pytest.mark.asyncio
-async def test_process_command_test_renders_default_reply_and_variables():
-    app = AsyncMock()
-    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
-    user = User("U12345", "test", "Test User", "Testers")
-    channel.configs["default"]["wait_time"] = 600
-    channel.configs["default"]["reply_message"] = "Hi {{user}}, wait {{wait_minutes}} in {{channel}}: {{message_link}}"
-
-    with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={
-        "opsgenie_current_user": "<@U999>",
-        "opsgenie_current_email": "oncall@example.com",
-        "opsgenie_current_name": "On Call User",
-    })) as mock_get_opsgenie_template_variables, patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "test", channel, user)
-
-    mock_get_opsgenie_template_variables.assert_awaited_once()
-    app.client.chat_getPermalink.assert_not_called()
-    sent_message = mock_send_message.call_args.args[3]
-    assert "*Reply preview for configuration `default`:*" in sent_message
-    assert "Hi <@U12345>, wait 10 in #general: " in sent_message
-    assert "`{{channel}}`: #general" in sent_message
-    assert "`{{config}}`: default" in sent_message
-    assert "`{{message}}`: " in sent_message
-    assert "`{{message_link}}`: " in sent_message
-    assert "`{{opsgenie_current_user}}`: <@U999>" in sent_message
-    assert "`{{timestamp}}`: " in sent_message
-
-
-
-@pytest.mark.asyncio
-async def test_process_command_test_uses_selected_config():
-    app = AsyncMock()
-    channel = Channel(id="C12345", name="general", configs={
-        "default": DEFAULT_CONFIG.copy(),
-        "alerts": DEFAULT_CONFIG.copy(),
-    })
-    channel.configs["alerts"]["wait_time"] = 120
-    channel.configs["alerts"]["reply_message"] = "Config {{config}} waits {{wait_minutes}}: {{message}}"
-    user = User("U12345", "test", "Test User", "Testers")
-
-    with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})), patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "alerts test", channel, user)
-
-    sent_message = mock_send_message.call_args.args[3]
-    assert "*Reply preview for configuration `alerts`:*" in sent_message
-    assert "Config alerts waits 2: " in sent_message
-    assert "`{{config}}`: alerts" in sent_message
-    assert "`{{wait_minutes}}`: 2" in sent_message
-
-
-
-@pytest.mark.asyncio
-async def test_process_command_slash_test_with_trailing_text_is_unknown():
-    app = AsyncMock()
-    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
-    user = User("U12345", "test", "Test User", "Testers")
-
-    with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock()) as mock_get_opsgenie_template_variables, \
-         patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "test hello world", channel, user)
-
-    mock_get_opsgenie_template_variables.assert_not_awaited()
-    mock_send_message.assert_called_with(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", "")
-
-
-
-@pytest.mark.asyncio
 async def test_set_replies_enabled_enables():
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={"default": {**DEFAULT_CONFIG.copy(), "enabled": False}})
@@ -463,7 +397,7 @@ async def test_test_and_run_populate_the_time_variables(command):
          patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, command, channel, user)
 
-    rendered = mock_send_message.call_args.args[3] if command == "test" else post.await_args.args[2]
+    rendered = sent_messages(mock_send_message) if command == "test" else post.await_args.args[2]
     assert "at  on , ts \n" not in rendered
     assert "ts {{timestamp}}" not in rendered
     assert re.search(r"at \d{2}:\d{2} on \w{3}, \d{2} \w{3} \d{4}, ts \d+\.\d+", rendered), rendered

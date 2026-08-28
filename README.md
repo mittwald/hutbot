@@ -445,6 +445,35 @@ existing configs keep working unchanged.
 
 Use `/hutbot [config] run` to fire a configuration's action immediately (handy for testing).
 
+### Previewing a rule: `test`
+
+`/hutbot [config] test` renders one configuration without sending anything, and reports, in this
+order:
+
+1. **the message**, rendered with the values it has right now;
+2. **what the run would do** — where it lands, with the target resolved to the people it actually
+   names (a rota rule usually targets `{{calendar_other_attendee_users(nth=1)}}`, and this is where
+   you find out who that is), when the rule fires next, what its buttons say, what it would alert,
+   and whether it is disabled or missing a target;
+3. **the gates and the conditions** — for a `message` rule, the checks the message itself has to
+   pass (teams, work days and hours, the pattern, judged against the text you passed), then each
+   condition with ✓/✗, and a verdict saying whether the rule would run and what stops it first;
+4. **the variables the configuration reads**, grouped by the field that reads them — the message,
+   the target, the alert text, each button text, and the conditions;
+5. **every calendar event it resolved**, one per moment the templates and conditions name, with the
+   attendees, organizer, body and UID behind the values;
+6. **the whole variable namespace**, plus every calendar variable at `offset=next` and
+   `offset=prev` — the reference half of the command.
+
+A preview resolves more than a run does: it reads the button texts (which a run only renders once
+somebody presses) and the two neighbouring events. It also reports what a run would *not* manage:
+recipients Slack's 8-member group-DM limit leaves out, a button or escalation pointing at a
+configuration that does not exist, an escalation on a rule that posts no buttons (which never arms a
+timer), and an empty OpsGenie body on a rule with no triggering message. Long reports are split
+across several Slack messages.
+
+`@hutbot [config] test <message>` does the same with `<message>` as `{{message}}`.
+
 ## Leaving and rejoining a channel
 
 Configurations outlive channel membership, so removing the bot from a channel would otherwise leave

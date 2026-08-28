@@ -19,6 +19,12 @@ CalendarEvent = collections.namedtuple('CalendarEvent', ['uid', 'summary', 'loca
 # The feed's name plus the one event a selection resolved to. Which event is a matter of
 # the `at`/`offset` template arguments, not of two fixed fields.
 CalendarContext = collections.namedtuple('CalendarContext', ['name', 'event'])
+# One resolved calendar selection, kept beside the variables it filled: the `at`/`offset` as
+# they were written, the namespace prefix their slice lives under ("" for the default
+# selection), the instant they resolved to, and the event that was running there (or None).
+# `test` prints these, so a preview can show which event each moment actually found without
+# fetching the feed a second time.
+CalendarSelection = collections.namedtuple('CalendarSelection', ['at', 'offset', 'prefix', 'instant', 'event'])
 # One of the instance's built-in calendars, read from HUTBOT_BUILTIN_CALENDARS. `url` carries a
 # secret token, so only `name` and `title` are ever echoed to a user or handed to the web UI.
 BuiltinCalendar = collections.namedtuple('BuiltinCalendar', ['name', 'title', 'url'])

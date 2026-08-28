@@ -80,6 +80,7 @@ import hutbot.scheduling
 import hutbot.routing
 import hutbot.webui_backend
 import hutbot.commands.dispatch
+import hutbot.commands.preview
 import hutbot.commands.setters
 import hutbot.commands.info
 

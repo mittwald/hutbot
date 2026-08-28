@@ -26,6 +26,7 @@ from .constants import (
     ACTIONS_REQUIRING_TARGET,
     ACTION_TARGET_HINTS,
     CALENDAR_TEMPLATE_VARIABLES,
+    GROUP_DM_MEMBER_LIMIT,
     MAX_ACTION_CHAIN_DEPTH,
     MAX_PARENT_VARIABLES,
     OPSGENIE_TEMPLATE_VARIABLES,
@@ -234,10 +235,10 @@ async def action_group_dm(app: AsyncApp, channel: Channel, config: dict, text: s
         if not members:
             log_error(f"Action group_dm: usergroup '{target}' has no members.")
             return None
-    # Slack multi-person DMs allow at most 8 members besides the bot.
-    if len(members) > 8:
-        log_warning(f"Action group_dm: usergroup '{target}' has {len(members)} members; using first 8 (Slack mpim limit).")
-        members = members[:8]
+    # Slack multi-person DMs allow at most `GROUP_DM_MEMBER_LIMIT` members besides the bot.
+    if len(members) > GROUP_DM_MEMBER_LIMIT:
+        log_warning(f"Action group_dm: target '{target}' names {len(members)} people; using first {GROUP_DM_MEMBER_LIMIT} (Slack mpim limit).")
+        members = members[:GROUP_DM_MEMBER_LIMIT]
     try:
         opened = await app.client.conversations_open(users=members)
         mpim_id = opened['channel']['id']

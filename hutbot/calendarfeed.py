@@ -34,6 +34,7 @@ from .constants import (
     CALENDAR_DATETIME_TEMPLATE_VARIABLES,
     CALENDAR_EVENT_TEMPLATE_VARIABLES,
     CALENDAR_LIST_TEMPLATE_VARIABLES,
+    CALENDAR_SELECTIONS_KEY,
     UNKNOWN_USER_ONCALL_PLACEHOLDER,
     UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
     UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
@@ -42,7 +43,8 @@ from .constants import (
     event_slice_prefix,
     normalize_selector,
 )
-from .models import BuiltinCalendar, CalendarContext, CalendarEvent, CalendarFeed
+from .models import BuiltinCalendar, CalendarContext, CalendarEvent, CalendarFeed, CalendarSelection
+from .textutil import escape_newlines
 
 # How long a fetched calendar stays usable. Matches slackcache's channel-member TTL, but
 # is env-tunable because it trades freshness against a host we do not control, and
@@ -912,6 +914,10 @@ async def get_calendar_template_variables(app, config: dict, now: datetime.datet
     now = now or datetime.datetime.now(datetime.timezone.utc)
     selectors = usable_selectors(selectors)
     variables = get_calendar_placeholder_variables(config, selectors)
+    # Every moment this build read, kept beside the values it filled, so `test` can print the
+    # events behind them without a clock, a fetch or an index of its own.
+    selections: list[CalendarSelection] = []
+    variables[CALENDAR_SELECTIONS_KEY] = selections
     if not resolve_calendar_feed(config).url:
         return variables
 
@@ -922,9 +928,9 @@ async def get_calendar_template_variables(app, config: dict, now: datetime.datet
         return variables
 
     # The default selection first, then one slice per selector.
-    requests = [("", "", 0)] + [(event_slice_prefix(at, offset), at, normalize_selector(at, offset)[1])
-                                for at, offset in selectors]
-    for prefix, at, offset in requests:
+    requests = [("", "", "", 0)] + [(event_slice_prefix(at, offset), at, offset, normalize_selector(at, offset)[1])
+                                    for at, offset in selectors]
+    for prefix, at, offset, count in requests:
         instant = now
         if at:
             instant = datetimefmt.resolve_at_time(at, config, now)
@@ -934,10 +940,8 @@ async def get_calendar_template_variables(app, config: dict, now: datetime.datet
                 log_warning(f"Ignoring an unusable `at` value in a calendar variable: {at}")
                 continue
         keys = _slice_keys(prefix)
-        if prefix:
-            # What the moment resolved to, so `test` can show it without a clock of its own.
-            variables[f"__{prefix}instant"] = instant.isoformat()
-        event = select_event(query, config, instant, offset)
+        event = select_event(query, config, instant, count)
+        selections.append(CalendarSelection(at, offset, prefix, instant, event))
         fill_calendar_event_variables(variables, config, keys, event)
         await fill_calendar_user_variables(app, variables, keys, event)
     return variables
@@ -980,7 +984,19 @@ async def resolve_calendar_context(config: dict, now: datetime.datetime | None =
 # ----- the read command -----
 
 
-def _describe_event(config: dict, label: str, event: CalendarEvent | None) -> str:
+# How much of an event's body `test` prints. Long enough to recognise the entry, short
+# enough that a meeting invite full of dial-in boilerplate does not bury the rest of the
+# preview.
+_DESCRIPTION_PREVIEW_LIMIT = 400
+
+
+def describe_event(config: dict, label: str, event: CalendarEvent | None, verbose: bool = False) -> str:
+    """One event as chat text: `show calendar` prints the short form, `test` the full one.
+
+    `verbose` adds what a template can read but the short form leaves out — every attendee
+    with their address, the body, the UID — so a preview answers "why did that variable come
+    out like that?" from the event itself.
+    """
     if event is None:
         return f"*{label}*: _none_"
     lines = [f"*{label}*: {event.summary or UNKNOWN_CALENDAR_EVENT_PLACEHOLDER}"]
@@ -992,15 +1008,53 @@ def _describe_event(config: dict, label: str, event: CalendarEvent | None) -> st
         if event.organizer_email and event.organizer_email != organizer:
             organizer += f" ({event.organizer_email})"
         lines.append(f"*Organizer*: {organizer}")
-    attendees = event.other_attendees or event.other_attendee_emails or event.attendees or event.attendee_emails
-    if attendees:
-        lines.append(f"*Attendees*: {', '.join(attendees)}")
+    if verbose:
+        # Names and addresses paired, and both attendee lists, because `other_*` (the list a
+        # rota template reads) differs from the full one exactly where the organizer invited
+        # themselves — which is the thing worth seeing.
+        for field, names, emails in (("Attendees", event.attendees, event.attendee_emails),
+                                     ("Other attendees", event.other_attendees, event.other_attendee_emails)):
+            if names or emails:
+                lines.append(f"*{field}*: {', '.join(_participant_labels(names, emails))}")
+    else:
+        attendees = event.other_attendees or event.other_attendee_emails or event.attendees or event.attendee_emails
+        if attendees:
+            lines.append(f"*Attendees*: {', '.join(attendees)}")
     part = "date" if event.all_day else "datetime"
-    lines.append(f"*Start*: `{datetimefmt.format_datetime_value(event.start, part, config)}`")
+    lines.append(f"*Start*: `{datetimefmt.format_datetime_value(event.start, part, config)}`"
+                 + (" (all day)" if verbose and event.all_day else ""))
     lines.append(f"*End*: `{datetimefmt.format_datetime_value(event.end, part, config)}`")
-    if event.status and event.status != "CONFIRMED":
+    if event.status and (verbose or event.status != "CONFIRMED"):
         lines.append(f"*Status*: `{event.status}`")
+    if verbose:
+        if event.description:
+            lines.append(f"*Description*: {_shorten(event.description, _DESCRIPTION_PREVIEW_LIMIT)}")
+        if event.uid:
+            lines.append(f"*UID*: `{event.uid}`")
     return "\n".join(lines)
+
+
+def _participant_labels(names: list, emails: list) -> list[str]:
+    """`Name (address)` per participant, from the two index-aligned lists.
+
+    Either half may be blank — an attendee with no usable address, a room mailbox with no
+    name — so whichever is present stands on its own.
+    """
+    labels = []
+    for index in range(max(len(names or ()), len(emails or ()))):
+        name = (names[index] if index < len(names or ()) else "") or ""
+        email = (emails[index] if index < len(emails or ()) else "") or ""
+        if name and email and name != email:
+            labels.append(f"{name} ({email})")
+        elif name or email:
+            labels.append(name or email)
+    return labels
+
+
+def _shorten(text: str, limit: int) -> str:
+    """A value on one line, cut to `limit` characters — for a preview, not for a render."""
+    text = escape_newlines((text or "").strip())
+    return text if len(text) <= limit else f"{text[:limit]}…"
 
 
 async def send_current_calendar_event(app, channel, config_name: str, user, thread_ts: str = "") -> None:
@@ -1028,9 +1082,9 @@ async def send_current_calendar_event(app, channel, config_name: str, user, thre
     header = f"*Calendar*: `{name or label}`"
     parts = [header]
     if previous_event is not None:
-        parts.append(_describe_event(config, "Before", previous_event))
-    parts.append(_describe_event(config, "Now", current))
-    parts.append(_describe_event(config, "Next", next_event))
+        parts.append(describe_event(config, "Before", previous_event))
+    parts.append(describe_event(config, "Now", current))
+    parts.append(describe_event(config, "Next", next_event))
     message = "\n\n".join(parts)
     log(f"Reporting calendar events for config '{config_name}' in #{channel.name}.")
     await messaging.send_message(app, channel, user, message, thread_ts)

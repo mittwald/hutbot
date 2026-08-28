@@ -159,7 +159,7 @@ async def test_process_command_help_uses_compact_command_reference():
     assert "/hutbot [config] clear escalation" in sent_message
     assert "/hutbot [config] clear pattern" in sent_message
     assert "@Hutbot [config] test <message>" in sent_message
-    assert "Preview reply with <message> as {{message}}." in sent_message
+    assert "Preview it with <message> as {{message}}." in sent_message
     assert "*Enable OpsGenie Integration:*" not in sent_message
 
 

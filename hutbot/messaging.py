@@ -326,8 +326,8 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         "> :list-item: *List available Opsgenie schedules*\n>\n"
         "> :telephone_receiver: *Print the current on-call user*\n"
         f"> Use `{command} [config] on-call [schedule name]` to get the current OpsGenie on-call user as a Slack mention.\n>\n"
-        "> :test_tube: *Preview your configured reply*\n"
-        f"> Use `{command} [config] test` or mention me with `{mention} [config] test <message>` to test reply templates and variables.\n>\n"
+        "> :test_tube: *Preview a whole rule*\n"
+        f"> `{command} [config] test` now renders the message *and* reports where it would go (with the target resolved to real people), when the rule fires next, which variables each field reads, and every calendar event behind those values. Mention me with `{mention} [config] test <message>` to preview it against a message of your own.\n>\n"
         f"> :bug: *{name} now ONLY cancels replying, when the _expected_ team(s) have already replied* :lightbulb:\n>\n"
         "> Issue was:\n>\n"
         "> 1. Team *A* sends a message intended for Team *B*\n"
@@ -567,8 +567,8 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ]),
         ("Try it out and look things up", [
             (f"{command} [config] run", "Run this configuration's action now."),
-            (f"{command} [config] test", "Preview configured reply."),
-            (f"{mention} [config] test <message>", "Preview reply with <message> as {{message}}."),
+            (f"{command} [config] test", "Preview a rule: message, destination, variables, events."),
+            (f"{mention} [config] test <message>", "Preview it with <message> as {{message}}."),
             (f"{command} [config] on-call [opsgenie-schedule]", "Show current on-call user."),
             (f"{command} list teams", "List available teams."),
             (f"{command} list opsgenie-schedules", "List OpsGenie schedules."),
