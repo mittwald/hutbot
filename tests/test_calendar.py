@@ -1803,7 +1803,30 @@ def test_load_builtin_calendars_prefers_the_file(monkeypatch, tmp_path):
 
 
 def test_load_builtin_calendars_survives_a_missing_file(monkeypatch, tmp_path):
+    """An instance with no built-in calendars has no file, and that is not a failure.
+
+    The chart sets the path whenever the Secret is mounted, but the volume projects the key
+    only when the deployment actually has one.
+    """
+    monkeypatch.delenv("HUTBOT_BUILTIN_CALENDARS", raising=False)
     monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS_FILE", str(tmp_path / "gone.json"))
+    with patch('hutbot.calendarfeed.log_error') as log_error:
+        assert load_builtin_calendars() == []
+    assert not log_error.called
+
+
+def test_a_missing_file_falls_back_to_the_variable(monkeypatch, tmp_path):
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS", BUILTIN_JSON)
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS_FILE", str(tmp_path / "gone.json"))
+    assert builtin_names(load_builtin_calendars()) == ["rota", "holidays"]
+
+
+def test_an_unreadable_file_is_still_an_error(monkeypatch, tmp_path):
+    """A path that exists but cannot be read is a misconfiguration, not an empty list."""
+    directory = tmp_path / "builtin-calendars.json"
+    directory.mkdir()
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS", BUILTIN_JSON)
+    monkeypatch.setenv("HUTBOT_BUILTIN_CALENDARS_FILE", str(directory))
     with patch('hutbot.calendarfeed.log_error') as log_error:
         assert load_builtin_calendars() == []
     assert log_error.called

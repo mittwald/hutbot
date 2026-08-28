@@ -574,20 +574,28 @@ def load_builtin_calendars() -> list[BuiltinCalendar]:
 
     `HUTBOT_BUILTIN_CALENDARS_FILE` names a file holding the JSON, which is how a Kubernetes
     Secret is projected in production: the value is used verbatim, it has no length limit to
-    run into, and a multi-line document survives a `.env` that cannot hold one. Without it
+    run into, and a multi-line document survives a `.env` that cannot hold one. Without it —
+    or when the path names no file, because the deployment has no calendars to project —
     `HUTBOT_BUILTIN_CALENDARS` is read through `get_env_var`, which also accepts the JSON
     base64-encoded — a JSON array survives that untouched, because `[` is not in the base64
     alphabet.
     """
+    raw = ''
     path = os.environ.get(BUILTIN_CALENDARS_FILE_ENV, '').strip()
     if path:
         try:
             with open(path, encoding='utf-8') as handle:
                 raw = handle.read()
+        except FileNotFoundError:
+            # The chart points at the path unconditionally, but the Secret volume projects the
+            # key only when the deployment has one. No file means no built-in calendars — the
+            # ordinary state of an instance without them, not an error — so fall through to the
+            # variable the same Secret's `envFrom` copy may still carry.
+            pass
         except OSError as e:
             log_error(f"Failed to read the built-in calendars from {path}:", e)
             return []
-    else:
+    if not raw:
         raw = get_env_var(BUILTIN_CALENDARS_ENV)
     calendars = parse_builtin_calendars(raw)
     if calendars:
