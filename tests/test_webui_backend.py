@@ -476,7 +476,7 @@ async def test_the_config_snapshot_redacts_the_calendar_url():
     """Every channel member can read this; the URL grants access to the calendar."""
     hutbot.state.channel_config["C1"] = {"cal": {**copy.deepcopy(DEFAULT_CONFIG), "calendar_url": _SECRET_URL}}
     snapshot = ui_snapshot_configs("C1")
-    assert snapshot["cal"]["calendar_url"] == "outlook.office365.com/…/calendar.ics"
+    assert snapshot["cal"]["calendar_url"] == "outlook.office365.com/…"
     assert "secret-guid" not in str(snapshot)
 
 

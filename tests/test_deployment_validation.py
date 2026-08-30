@@ -150,7 +150,23 @@ def test_deployment_reads_the_out_of_band_secret():
     result = _render()
 
     assert result.returncode == 0, result.stderr
-    assert f"- secretRef:\n                name: {SECRET_NAME}" in result.stdout
+    container = _container(result)
+    assert "envFrom" not in container
+    secret_refs = {
+        item["name"]: item["valueFrom"]["secretKeyRef"]
+        for item in container["env"] if "valueFrom" in item
+    }
+    assert secret_refs["SLACK_APP_TOKEN"] == {
+        "name": SECRET_NAME, "key": "SLACK_APP_TOKEN"
+    }
+    assert secret_refs["SLACK_BOT_TOKEN"] == {
+        "name": SECRET_NAME, "key": "SLACK_BOT_TOKEN"
+    }
+    for key in ("OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME", "EMPLOYEE_LIST_USERNAME",
+                "EMPLOYEE_LIST_PASSWORD", "EMPLOYEE_LIST_MAPPINGS"):
+        assert secret_refs[key] == {"name": SECRET_NAME, "key": key, "optional": True}
+    # Potentially large JSON must exist only in the mounted file, never execve's environment.
+    assert "HUTBOT_BUILTIN_CALENDARS" not in secret_refs
     assert "hutbot-secret" not in result.stdout
 
 
@@ -206,7 +222,8 @@ def test_egress_allows_dns_and_every_public_destination():
     # No `ports`: all outbound ports to public destinations.
     assert "ports" not in public
     assert public["to"][0]["ipBlock"]["except"] == [
-        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+        "10.0.0.0/8", "100.64.0.0/10", "172.16.0.0/12", "192.168.0.0/16",
+        "169.254.0.0/16"]
     # DNS is the only item allowed to name ports without a destination.
     assert [item for item in egress if "to" not in item] == [dns]
 
@@ -356,7 +373,12 @@ def _stub_cluster(tmp_path, vault_fields=None, live_secret=None, context="coabku
     bin_dir.mkdir(parents=True)
     calls = tmp_path / "kubectl-calls"
     vault_payload = _json.dumps({"data": {"data": VAULT_JSON if vault_fields is None else vault_fields}})
-    secret_payload = _json.dumps({"data": live_secret or {}})
+    live_secret = live_secret or {}
+    secret_payload = _json.dumps({"data": live_secret})
+    jsonpath_responses = "\n".join(
+        f'''  *"jsonpath={{.data.{key}}}"*) printf '%s' '{value}' ;;'''
+        for key, value in live_secret.items()
+    )
     _stub(bin_dir, "vault", f'''
 if [[ "$1 $2" == "kv get" ]]; then
   cat <<'JSON'
@@ -370,11 +392,12 @@ exit 0
 printf '%s\\n' "$*" >> {calls}
 case "$*" in
   "config current-context") echo "{context}" ;;
-  *"get secret"*"-o json"*) cat <<'JSON'
+{jsonpath_responses}
+  *"get secret"*"jsonpath"*) echo -n "" ;;
+  *"get secret"*"-o json") cat <<'JSON'
 {secret_payload}
 JSON
     ;;
-  *"get secret"*"jsonpath"*) echo -n "" ;;
   *"get secret"*) exit 0 ;;
 esac
 exit 0
@@ -462,6 +485,45 @@ def test_sync_secret_refuses_to_drop_a_key_the_live_secret_has(tmp_path):
     assert allowed.returncode == 0, allowed.stderr
 
 
+def test_sync_secret_local_drop_flags_do_not_carry_live_keys_back(tmp_path):
+    live = {"SLACK_APP_TOKEN": "eA==", "SLACK_BOT_TOKEN": "eA==",
+            "OPSGENIE_TOKEN": "b2xkLW9wcy10b2tlbg=="}
+    local_env = {
+        "SLACK_APP_TOKEN": "xapp-local", "SLACK_BOT_TOKEN": "xoxb-local",
+        "OPSGENIE_TOKEN": "", "OPSGENIE_HEARTBEAT_NAME": "",
+        "EMPLOYEE_LIST_USERNAME": "", "EMPLOYEE_LIST_PASSWORD": "",
+        "EMPLOYEE_LIST_MAPPINGS": "", "HUTBOT_BUILTIN_CALENDARS": "",
+    }
+
+    carried = _run_sync(tmp_path / "carried", "--local", "--dry-run",
+                        live_secret=live, env=local_env)
+    assert carried.returncode == 0, carried.stderr
+    assert "OPSGENIE_TOKEN not in the environment; carrying it over" in carried.stdout
+    assert "OPSGENIE_TOKEN" in carried.stdout.split("==> keys:")[1].splitlines()[0]
+
+    dropped = _run_sync(tmp_path / "dropped", "--local", "--dry-run", "--drop",
+                        "OPSGENIE_TOKEN", live_secret=live, env=local_env)
+    assert dropped.returncode == 0, dropped.stderr
+    assert "OPSGENIE_TOKEN" not in dropped.stdout.split("==> keys:")[1].splitlines()[0]
+
+    allow_drop = _run_sync(tmp_path / "allow", "--local", "--dry-run", "--allow-drop",
+                           live_secret=live, env=local_env)
+    assert allow_drop.returncode == 0, allow_drop.stderr
+    assert "OPSGENIE_TOKEN" not in allow_drop.stdout.split("==> keys:")[1].splitlines()[0]
+
+
+def test_sync_secret_accepts_large_builtin_calendars_because_they_are_file_mounted(tmp_path):
+    import json as _json
+
+    payload = _json.dumps([{"name": "rota", "title": "Rota",
+                            "url": "https://cal.example/" + "x" * 100_000}])
+    result = _run_sync(tmp_path, "--dry-run",
+                       vault_fields={**VAULT_JSON, "HUTBOT_BUILTIN_CALENDARS": payload})
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_BUILTIN_CALENDARS" in result.stdout
+
+
 def test_sync_secret_rejects_a_malformed_builtin_calendar_list(tmp_path):
     import json as _json
 
@@ -518,6 +580,53 @@ exit 0
 
     assert result.returncode != 0
     assert "not found" in result.stderr and "sync it first" in result.stderr
+
+
+@pytest.mark.parametrize("script,env_file,args", [
+    ("deploy-dev.sh", ".env-dev", ["v1.2.3"]),
+    ("deploy-prod.sh", ".env", ["-y", "v1.2.3"]),
+])
+def test_deploy_loads_target_overrides_before_secret_preflight(tmp_path, script, env_file, args):
+    import os
+
+    script_copy = tmp_path / script
+    shutil.copy2(ROOT / script, script_copy)
+    (tmp_path / env_file).write_text(
+        "NAMESPACE=override-namespace\nHUTBOT_EXISTING_SECRET=override-secret\n",
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "kubectl-calls"
+    _stub(bin_dir, "kubectl", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$*" in
+  *"get secret"*jsonpath*) printf '%s' "eA==" ;;
+  *"get secret"*) exit 0 ;;
+  *"get deployment"*) printf '%s' "Recreate" ;;
+esac
+exit 0
+''')
+    _stub(bin_dir, "helmfile", "exit 0\n")
+
+    result = subprocess.run([str(script_copy), *args], cwd=ROOT, capture_output=True, text=True,
+                            check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+    assert result.returncode == 0, result.stderr
+    kubectl_calls = calls.read_text(encoding="utf-8")
+    assert "-n override-namespace get secret override-secret" in kubectl_calls
+    assert "namespace:   override-namespace" in result.stdout
+    assert "secret:      override-secret" in result.stdout
+
+
+def test_container_context_is_allow_listed_and_dockerfile_uses_narrow_copies():
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert dockerignore.splitlines()[2] == "*"
+    assert "!hutbot/**" in dockerignore and "!webui_static/**" in dockerignore
+    assert "COPY . ." not in dockerfile
 
 
 # ----- scripts/seed-vault.sh -----

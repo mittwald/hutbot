@@ -393,7 +393,7 @@ def test_placeholders_without_a_feed_say_so():
 
 
 def test_placeholder_calendar_name_is_redacted():
-    assert get_calendar_placeholder_variables(CONFIG)["calendar_name"] == "cal.example.com/…/calendar.ics"
+    assert get_calendar_placeholder_variables(CONFIG)["calendar_name"] == "cal.example.com/…"
 
 
 @pytest.mark.asyncio
@@ -534,8 +534,10 @@ def test_allowed_hosts_are_read_from_the_environment():
 
 def test_describe_calendar_url_redacts_the_path():
     described = describe_calendar_url("https://outlook.office365.com/owa/calendar/secret-guid@tenant/other-guid/calendar.ics")
-    assert described == "outlook.office365.com/…/calendar.ics"
-    assert "secret-guid" not in described
+    assert described == "outlook.office365.com/…"
+    assert "secret-guid" not in described and "calendar.ics" not in described
+    # Some providers use the final segment itself as the bearer capability.
+    assert describe_calendar_url("https://cal.example/FINAL-BEARER-TOKEN") == "cal.example/…"
     assert describe_calendar_url("") == ""
 
 
@@ -701,7 +703,7 @@ async def test_set_calendar_unwraps_the_slack_link_and_confirms_redacted():
         await process_command(app, f"set calendar <{url}|outlook.office365.com>", channel, user)
     assert channel.configs["default"]["calendar_url"] == url
     confirmation = send.call_args.args[3]
-    assert "outlook.office365.com/…/calendar.ics" in confirmation
+    assert "outlook.office365.com/…" in confirmation
     assert "secret-guid" not in confirmation
 
 
@@ -785,7 +787,7 @@ async def test_show_config_shows_only_the_redacted_calendar_url():
     with patch('hutbot.messaging.send_message') as send:
         await show_config(app, channel, user, "")
     text = sent_messages(send)
-    assert "outlook.office365.com/…/calendar.ics" in text
+    assert "outlook.office365.com/…" in text
     assert "secret-guid" not in text
 
 
@@ -1441,6 +1443,7 @@ async def test_a_body_within_the_cap_is_read_whole():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("host,expected", [
     ("10.0.0.1", "internal"),
+    ("100.64.0.1", "internal"),
     ("169.254.169.254", "internal"),
     ("127.0.0.1", "internal"),
     ("no-such-host.invalid", "could not resolve"),
@@ -1451,6 +1454,7 @@ async def test_resolve_public_host_rejects_internal_targets(host, expected):
 
 @pytest.mark.parametrize("url", [
     "https://0.0.0.0/feed.ics",
+    "https://100.64.0.1/feed.ics",
     "https://224.0.0.1/feed.ics",
     "https://192.0.0.170/feed.ics",
 ])
@@ -2039,7 +2043,7 @@ def test_resolve_calendar_feed_reports_a_builtin_this_instance_lost():
 def test_resolve_calendar_feed_falls_back_to_the_url_and_to_nothing():
     feed = resolve_calendar_feed({"calendar_url": "https://cal.example.com/a/b/feed.ics"})
     assert feed.builtin == "" and feed.url.endswith("feed.ics")
-    assert feed.title == "cal.example.com/…/feed.ics"
+    assert feed.title == "cal.example.com/…"
     assert resolve_calendar_feed({}) == hutbot.models.CalendarFeed("", "", "", False)
 
 

@@ -41,6 +41,18 @@ if [[ "${image_tag,,}" == "latest" || "${image_tag,,}" == "main" ]]; then
   exit 1
 fi
 
+env_path="${root_dir}/${ENV_FILE}"
+if [[ -f "$env_path" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$env_path"
+  set +a
+else
+  # Only deploy settings live here now (NETWORKPOLICY_RULES, HOST_ALIASES, PERSISTENCE_*,
+  # HUTBOT_TIMEZONE, HUTBOT_DEFAULT_DATETIME_LOCALE) — credentials come from the Secret.
+  echo "warning: ${env_path} not found; deploying with the chart defaults" >&2
+fi
+
 if ! command -v kubectl >/dev/null 2>&1; then
   echo "error: kubectl not found in PATH" >&2
   exit 1
@@ -88,18 +100,6 @@ fi
 if ! command -v helmfile >/dev/null 2>&1; then
   echo "error: helmfile not found in PATH" >&2
   exit 1
-fi
-
-env_path="${root_dir}/${ENV_FILE}"
-if [[ -f "$env_path" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "$env_path"
-  set +a
-else
-  # Only deploy settings live here now (NETWORKPOLICY_RULES, HOST_ALIASES, PERSISTENCE_*,
-  # HUTBOT_TIMEZONE, HUTBOT_DEFAULT_DATETIME_LOCALE) — the credentials come from the Secret.
-  echo "warning: ${env_path} not found; deploying with the chart defaults" >&2
 fi
 
 export IMAGE_TAG="$image_tag"

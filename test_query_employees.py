@@ -150,3 +150,27 @@ async def test_load_employees_from_disk_fills_gaps_from_the_fallback_file(tmp_pa
     # The cache dropped the deleted record, so the fallback is what carries the team now.
     assert sorted(employees) == ["jdoe", "rmantler"]
     assert employees["rmantler"]["group"] == "Platform"
+
+
+async def test_load_employees_from_disk_uses_fallbacks_without_a_cache(tmp_path):
+    fallback = tmp_path / "employees-fallback.json"
+    _write_json(fallback, [_employee("rmantler", "Rudi Mantler", "Platform")])
+
+    with patch.dict(os.environ, {"HUTBOT_EMPLOYEE_CACHE_FILE": str(tmp_path / "missing.json"),
+                                 "HUTBOT_EMPLOYEE_FALLBACK_FILE": str(fallback)}):
+        employees = await load_employees_from_disk()
+
+    assert list(employees) == ["rmantler"]
+
+
+async def test_load_employees_from_disk_uses_fallbacks_when_cache_is_corrupt(tmp_path):
+    cache = tmp_path / "employees.json"
+    cache.write_text("{broken", encoding="utf-8")
+    fallback = tmp_path / "employees-fallback.json"
+    _write_json(fallback, [_employee("rmantler", "Rudi Mantler", "Platform")])
+
+    with patch.dict(os.environ, {"HUTBOT_EMPLOYEE_CACHE_FILE": str(cache),
+                                 "HUTBOT_EMPLOYEE_FALLBACK_FILE": str(fallback)}):
+        employees = await load_employees_from_disk()
+
+    assert list(employees) == ["rmantler"]

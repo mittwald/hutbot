@@ -141,18 +141,20 @@ def load_employee_mappings() -> dict:
 
 async def load_employees_from_disk() -> dict:
     log("Attempting to load employees from disk.")
+    employees = {}
     try:
         async with aiofiles.open(get_employee_cache_file_name(), "r") as f:
             content = await f.read()
             users = json.loads(content)
             employees = generate_employee_list(users)
             log(f"{len(employees)} employees loaded from disk.")
-            return merge_employee_fallbacks(employees, await load_employee_fallbacks())
     except FileNotFoundError:
-        log_error("No employee file found. Will not be able to do team mapping.")
-    except json.JSONDecodeError as e:
-        log_error("Failed to decode employee JSON:", e, "Will not be able to do team mapping.")
-    return {}
+        log_error("No employee cache file found. Trying employee fallback records.")
+    except OSError as e:
+        log_error("Failed to read the employee cache:", e, "Trying employee fallback records.")
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError, AttributeError) as e:
+        log_error("Failed to read the employee cache:", e, "Trying employee fallback records.")
+    return merge_employee_fallbacks(employees, await load_employee_fallbacks())
 
 
 # The string fields anything downstream reads off a record: `generate_employee_list` and the

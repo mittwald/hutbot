@@ -11,9 +11,10 @@ image:
 
 # Kubernetes Secret holding every credential, managed out of band by scripts/sync-secret.sh
 # (sourced from Vault) and only read here. It must carry SLACK_APP_TOKEN and SLACK_BOT_TOKEN;
-# OPSGENIE_*, EMPLOYEE_LIST_* and HUTBOT_BUILTIN_CALENDARS are optional additions. Every key
-# becomes an environment variable. Rendering fails while this is empty, on purpose: there is
-# no fallback that would template the credentials back into the release.
+# OPSGENIE_*, EMPLOYEE_LIST_* and HUTBOT_BUILTIN_CALENDARS are optional additions. Runtime
+# variables use individual key references; the potentially large calendar value is mounted
+# only as a file. Rendering fails while this is empty, on purpose: there is no fallback that
+# would template credentials back into the release.
 existingSecret: ""
 
 # Instance-wide "built-in" ICS calendar feeds every channel can point at by name, as a JSON
@@ -69,14 +70,15 @@ networkPolicy:
   # inside the cluster range, which publicEgress excludes).
   allowDNS: true
   publicEgress:
-    # Everything outside the private ranges, on any port: Slack Socket Mode and Web API, and
-    # every public calendar feed — including the built-in ones, which are fetched from inside
-    # the cluster like any other.
+    # Everything outside private, shared and link-local ranges, on any port: Slack Socket Mode
+    # and Web API, and every public calendar feed — including the built-in ones, which are
+    # fetched from inside the cluster like any other.
     enabled: true
-    # Private and link-local ranges carved out of 0.0.0.0/0, so an internal destination stays
-    # a matter of `rules` below and nothing reaches an internal service by accident.
+    # Private, shared and link-local ranges carved out of 0.0.0.0/0, so an internal destination
+    # stays a matter of `rules` below and nothing reaches an internal service by accident.
     except:
       - 10.0.0.0/8
+      - 100.64.0.0/10
       - 172.16.0.0/12
       - 192.168.0.0/16
       - 169.254.0.0/16

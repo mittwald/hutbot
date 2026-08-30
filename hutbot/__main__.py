@@ -8,21 +8,25 @@ from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from employee_list import get_env_var, load_env_file, log_error
 
 from . import __version__
-from . import state
-from . import calendarfeed
-from . import datetimefmt
-from .constants import DEFAULT_BOT_NAME, normalize_slash_command, normalize_version
-from . import persistence
-from . import slackcache
-from . import scheduling
-from . import buttons
-from . import routing
-from . import opsgenie
-from . import webui_backend
 
 
 async def main() -> None:
+    # Several runtime modules read configuration into module constants. Import them only after
+    # the source-checkout env file has populated os.environ; importing this entry point from a
+    # test or compatibility wrapper remains side-effect free.
     load_env_file()
+    from . import state
+    from . import calendarfeed
+    from . import datetimefmt
+    from .constants import DEFAULT_BOT_NAME, normalize_slash_command, normalize_version
+    from . import persistence
+    from . import slackcache
+    from . import scheduling
+    from . import buttons
+    from . import routing
+    from . import opsgenie
+    from . import webui_backend
+
     slack_app_token = get_env_var("SLACK_APP_TOKEN")
     slack_bot_token = get_env_var("SLACK_BOT_TOKEN")
     opsgenie_token = get_env_var("OPSGENIE_TOKEN")

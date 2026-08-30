@@ -412,8 +412,11 @@ def select_event(query, config: dict | None, instant: datetime.datetime, offset:
 
 def _is_forbidden_address(address: ipaddress._BaseAddress) -> bool:
     """Whether an address is one the bot must not be talked into reaching."""
-    return bool(address.is_private or address.is_loopback or address.is_link_local
-                or address.is_reserved or address.is_multicast or address.is_unspecified)
+    # `is_private` is narrower than "not publicly routable": notably, Python does not mark
+    # the shared carrier-grade NAT range 100.64.0.0/10 private or reserved. Clusters can use
+    # that range for pods and services, so only globally routable addresses are safe by
+    # default. Operator allow-listed hosts bypass this check at the call sites.
+    return not address.is_global or address.is_multicast
 
 
 async def _resolve_public_host(host: str) -> str:
@@ -472,9 +475,9 @@ def validate_calendar_url(url: str) -> str:
     """Return a usable feed URL, or raise ``ValueError`` explaining why it is not.
 
     The bot fetches this URL on a user's word, from inside the cluster in production, so a
-    remote feed has to be https and the addresses that make SSRF worth attempting — the
-    private ranges and the cloud metadata endpoint — are refused. The NetworkPolicy egress
-    allow-list is the real control; this is the readable first line of defence.
+    remote feed has to be https and every address not globally routable is refused. The
+    NetworkPolicy egress allow-list is the real control; this is the readable first line of
+    defence.
 
     Loopback is the exception, over http as well: serving a feed from a local file server is
     how this gets developed, and `127.0.0.1` is not a target worth reaching through the bot
@@ -514,8 +517,9 @@ def describe_calendar_url(url: str) -> str:
     """A safe-to-echo form of the feed URL.
 
     A published-calendar link needs no credentials, so possession of it *is* access. It is
-    stored per config and anyone in the channel can run `show config`, so only the host and
-    the last path segment are ever printed back.
+    stored per config and anyone in the channel can run `show config`, so only the host is
+    ever printed back. No path segment is safe to retain: many providers put the bearer token
+    in the final segment rather than in a parent segment or query string.
     """
     url = (url or "").strip()
     if not url:
@@ -525,10 +529,9 @@ def describe_calendar_url(url: str) -> str:
     except ValueError:
         return "<unprintable URL>"
     host = parts.hostname or ""
-    tail = parts.path.rsplit("/", 1)[-1] if parts.path else ""
     if not host:
         return "<unprintable URL>"
-    return f"{host}/…/{tail}" if tail else f"{host}/…"
+    return f"{host}/…"
 
 
 # ----- built-in calendars -----
@@ -612,7 +615,7 @@ def parse_builtin_calendars(raw: str) -> list[BuiltinCalendar]:
 
 
 def load_builtin_calendars() -> list[BuiltinCalendar]:
-    """The instance's built-in calendars, read from the environment once at startup.
+    """The instance's built-in calendars, read from startup configuration once.
 
     `HUTBOT_BUILTIN_CALENDARS_FILE` names a file holding the JSON, which is how a Kubernetes
     Secret is projected in production: the value is used verbatim, it has no length limit to
@@ -631,8 +634,8 @@ def load_builtin_calendars() -> list[BuiltinCalendar]:
         except FileNotFoundError:
             # The chart points at the path unconditionally, but the Secret volume projects the
             # key only when the deployment has one. No file means no built-in calendars — the
-            # ordinary state of an instance without them, not an error — so fall through to the
-            # variable the same Secret's `envFrom` copy may still carry.
+            # ordinary state of an instance without them, not an error — so fall through to an
+            # environment value, which remains useful for source checkouts.
             pass
         except OSError as e:
             log_error(f"Failed to read the built-in calendars from {path}:", e)

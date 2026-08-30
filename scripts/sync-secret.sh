@@ -2,9 +2,9 @@
 # Sync the out-of-band Kubernetes Secret the hutbot chart consumes via `existingSecret`.
 # Source is Vault by default (secrets-coabkube/production/hutbot for the production release,
 # .../hutbot-dev for the dev release; override with VAULT_PATH). Every field of the Vault
-# secret becomes one key of the Kubernetes Secret, so the deployment receives it as an
-# environment variable: SLACK_APP_TOKEN and SLACK_BOT_TOKEN are required, the OpsGenie,
-# employee-list and built-in-calendar fields are optional additions.
+# secret becomes one key of the Kubernetes Secret. The deployment receives ordinary values
+# as environment variables and mounts the potentially large built-in-calendar field as a
+# file. SLACK_APP_TOKEN and SLACK_BOT_TOKEN are required; the other fields are optional.
 #
 # Nothing here ever passes through Helm: the chart reads this Secret rather than rendering
 # one, so no credential lands in a values file or in the release metadata Helm keeps in the
@@ -34,8 +34,9 @@ readonly KNOWN_KEYS=(
   HUTBOT_BUILTIN_CALENDARS
 )
 readonly REQUIRED_KEYS=(SLACK_APP_TOKEN SLACK_BOT_TOKEN)
-# `envFrom` puts every value through execve, whose per-variable limit is 128 KiB; past it the
-# container fails to start with an opaque E2BIG. The calendar list only ever grows.
+# Values injected into the environment pass through execve, whose per-variable limit is
+# 128 KiB; past it the container fails to start with an opaque E2BIG. Built-in calendars are
+# exempt because the chart mounts that key only as a file.
 readonly WARN_BYTES=32768
 readonly FAIL_BYTES=98304
 
@@ -174,7 +175,7 @@ read_from_vault() {
     require_variable_name "$key"
     if ! has_key "$key" "${KNOWN_KEYS[@]}"; then
       echo "warning: ${key} is not a key hutbot reads — skipping it" >&2
-      echo "         (add it to KNOWN_KEYS if that is wrong; envFrom would inject it blindly)" >&2
+      echo "         (add it to KNOWN_KEYS and the chart's explicit references if that is wrong)" >&2
       continue
     fi
     # -j keeps the value byte-exact: no trailing newline is appended to a token, and the
@@ -213,6 +214,12 @@ carry_over_missing() {
   local key existing
   for key in "${KNOWN_KEYS[@]}"; do
     [[ -f "${workdir}/${key}" ]] && continue
+    # `--drop KEY` is the targeted acknowledgement that this absent source value should be
+    # retired. `--allow-drop` applies that acknowledgement to every absent optional value.
+    # Both decisions must happen before the live Secret gets a chance to restore the key.
+    if has_key "$key" "${drop_keys[@]}" || $allow_drop; then
+      continue
+    fi
     existing=$(kubectl -n "$NAMESPACE" get secret "$secret_name" \
       -o "jsonpath={.data.${key}}" 2>/dev/null || true)
     if [[ -z "$existing" ]]; then
@@ -275,6 +282,7 @@ check_prefix() {
 check_sizes() {
   local key size
   for key in "${keys[@]}"; do
+    [[ "$key" == HUTBOT_BUILTIN_CALENDARS ]] && continue
     size=$(wc -c < "${workdir}/${key}")
     if (( size > FAIL_BYTES )); then
       echo "error: ${key} is ${size} bytes; past the exec limit the container will not start" >&2

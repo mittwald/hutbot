@@ -275,7 +275,7 @@ a config still names it, that config fetches nothing, `{{calendar_name}}` render
 
 **The URL is a secret.** A published-calendar link needs no login, so possession of it *is* read
 access to the calendar. Hutbot therefore only ever echoes a redacted form
-(`outlook.office365.com/…/calendar.ics`) in `show config` and in the setter's confirmation — and a
+(`outlook.office365.com/…`) in `show config` and in the setter's confirmation — and a
 built-in calendar's URL is never printed at all, not even redacted, because it belongs to the
 instance rather than to the channel that uses it.
 The feed is cached for 5 minutes (`HUTBOT_CALENDAR_TTL`, in seconds), and `offset=prev` searches
@@ -283,11 +283,12 @@ back 90 days (`HUTBOT_CALENDAR_LOOKBACK_DAYS`) — widen that for a calendar who
 months apart. Both are chart values as well (`calendar.ttlSeconds`, `calendar.lookbackDays`), so a
 deployment can set them without touching the image.
 
-A remote feed must be `https://`, and URLs pointing at the private ranges or the cloud metadata
-address are refused — the bot fetches them from inside the cluster. The host name is resolved and
-checked too, at every redirect hop, so a public name that answers with `10.0.0.1` is refused just
-the same. **Loopback is exempt**, over plain `http://` too, so a local file server works while
-developing: `/hutbot set calendar http://127.0.0.1:8073/calendar.ics`.
+A remote feed must be `https://`, and URLs pointing at any non-global address — including private,
+link-local and the shared `100.64.0.0/10` range — are refused because the bot fetches them from
+inside the cluster. The host name is resolved and checked too, at every redirect hop, so a public
+name that answers with `10.0.0.1` is refused just the same. **Loopback is exempt**, over plain
+`http://` too, so a local file server works while developing:
+`/hutbot set calendar http://127.0.0.1:8073/calendar.ics`.
 
 An internal feed — an in-cluster ICS bridge, say — is refused by that same check, which cannot tell
 it from a target somebody talked the bot into. Name its host in `HUTBOT_CALENDAR_ALLOWED_HOSTS`
@@ -787,8 +788,9 @@ record can be checked locally before it is copied onto the state volume.
 
 Source of truth is Vault at <https://vault.m3.services>: `secrets-coabkube/production/hutbot` for
 production, `.../hutbot-dev` for the dev instance. Every field becomes one key of the Kubernetes
-Secret named after the release (`mw-internal/hutbot`, `mw-internal/hutbot-dev`), and reaches the bot
-as an environment variable.
+Secret named after the release (`mw-internal/hutbot`, `mw-internal/hutbot-dev`). Ordinary fields
+reach the bot through individual environment references; `HUTBOT_BUILTIN_CALENDARS` is mounted
+only as a file so large lists do not hit the process environment's size limit.
 
 | Field | Required | Purpose |
 | ----- | -------- | ------- |
@@ -865,7 +867,8 @@ calendars every channel can point at with `/hutbot [config] set calendar <name>`
 [Built-in calendars](#built-in-calendars)). Each URL grants read access to its calendar, which is why
 the list lives in the Secret and not in a ConfigMap. The chart projects it as a file
 (`/etc/hutbot/builtin-calendars.json`, mode `0440`) and points `HUTBOT_BUILTIN_CALENDARS_FILE` at it;
-`builtinCalendars.mountFile=false` falls back to the plain environment variable.
+`builtinCalendars.mountFile=false` disables built-in calendars in the chart. Source checkouts can
+still use `HUTBOT_BUILTIN_CALENDARS` directly when no file is configured.
 
 Create or rotate one:
 
@@ -918,9 +921,9 @@ hutbot is a singleton on a ReadWriteOnce volume, so a rolling restart would brie
 against one `bot.json` — which means every restart has a few seconds of gap.
 
 **Egress:** a public feed host (`outlook.office365.com` and friends) is covered by the chart's
-default public-egress rule — everything outside the private ranges, on any port — so it needs no
-entry anywhere. An internal host needs a `HOST_ALIASES` entry, because cluster DNS does not serve
-that zone, a `NETWORKPOLICY_RULES` entry on its port, **and** its name in
+default public-egress rule — everything outside the private, shared and link-local ranges, on any
+port — so it needs no entry anywhere. An internal host needs a `HOST_ALIASES` entry, because
+cluster DNS does not serve that zone, a `NETWORKPOLICY_RULES` entry on its port, **and** its name in
 `HUTBOT_CALENDAR_ALLOWED_HOSTS`, or the bot refuses the internal address before it dials. With only
 some of the three the fetch fails — with a resolution error, a refusal in the log, or no trace at
 all. `sync-secret.sh` prints the feed hosts so they can be checked against the rules.

@@ -172,4 +172,4 @@ async def test_migration_warns_when_a_config_names_a_builtin_calendar_and_a_url(
     assert migrated["C123"]["cal"]["calendar_url"] == url
     warning = mock_log_warning.call_args.args[0]
     assert "names both the built-in calendar 'rota'" in warning and "the built-in wins" in warning
-    assert "cal.example.com/…/rota.ics" in warning and "SECRETTOKEN" not in warning
+    assert "cal.example.com/…" in warning and "SECRETTOKEN" not in warning
