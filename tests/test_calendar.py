@@ -2364,6 +2364,94 @@ async def test_removing_the_bridge_empties_its_half_of_the_list(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_roster_stands_before_a_single_title_is_read(monkeypatch):
+    """A listed calendar is usable at once: nothing but its printed label needs the ICS."""
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    reading = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hanging_fetch(url):
+        reading.set()
+        await release.wait()
+        return None, "Platform on-call rota"
+
+    pages = _bridge_pages(_bridge_listing("rota"))
+    with _patch_bridge_http(pages, []), patch('hutbot.calendarfeed.fetch_calendar', new=hanging_fetch):
+        refresh = asyncio.create_task(hutbot.calendarfeed.refresh_bridge_calendars())
+        await asyncio.wait_for(reading.wait(), 1)
+        # Mid-title-fetch: the calendar is already there, named after itself.
+        assert builtin_calendar_names() == ["rota"]
+        assert lookup_builtin_calendar("rota").display_title == "rota"
+        assert resolve_calendar_feed({"calendar_builtin": "rota"}).missing is False
+        release.set()
+        await asyncio.wait_for(refresh, 1)
+    # And the title lands once the document has been read.
+    assert lookup_builtin_calendar("rota").title == "Platform on-call rota"
+
+
+@pytest.mark.asyncio
+async def test_a_hanging_title_endpoint_does_not_hold_back_a_listing_change(monkeypatch):
+    """A calendar the bridge dropped goes at once, even while titles are still being fetched."""
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    await _refresh_bridge(_bridge_pages(_bridge_listing("rota", "holidays"),
+                                        {"rota": "Rota", "holidays": "Holidays"}))
+    reading = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hanging_fetch(url):
+        reading.set()
+        await release.wait()
+        return None, ""
+
+    with _patch_bridge_http(_bridge_pages(_bridge_listing("holidays", "newcomer")), []), \
+         patch('hutbot.calendarfeed.fetch_calendar', new=hanging_fetch):
+        refresh = asyncio.create_task(hutbot.calendarfeed.refresh_bridge_calendars())
+        await asyncio.wait_for(reading.wait(), 1)
+        assert builtin_calendar_names() == ["holidays", "newcomer"]
+        release.set()
+        await asyncio.wait_for(refresh, 1)
+
+
+@pytest.mark.asyncio
+async def test_the_roster_wait_returns_at_once_without_a_bridge(monkeypatch):
+    monkeypatch.delenv('HUTBOT_CALENDAR_BRIDGE_URL', raising=False)
+    # No refresh has run, so the event is unset: an instance with no bridge must not wait for it.
+    await asyncio.wait_for(hutbot.calendarfeed.wait_for_bridge_roster(), 1)
+
+
+@pytest.mark.asyncio
+async def test_the_roster_wait_ends_with_the_first_listing(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    waiting = asyncio.create_task(hutbot.calendarfeed.wait_for_bridge_roster(5))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    await _refresh_bridge(_bridge_pages(_bridge_listing("rota"), {"rota": "Rota"}))
+    await asyncio.wait_for(waiting, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pages", [
+    # A listing that cannot be read, and a URL that is refused before it is dialled, both end the
+    # wait: coming up with what this instance has beats holding the bot at the gate.
+    _bridge_pages("", listing_status=503),
+    {},
+])
+async def test_the_roster_wait_ends_even_when_the_listing_fails(monkeypatch, pages):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    with patch('hutbot.calendarfeed.log_warning'), patch('hutbot.calendarfeed.log_error'):
+        await _refresh_bridge(pages)
+        await asyncio.wait_for(hutbot.calendarfeed.wait_for_bridge_roster(5), 1)
+
+
+@pytest.mark.asyncio
+async def test_the_roster_wait_gives_up_rather_than_holding_up_startup(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    with patch('hutbot.calendarfeed.log_warning') as log_warning:
+        await asyncio.wait_for(hutbot.calendarfeed.wait_for_bridge_roster(0.01), 1)
+    assert log_warning.called
+
+
+@pytest.mark.asyncio
 async def test_the_refresh_loop_returns_at_once_without_a_bridge(monkeypatch):
     monkeypatch.delenv('HUTBOT_CALENDAR_BRIDGE_URL', raising=False)
     with patch('hutbot.calendarfeed.refresh_bridge_calendars', new=AsyncMock()) as refresh:
@@ -2407,9 +2495,12 @@ def test_state_reset_clears_the_bridge_calendars():
     hutbot.state.configured_calendars = list(BUILTIN_CALENDARS)
     hutbot.state.bridge_calendar_titles['rota'] = "Rota"
     hutbot.state._logged_bridge_roster = "rota"
+    hutbot.state._bridge_roster_ready.set()
     hutbot.state.reset()
     assert hutbot.state.bridge_calendars == [] and hutbot.state.configured_calendars == []
     assert hutbot.state.bridge_calendar_titles == {} and hutbot.state._logged_bridge_roster is None
+    # A fresh Event, not the one a previous run may have bound to another loop.
+    assert not hutbot.state._bridge_roster_ready.is_set()
 
 
 # ----- built-in calendar commands -----

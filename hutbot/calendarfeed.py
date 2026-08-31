@@ -103,6 +103,10 @@ _CALENDAR_BRIDGE_MAX_LISTING_BYTES = 256 * 1024
 # Bridge calendars whose titles are read at the same time. Their ICS documents are fetched in full
 # for it, so this is what bounds how much a first refresh pulls at once.
 _CALENDAR_BRIDGE_TITLE_CONCURRENCY = 4
+# How long startup waits for the first listing before coming up without it. One listing fetch is
+# bounded by `_HTTP_TIMEOUT` per hop, so this only has to cover the redirects; past it the bot
+# starts with the calendars it has and the refresh task keeps trying.
+_CALENDAR_BRIDGE_FIRST_LISTING_WAIT = 45
 
 
 # ----- pure helpers -----
@@ -879,33 +883,29 @@ async def resolve_bridge_calendar_titles(pairs: Sequence[tuple[str, str]]) -> No
                         return_exceptions=True)
 
 
-async def refresh_bridge_calendars() -> None:
-    """Rebuild the bridge half of the built-in calendars from the bridge's own listing.
+async def _publish_bridge_roster() -> list[tuple[str, str]] | None:
+    """Make the listing the bridge half of the built-in calendars, before any title is read.
 
-    Never raises, and never empties a list it could not replace: a bridge that is briefly
-    unreachable leaves the calendars from the last successful listing in place, so an outage does
-    not take every channel's calendar feed down with it until the next refresh succeeds. An
-    instance with no bridge configured leaves the half empty and keeps only what
-    `HUTBOT_BUILTIN_CALENDARS` adds.
+    Returns the `(name, url)` pairs whose titles are still worth reading, or ``None`` when there
+    was no listing to publish. The roster stands before a single ICS document is fetched: a
+    calendar is usable the moment it is listed — `display_title` falls back to its name — so a
+    title endpoint that hangs cannot keep a new calendar unavailable, keep a removed one alive, or
+    leave the list empty through a whole startup.
     """
     listing_url = calendar_bridge_listing_url()
     if not listing_url:
         if state.bridge_calendars:
             state.bridge_calendars = []
             rebuild_builtin_calendars()
-        return
+        return None
 
     names = await fetch_calendar_bridge_listing(listing_url)
     if names is None:
         log_warning("Could not read the calendar bridge listing; keeping the "
                     f"{len(state.bridge_calendars)} calendar(s) from the last one.")
-        return
+        return None
 
     pairs = [(name, calendar_bridge_ics_url(listing_url, name)) for name in names]
-    # A name the deployment overrides is never read from the bridge, so its ICS is not fetched for
-    # a title nothing will print — the override may well be there *because* that document is bad.
-    overridden = {calendar.name for calendar in state.configured_calendars}
-    await resolve_bridge_calendar_titles([pair for pair in pairs if pair[0] not in overridden])
     state.bridge_calendars = [BuiltinCalendar(name, state.bridge_calendar_titles.get(name, ""), url, True)
                               for name, url in pairs]
     rebuild_builtin_calendars()
@@ -916,6 +916,69 @@ async def refresh_bridge_calendars() -> None:
     if roster != state._logged_bridge_roster:
         state._logged_bridge_roster = roster
         log(f"Calendar bridge serves: {roster}.")
+
+    # A name the deployment overrides is never read from the bridge, so its ICS is not fetched for
+    # a title nothing will print — the override may well be there *because* that document is bad.
+    overridden = {calendar.name for calendar in state.configured_calendars}
+    return [pair for pair in pairs if pair[0] not in overridden]
+
+
+def _apply_bridge_calendar_titles() -> None:
+    """Re-title the standing bridge calendars from the titles read since they were published."""
+    titled = [BuiltinCalendar(calendar.name,
+                              state.bridge_calendar_titles.get(calendar.name, calendar.title),
+                              calendar.url, calendar.bridge)
+              for calendar in state.bridge_calendars]
+    if titled == state.bridge_calendars:
+        return
+    state.bridge_calendars = titled
+    rebuild_builtin_calendars()
+
+
+async def refresh_bridge_calendars() -> None:
+    """Rebuild the bridge half of the built-in calendars from the bridge's own listing.
+
+    Never raises, and never empties a list it could not replace: a bridge that is briefly
+    unreachable leaves the calendars from the last successful listing in place, so an outage does
+    not take every channel's calendar feed down with it until the next refresh succeeds. An
+    instance with no bridge configured leaves the half empty and keeps only what
+    `HUTBOT_BUILTIN_CALENDARS` adds.
+
+    Two steps, in this order: the listing becomes the roster, and only then are the titles behind
+    it read. Nothing but a printed label depends on a title, so nothing waits for one.
+    """
+    try:
+        pairs = await _publish_bridge_roster()
+    finally:
+        # Startup waits for the first listing, so the wait ends whatever the listing did: an
+        # unusable URL or an unreachable bridge must not hold the bot at the gate.
+        state._bridge_roster_ready.set()
+    if not pairs:
+        return
+    await resolve_bridge_calendar_titles(pairs)
+    _apply_bridge_calendar_titles()
+
+
+async def wait_for_bridge_roster(timeout: float = _CALENDAR_BRIDGE_FIRST_LISTING_WAIT) -> None:
+    """Wait for the first listing to have been published, at most `timeout` seconds.
+
+    Startup calls this after starting the refresh task and before restoring the timers it
+    persisted: a reminder or button escalation that came due during the restart runs as soon as its
+    task is created, and a calendar condition evaluated then would otherwise read an empty roster —
+    reporting the config's built-in as one this instance does not offer, and skipping or sending on
+    that basis. Only the listing is waited for; the titles behind it arrive later.
+
+    Returns rather than raising when the wait runs out: coming up with the calendars this instance
+    has beats not coming up at all.
+    """
+    if not (os.environ.get(CALENDAR_BRIDGE_URL_ENV) or "").strip():
+        return
+    try:
+        await asyncio.wait_for(state._bridge_roster_ready.wait(), timeout)
+    except asyncio.TimeoutError:
+        log_warning(f"The calendar bridge listing has not been read within {timeout:g}s; starting "
+                    "with the built-in calendars this instance configures. Configurations naming a "
+                    "bridge calendar stay quiet until a refresh succeeds.")
 
 
 async def run_bridge_refresh_loop() -> None:
@@ -928,7 +991,8 @@ async def run_bridge_refresh_loop() -> None:
     """
     # Read raw, without `calendar_bridge_listing_url`, so an unusable value is reported once by the
     # refresh itself rather than twice. The environment cannot change under a running process, so
-    # an instance with no bridge needs no task at all.
+    # an instance with no bridge needs no task at all — and `wait_for_bridge_roster` returns at
+    # once for the same reason, rather than waiting for a task that was never started.
     if not (os.environ.get(CALENDAR_BRIDGE_URL_ENV) or "").strip():
         return
     minutes = calendar_bridge_refresh_minutes()

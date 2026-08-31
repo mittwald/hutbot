@@ -893,6 +893,12 @@ title cannot be read is shown by its name. One log line per change names the ros
 Calendar bridge serves: cloudhosting, infrastruktur, mkubed, notfallhotline.
 ```
 
+Startup waits for that first listing — at most 45 seconds, then it comes up without it and says so
+— before restoring the reminders and button escalations it persisted: one that came due during the
+restart runs the moment it is restored, and it has to see the same calendars it saw before. Only the
+listing is waited for; the titles behind it are read afterwards, so a calendar is usable (under its
+name) the moment it is listed and an unreachable title endpoint delays nothing.
+
 The URLs never appear in a log, a reply or `bot.json` — a config stores the *name*, so rotating the
 bridge token takes effect without touching a single config. A bridge that cannot be read
 (unreachable, 503, a document that is not a listing) leaves the calendars from the last successful

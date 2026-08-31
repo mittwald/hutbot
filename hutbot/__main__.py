@@ -62,7 +62,16 @@ async def main() -> None:
         # The profile display name is the handle people type; auth.test only knows
         # the flattened username ("hutbotdev").
         state.bot_user_name = await slackcache.fetch_bot_handle(app, state.bot_user_id) or auth.get("user") or DEFAULT_BOT_NAME
+        # Reads the calendar bridge's listing straight away and then on its own timer, so a
+        # calendar the bridge gains shows up without a restart. Returns at once when no bridge is
+        # configured. Started here rather than further down so the listing is read while the Slack
+        # calls below are in flight.
+        calendar_task = asyncio.create_task(calendarfeed.run_bridge_refresh_loop())
         await slackcache.update_user_cache(app)
+        # Before any restored timer can run: one that came due during the restart fires as soon as
+        # its task exists, and a calendar condition evaluated then must not read an empty roster.
+        # Only the listing is waited for — the titles behind it arrive in the background.
+        await calendarfeed.wait_for_bridge_roster()
         await persistence.load_replies_cache()
         await scheduling.restore_scheduled_replies(app, opsgenie_token)
         await persistence.load_button_cache()
@@ -73,10 +82,6 @@ async def main() -> None:
             state.opsgenie_configured = True
             heartbeat_task = asyncio.create_task(opsgenie.send_heartbeat(opsgenie_token, opsgenie_heartbeat_name))
         scheduler_task = asyncio.create_task(scheduling.run_scheduler(app, opsgenie_token))
-        # Reads the calendar bridge's listing straight away and then on its own timer, so a
-        # calendar the bridge gains shows up without a restart. Returns at once when no bridge
-        # is configured.
-        calendar_task = asyncio.create_task(calendarfeed.run_bridge_refresh_loop())
         web_runner = await webui_backend.maybe_start_web_ui(app)
         await handler.start_async()
     except asyncio.CancelledError:

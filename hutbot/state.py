@@ -87,6 +87,13 @@ bridge_calendar_titles: dict[str, str] = {}
 # The roster the last refresh logged, so an hourly refresh that changes nothing stays silent.
 _logged_bridge_roster: str | None = None
 
+# Set once the first bridge refresh has published a roster — or established that it cannot. What
+# startup waits for before restoring the timers it persisted, so a reminder that came due during a
+# restart is not evaluated against an empty calendar list (see `calendarfeed.wait_for_bridge_roster`).
+# Both users reach it through this module, so `reset()` can hand out a fresh one: an Event binds to
+# the loop that first waits on it, and the test suite runs a loop per test.
+_bridge_roster_ready: asyncio.Event = asyncio.Event()
+
 # Slack member ids per channel, cached briefly (see slackcache.get_channel_members).
 _channel_members_cache: dict[str, tuple[float, set]] = {}
 
@@ -109,7 +116,7 @@ current_command: ContextVar[str] = ContextVar('current_command', default='')
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, slash_command, bot_name, default_datetime_locale, version
+    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, _bridge_roster_ready, slash_command, bot_name, default_datetime_locale, version
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -133,6 +140,8 @@ def reset() -> None:
     bridge_calendars = []
     configured_calendars = []
     _logged_bridge_roster = None
+    # A new Event rather than `clear()`: this one may have bound to the loop of an earlier test.
+    _bridge_roster_ready = asyncio.Event()
     slash_command = DEFAULT_SLASH_COMMAND
     bot_name = DEFAULT_BOT_NAME
     default_datetime_locale = ""
