@@ -311,42 +311,50 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
     version = state.version
     mention = f"@{state.bot_user_name}"
     intro = f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what's :new::"
+    # One headline plus one bullet per thing you can type: the news is a list of new
+    # commands, so it reads as a list. `•` rather than `-`, because Slack turns a `-` line
+    # inside a quote block into a nested list and re-indents it.
     entries = [
         "> :robot_face: *Triggers, actions & buttons*\n>\n"
-        f"> A rule no longer has to wait for a message: `{command} [config] set trigger cron \"0 9 * * 1-5\"` "
-        f"fires it on a schedule, `{command} [config] set trigger manual` only on request. What it then does "
-        f"is up to `{command} [config] set action`: reply here, `post-channel #<channel>`, `dm-user @<user>` "
-        f"or `group-dm @<usergroup>`. Add interactive buttons with `{command} [config] add button \"<label>\" "
-        "<ack|delay|config>`, and have one of them press itself if nobody does: "
-        f"`{command} [config] set escalation <minutes> button \"<label>\"`.",
+        f"> • `{command} [config] set trigger cron \"0 9 * * 1-5\"` — fire on a schedule, "
+        "no message needed.\n"
+        f"> • `{command} [config] set trigger manual` — fire only on request.\n"
+        f"> • `{command} [config] set action <action>` — `reply`, `post-channel #<channel>`, "
+        "`dm-user @<user>` or `group-dm @<usergroup>`.\n"
+        f"> • `{command} [config] add button \"<label>\" <ack|delay|config>` — interactive "
+        "buttons on the message.\n"
+        f"> • `{command} [config] set escalation <minutes> button \"<label>\"` — press that "
+        "button itself if nobody does.",
 
         "> :traffic_light: *Conditions on any variable*\n>\n"
-        f"> A rule can be gated on any `{{{{variable}}}}`: `{command} [config] add condition <var> <operator> "
-        "[value]`, with `empty`, `equals`, `contains`, `starts-with`, `ends-with`, `regex` and their `not-` "
-        f"forms. Chain several and pick `{command} [config] set condition-mode <all|any>`. Conditions apply to "
-        f"every trigger, and `{command} [config] test` shows which ones pass.",
+        f"> • `{command} [config] add condition <var> <operator> [value]` — gate a rule on any "
+        "`{{variable}}`.\n"
+        "> • Operators: `empty`, `equals`, `contains`, `starts-with`, `ends-with`, `regex`, each "
+        "with a `not-` form.\n"
+        f"> • `{command} [config] test` — which conditions pass.",
 
         "> :date: *Use Calendars*\n>\n"
-        f"> Point a config at a calendar via an URL or by using the built-in calendars, which "
-        f"`{command} list calendars` names — with `{command} [config] set calendar <name|url>`, then read it "
-        "from any message: `{{calendar_summary}}` is the event running now, `{{calendar_summary(offset=next)}}` "
-        "the one after it, and `{{calendar_summary(at=\"+1d\")}}` what is on this time tomorrow. Organizer and "
-        "attendees come with it — `{{calendar_organizer_user}}` and `{{calendar_attendee_users}}` are the "
-        "ones whose email address belongs to somebody here, as Slack mentions, so a rule can DM whoever is "
-        "on the event; `{{calendar_attendees(nth=2)}}` picks a single one out of a list. "
-        f"`{command} [config] show calendar` prints the event before, the one now and the next.",
+        f"> • `{command} [config] set calendar <name|url>` — an ICS URL or a built-in calendar; "
+        f"`{command} list calendars` names them.\n"
+        "> • `{{calendar_summary}}` is the event running now, `{{calendar_summary(offset=next)}}` the "
+        "one after it, `{{calendar_summary(at=\"+1d\")}}` this time tomorrow.\n"
+        "> • `{{calendar_organizer_user}}` and `{{calendar_attendee_users}}` are the people on the "
+        "event as Slack mentions, so a rule can DM them; `{{calendar_attendees(nth=2)}}` picks one.\n"
+        f"> • `{command} [config] show calendar` — the event before, the one now, the next.",
 
         "> :test_tube: *Preview a whole rule, or run it now*\n>\n"
-        f"> `{command} [config] test` renders the message *and* reports where it would go (with the target "
-        "resolved to real people), when the rule fires next, which variables each field reads, and every "
-        f"calendar event behind those values. Mention me with `{mention} [config] test <message>` to preview it "
-        f"against a message of your own, or use `{command} [config] run` to let it act for real, right now.",
+        f"> • `{command} [config] test` — the rendered message, where it would go (targets "
+        "resolved to real people), when it fires next, which variables each field reads, and the "
+        "calendar events behind them.\n"
+        f"> • `{mention} [config] test <message>` — preview it against a message of your own.\n"
+        f"> • `{command} [config] run` — let it act for real, right now.",
 
         "> :books: *Look things up*\n>\n"
-        f"> `{command} help variables` lists every `{{{{variable}}}}` a message or a condition can read, and "
-        f"every condition operator. `{command} list opsgenie-schedules`, `{command} list calendars` and "
-        f"`{command} list teams` name what this instance offers, and `{command} [config] on-call [schedule "
-        "name]` prints the current OpsGenie on-call user as a Slack mention.",
+        f"> • `{command} help variables` — every `{{{{variable}}}}` and every condition operator.\n"
+        f"> • `{command} list teams`, `{command} list calendars`, `{command} list opsgenie-schedules` "
+        "— what this instance offers.\n"
+        f"> • `{command} [config] on-call [schedule name]` — the current OpsGenie on-call user as "
+        "a Slack mention.",
     ]
     # One entry is never split, and entries stay in one quote block per message: a blank line
     # between them would end the quote, so they are joined by an empty quoted line.
