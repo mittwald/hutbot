@@ -117,6 +117,10 @@ CONDITION_MODE_ALIASES = {
     "or": CONDITION_MODE_ANY,
     "some": CONDITION_MODE_ANY,
 }
+# How much of a resolved value a "did not match" reason quotes back. Long enough for a
+# handful of attendees or a rendered on-call name, short enough that one condition cannot
+# take over a log line.
+CONDITION_VALUE_PREVIEW_LIMIT = 200
 
 ACTION_REPLY = "reply"
 ACTION_DM_USER = "dm_user"

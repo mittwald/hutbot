@@ -34,6 +34,7 @@ from .constants import (
     CONDITION_OPERATOR_ALIASES,
     CONDITION_OPERATORS,
     CONDITION_OPERATORS_WITHOUT_VALUE,
+    CONDITION_VALUE_PREVIEW_LIMIT,
     DATETIME_TEMPLATE_VARIABLES,
     FIRE_TIME_TEMPLATE_VARIABLES,
     LIST_TEMPLATE_VARIABLES,
@@ -302,6 +303,20 @@ def _test_condition(operator: str, resolved: str, value: str, case_sensitive: bo
     return False, f"unknown operator `{operator}`"
 
 
+def _describe_resolved(resolved: str) -> str:
+    """What the condition actually read, for the reason a rule did not run.
+
+    Without it, `{{calendar_other_attendee_emails}} empty did not match` says only that the
+    variable was not empty, and whoever reads the log still has to reproduce the lookup to
+    find out what it held. Long lists are cut so one condition cannot fill a log line.
+    """
+    if resolved == "":
+        return "it is empty"
+    if len(resolved) > CONDITION_VALUE_PREVIEW_LIMIT:
+        resolved = resolved[:CONDITION_VALUE_PREVIEW_LIMIT].rstrip() + "…"
+    return f'it is "{resolved}"'
+
+
 def snapshot_conditions(config: dict) -> dict:
     """The condition chain as it stands, frozen for work that will run later.
 
@@ -404,10 +419,13 @@ def _judge(condition, variables: dict[str, str]) -> tuple[bool, str]:
     if variable not in variables:
         return False, f"{label} refers to an unknown variable `{{{{{variable}}}}}`"
     if variable in LIST_TEMPLATE_VARIABLES:
-        met, error = _judge_list(operator, list_items(variables, stem), value, case_sensitive)
+        items = [item for item in list_items(variables, stem) if item]
+        met, error = _judge_list(operator, items, value, case_sensitive)
+        resolved = ", ".join(items)
     else:
-        met, error = _test_condition(operator, variables.get(value_key) or "", value, case_sensitive)
-    return met, error or ("" if met else f"{label} did not match")
+        resolved = variables.get(value_key) or ""
+        met, error = _test_condition(operator, resolved, value, case_sensitive)
+    return met, error or ("" if met else f"{label} did not match ({_describe_resolved(resolved)})")
 
 def conditions_ruled_out(config: dict | None, variables: dict[str, str]) -> tuple[bool, str]:
     """Whether the chain already cannot pass, judging only the settled conditions.

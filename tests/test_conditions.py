@@ -234,6 +234,37 @@ def test_invalid_regex_is_never_met(operator):
     assert "invalid pattern" in reason
 
 
+def test_the_reason_quotes_the_value_the_condition_read():
+    """A log line saying only "did not match" leaves the lookup to be reproduced by hand."""
+    met, reason = _ev([_c("message", "contains", "zzz")])
+    assert met is False and 'it is "Composerbereitstellung"' in reason
+
+    met, reason = _ev([_c("blank", "not_empty")])
+    assert met is False and "it is empty" in reason
+
+
+def test_the_reason_quotes_the_entries_of_a_list_variable():
+    from hutbot.constants import event_slice_name as slice_name
+
+    stem = slice_name("calendar_other_attendee_emails", "+2w", "same-day")
+    # The parallel lists keep a blank where a participant has no address; it is not an entry.
+    variables = {"calendar_other_attendee_emails": "", "__calendar_other_attendee_emails_items": [],
+                 f"__{stem}_items": ["ann@example.com", "", "bob@example.com"]}
+    covered = {"variable": "calendar_other_attendee_emails", "operator": "empty",
+               "at": "+2w", "offset": "same-day"}
+
+    met, reason = evaluate_conditions({"conditions": [covered]}, variables)
+    assert met is False and 'it is "ann@example.com, bob@example.com"' in reason
+
+
+def test_a_long_value_is_cut_in_the_reason():
+    from hutbot.constants import CONDITION_VALUE_PREVIEW_LIMIT
+
+    met, reason = _ev([_c("message", "contains", "zzz")], variables={"message": "x" * 500})
+    assert met is False
+    assert "…" in reason and len(reason) < CONDITION_VALUE_PREVIEW_LIMIT + 100
+
+
 def test_unusable_condition_is_never_met():
     met, reason = _ev([{"variable": "message", "operator": "bogus", "value": "x"}])
     assert met is False and reason
