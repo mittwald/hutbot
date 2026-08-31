@@ -415,7 +415,7 @@ async def test_set_action_requires_a_target_in_the_same_command():
         await process_command(app, "set action post-channel", channel, user)
 
     assert mock_send_message.call_args.args[3] == (
-        "Action `post_channel` needs a target: `/hutbot default set action post-channel <#channel>`."
+        "Action `post_channel` needs a target: `/hutbot default set action post-channel #<channel>`."
     )
     # Nothing was stored, so the config cannot end up in a state that fails when it runs.
     assert config["action"] == ACTION_REPLY
@@ -495,7 +495,7 @@ async def test_run_refuses_a_config_whose_action_has_no_target():
 
     assert mock_send_message.call_args.args[3] == (
         "Cannot run configuration `default`: action `post_channel` has no target. "
-        "Set one with `/hutbot default set action post-channel <#channel>`."
+        "Set one with `/hutbot default set action post-channel #<channel>`."
     )
     post.assert_not_awaited()
 

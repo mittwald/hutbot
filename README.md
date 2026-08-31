@@ -399,17 +399,17 @@ existing configs keep working unchanged.
   `reply_message` (with the usual `{{variables}}`) as the body. The recipient is part of the same
   command, so a config can never be left with an action that has nowhere to send.
   - `set action reply` — post in the rule's channel. Takes no target.
-  - `set action dm-user <@user>` — DM a single user. The target may be a mention, an email
+  - `set action dm-user @<user>` — DM a single user. The target may be a mention, an email
     address, or a `{{variable}}`, so `set action dm-user {{calendar_other_attendee_users(nth=1)}}`
     DMs whoever the calendar says is on call right now.
-  - `set action group-dm <@usergroup>` — open one group DM (mpim) with all members of a Slack user
+  - `set action group-dm @<usergroup>` — open one group DM (mpim) with all members of a Slack user
     group and post once (Slack caps a group DM at 8 members). The target may instead name the
     people directly — mentions or addresses, including from a variable:
     `set action group-dm {{calendar_attendee_users}}`. A bare handle like `@sre` is
     always taken as a user group, so nothing changes for existing configs.
   - A target built from variables is resolved when the rule runs, and the rule simply does not
     send when it resolves to nobody.
-  - `set action post-channel <#channel>` — post to another channel. Pick the channel from Slack's
+  - `set action post-channel #<channel>` — post to another channel. Pick the channel from Slack's
     autocomplete so it arrives as a link, or pass its `C…` id.
 
 - **Buttons** attach interactive buttons to the message a rule sends (including the classic

@@ -315,8 +315,8 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         "> :robot_face: *Triggers, actions & buttons*\n>\n"
         f"> A rule no longer has to wait for a message: `{command} [config] set trigger cron \"0 9 * * 1-5\"` "
         f"fires it on a schedule, `{command} [config] set trigger manual` only on request. What it then does "
-        f"is up to `{command} [config] set action`: reply here, `post-channel <#channel>`, `dm-user <@user>` "
-        f"or `group-dm <@usergroup>`. Add interactive buttons with `{command} [config] add button \"<label>\" "
+        f"is up to `{command} [config] set action`: reply here, `post-channel #<channel>`, `dm-user @<user>` "
+        f"or `group-dm @<usergroup>`. Add interactive buttons with `{command} [config] add button \"<label>\" "
         "<ack|delay|config>`, and have one of them press itself if nobody does: "
         f"`{command} [config] set escalation <minutes> button \"<label>\"`.",
 
@@ -555,9 +555,9 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
         ("Message and action", [
             (f"{command} [config] set message \"<reply message>\"", "Set reminder message; `\\n` breaks a line."),
             (f"{command} [config] set action reply", "Reply in this channel (the default)."),
-            (f"{command} [config] set action post-channel <#channel>", "Post to another channel."),
-            (f"{command} [config] set action dm-user <@user>", "DM a single user."),
-            (f"{command} [config] set action group-dm <@usergroup>", "Open one group DM with a user group."),
+            (f"{command} [config] set action post-channel #<channel>", "Post to another channel."),
+            (f"{command} [config] set action dm-user @<user>", "DM a single user."),
+            (f"{command} [config] set action group-dm @<usergroup>", "Open one group DM with a user group."),
         ]),
         ("Buttons", [
             (f"{command} [config] add button \"<label>\" config <config>", "Button runs another config (e.g. an alert config)."),
@@ -592,7 +592,7 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} list teams", "List available teams."),
             (f"{command} list opsgenie-schedules", "List OpsGenie schedules."),
             (f"{command} list calendars", "List the built-in calendars available here."),
-            (f"{command} team of <@user>", "Show a user's team."),
+            (f"{command} team of @<user>", "Show a user's team."),
         ]),
         ("Help", [
             (f"{command} news", "Show what's new."),

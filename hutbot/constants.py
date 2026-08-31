@@ -130,10 +130,14 @@ ACTIONS = {ACTION_REPLY, ACTION_DM_USER, ACTION_GROUP_DM, ACTION_POST_CHANNEL}
 
 # Actions that go somewhere other than the channel the rule lives in, and what a
 # usable target looks like. `reply` is the only action that needs none.
+# Spelled `#<channel>`/`@<user>` and not `<#channel>`/`<@user>`: these hints are printed
+# into Slack messages, and Slack parses anything of the form `<#…>`/`<@…>` as a mention —
+# even inside backticks — so the placeholder would come out as a resolved channel or
+# swallowed altogether instead of as the thing the reader is meant to fill in.
 ACTION_TARGET_HINTS = {
-    ACTION_DM_USER: "<@user>",
-    ACTION_GROUP_DM: "@usergroup",
-    ACTION_POST_CHANNEL: "<#channel>",
+    ACTION_DM_USER: "@<user>",
+    ACTION_GROUP_DM: "@<usergroup>",
+    ACTION_POST_CHANNEL: "#<channel>",
 }
 ACTIONS_REQUIRING_TARGET = set(ACTION_TARGET_HINTS)
 # How many people a `group_dm` can reach: Slack allows at most 8 members besides the bot in a

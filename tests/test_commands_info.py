@@ -805,3 +805,22 @@ async def test_news_is_split_into_messages_that_each_keep_their_quote_block():
     footers = [call.kwargs.get("footer", call.args[5] if len(call.args) > 5 else True)
                for call in calls]
     assert footers == [False] * (len(texts) - 1) + [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["help", "news"])
+async def test_help_and_news_placeholders_are_not_slack_mentions(command):
+    # Slack parses `<#…>` and `<@…>` as a channel or user mention wherever it finds them —
+    # backticks and code fences included — so a placeholder written that way reaches the
+    # reader as a resolved channel name or as nothing at all, instead of as the value they
+    # are meant to fill in. Spelled `#<channel>` / `@<user>`, it stays readable.
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, command, channel, user)
+
+    text = sent_messages(mock_send_message)
+    assert "<#" not in text, text
+    assert "<@" not in text, text
