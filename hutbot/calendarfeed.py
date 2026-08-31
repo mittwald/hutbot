@@ -23,7 +23,8 @@ import aiohttp
 import icalendar
 import recurring_ical_events
 
-from employee_list import get_env_var, log, log_error, log_warning
+from employee_list import get_env_var
+from logutil import log, log_error, log_warning
 
 from . import conditionutil
 from . import datetimefmt

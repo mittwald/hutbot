@@ -6,7 +6,7 @@ import re
 import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from employee_list import log_error, log_warning
+from logutil import log_error, log_warning
 
 from . import state
 from .constants import (

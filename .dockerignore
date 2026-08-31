@@ -3,6 +3,7 @@
 *
 !requirements.txt
 !employee_list.py
+!logutil.py
 !webui.py
 !hutbot/
 !hutbot/**

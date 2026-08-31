@@ -5,7 +5,8 @@ import re
 import aiohttp
 from slack_bolt.async_app import AsyncApp
 
-from employee_list import get_env_var, log_error
+from employee_list import get_env_var
+from logutil import log_error
 
 from .. import state
 from .. import messaging

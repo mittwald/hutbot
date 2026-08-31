@@ -16,8 +16,8 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
-try:  # pragma: no cover - logging is best-effort if employee_list is unavailable
-    from employee_list import log, log_error
+try:  # pragma: no cover - logging is best-effort if logutil is unavailable
+    from logutil import log, log_error
 except Exception:  # pragma: no cover
     def log(*args, **kwargs):
         pass

@@ -1,11 +1,13 @@
 """Entry point: ``python -m hutbot``."""
 
 import asyncio
+import logging
 
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 
-from employee_list import get_env_var, load_env_file, log_error
+from employee_list import get_env_var, load_env_file
+from logutil import configure_stdlib_logging, log_error
 
 from . import __version__
 
@@ -15,6 +17,9 @@ async def main() -> None:
     # the source-checkout env file has populated os.environ; importing this entry point from a
     # test or compatibility wrapper remains side-effect free.
     load_env_file()
+    # Before anything can log: Bolt and slack_sdk go through the logging module, and without a
+    # handler of ours their lines land in the same stream unprefixed.
+    configure_stdlib_logging()
     from . import state
     from . import calendarfeed
     from . import datetimefmt
@@ -54,6 +59,10 @@ async def main() -> None:
     web_runner = None
     try:
         app = AsyncApp(token=slack_bot_token)
+        # Bolt's socket-mode handler prints its boot line with a bare `print()` unless its logger
+        # accepts INFO, which bypasses the formatter configured above. Only this logger is raised;
+        # slack_sdk's per-connection chatter stays at the root logger's level.
+        app.logger.setLevel(logging.INFO)
         await persistence.load_configuration(app)
         auth = await app.client.auth_test()
         state.bot_user_id = auth["user_id"]

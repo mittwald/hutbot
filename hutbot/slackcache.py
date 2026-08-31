@@ -10,14 +10,12 @@ from employee_list import (
     EMPLOYEE_MAPPING_IGNORE,
     load_employee_mappings,
     load_employees,
-    log,
-    log_error,
     normalize_id,
     normalize_real_name,
     normalize_real_name_with_diagraphs,
     normalize_user_name,
-    log_warning,
 )
+from logutil import log, log_error, log_warning
 
 from . import state
 from .constants import SLACK_SYSTEM_USER_IDS, TEAM_UNKNOWN

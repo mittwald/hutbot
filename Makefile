@@ -41,7 +41,7 @@ run: ## Run the bot from source
 check: python-check shellcheck helm-lint test ## Run every static check and the test suite
 
 python-check: ## Compile-check the Python sources
-	$(PYTHON) -m compileall -q hutbot bot.py employee_list.py webui.py
+	$(PYTHON) -m compileall -q hutbot bot.py employee_list.py logutil.py webui.py
 
 shellcheck: ## Check the deployment scripts
 	shellcheck deploy-dev.sh deploy-prod.sh scripts/sync-secret.sh scripts/edit-calendars.sh \

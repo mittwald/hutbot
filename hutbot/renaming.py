@@ -16,7 +16,7 @@ Both entry points (the slash command and the web UI) go through :func:`rename_co
 rules about what may be renamed cannot drift between them.
 """
 
-from employee_list import log
+from logutil import log
 
 from . import buttons
 from . import persistence

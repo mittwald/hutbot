@@ -7,7 +7,7 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
-from employee_list import log
+from logutil import log
 
 from . import state
 from . import slackcache

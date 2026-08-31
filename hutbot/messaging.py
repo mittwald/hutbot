@@ -6,7 +6,7 @@ import asyncio
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.errors import SlackApiError
 
-from employee_list import log_error, log_warning
+from logutil import log_error, log_warning
 
 from . import slackcache
 from . import state

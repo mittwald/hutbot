@@ -9,7 +9,7 @@ import urllib.parse
 import aiohttp
 from slack_bolt.async_app import AsyncApp
 
-from employee_list import log, log_error, log_warning
+from logutil import log, log_error, log_warning
 
 from . import datetimefmt
 from . import slackcache

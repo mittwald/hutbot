@@ -1,29 +1,16 @@
-"""Logging + small text helpers with no Slack/network dependencies."""
+"""Small text helpers with no Slack/network dependencies."""
 
 import re
-import sys
-import datetime
+
+import logutil
 
 from .models import Channel
 
 
 def log_debug(channel: Channel | None, *args: object) -> None:
+    """A DEBUG line, but only for a channel that has `debug` set on one of its configs."""
     if channel and any(c.get('debug') for c in channel.configs.values()):
-        _log(sys.stderr, 'DEBUG', *args)
-
-
-def _log(file, prefix, *args: object) -> None:
-    parts = []
-    for arg in args:
-        part = str(arg)
-        if isinstance(arg, BaseException):
-            error_type = type(arg).__name__
-            error_message = str(arg)
-            part = f"{error_type}{': ' + error_message if error_message else ''}"
-        parts.append(part)
-    message = ' '.join(parts)
-    prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} {prefix}:"
-    print(prefix, message, flush=True, file=file)
+        logutil.log_debug(*args)
 
 
 # Quote characters accepted around any command argument. Backticks are included because

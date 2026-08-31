@@ -664,6 +664,16 @@ def test_container_context_is_allow_listed_and_dockerfile_uses_narrow_copies():
     assert "!hutbot/**" in dockerignore and "!webui_static/**" in dockerignore
     assert "COPY . ." not in dockerfile
 
+    # Every file the image copies has to be let back into the deny-by-default context, or its
+    # COPY fails the build with "file not found in build context". Derived from the Dockerfile
+    # so a module added to a COPY line fails here instead of in the pipeline.
+    allowed = set(dockerignore.split())
+    copied = [source
+              for line in dockerfile.splitlines() if line.startswith("COPY ")
+              for source in line.split()[1:-1]]
+    for source in copied:
+        assert f"!{source}" in allowed or f"!{source.rstrip('/')}/**" in allowed, source
+
 
 # ----- scripts/seed-vault.sh -----
 

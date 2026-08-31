@@ -1,13 +1,13 @@
 import base64
 import binascii
-import datetime
 import json
 import os
-import sys
 
 import aiofiles
 import aiohttp
 from unidecode import unidecode
+
+from logutil import log, log_error, log_warning
 
 
 def load_env_file() -> None:
@@ -46,32 +46,6 @@ def get_env_var(name: str, default: str = "") -> str:
     if raw is None:
         return default
     return _decode_env_value(raw)
-
-
-def _log(file, prefix: str, *args: object) -> None:
-    parts = []
-    for arg in args:
-        part = str(arg)
-        if isinstance(arg, BaseException):
-            error_type = type(arg).__name__
-            error_message = str(arg)
-            part = f"{error_type}{': ' + error_message if error_message else ''}"
-        parts.append(part)
-    message = " ".join(parts)
-    formatted_prefix = f"{datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')} {prefix}:"
-    print(formatted_prefix, message, flush=True, file=file)
-
-
-def log(*args: object) -> None:
-    _log(sys.stdout, "INFO", *args)
-
-
-def log_warning(*args: object) -> None:
-    _log(sys.stderr, "WARN", *args)
-
-
-def log_error(*args: object) -> None:
-    _log(sys.stderr, "ERROR", *args)
 
 
 def normalize_id(value: str) -> str:

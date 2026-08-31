@@ -116,6 +116,9 @@ async def test_startup_waits_for_the_bridge_roster_before_restoring_timers(monke
                  "HUTBOT_BUILTIN_CALENDARS_FILE", "HUTBOT_CALENDAR_BRIDGE_URL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(entrypoint, "load_env_file", lambda: None)
+    # Its handlers would outlive this test on the root logger and reroute every later test's
+    # library output; `tests/test_logutil.py` covers what it does.
+    monkeypatch.setattr(entrypoint, "configure_stdlib_logging", lambda: None)
 
     order = []
 

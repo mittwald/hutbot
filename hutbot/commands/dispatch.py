@@ -5,7 +5,7 @@ import traceback
 
 from slack_bolt.async_app import AsyncApp
 
-from employee_list import log_error
+from logutil import log_error
 
 from .. import state
 from .. import messaging
