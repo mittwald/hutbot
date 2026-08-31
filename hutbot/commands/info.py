@@ -100,7 +100,7 @@ async def list_calendars(app: AsyncApp, channel, user, thread_ts: str = "") -> N
         await messaging.send_message(app, channel, user, f"No built-in calendars are configured. Point a configuration at a published `.ics` URL with `{state.slash_command} [config] set calendar <url>`.", thread_ts)
         return
 
-    rows = "\n".join(f"`{calendar.name}` — {calendar.title}" for calendar in calendars)
+    rows = "\n".join(f"`{calendar.name}` — {calendar.display_title}" for calendar in calendars)
     message = (f"*Built-in calendars*:\n{rows}\n"
                f"Point a configuration at one with `{state.slash_command} [config] set calendar <name>`.")
     await messaging.send_message(app, channel, user, message, thread_ts)

@@ -163,7 +163,10 @@ def test_deployment_reads_the_out_of_band_secret():
         "name": SECRET_NAME, "key": "SLACK_BOT_TOKEN"
     }
     for key in ("OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME", "EMPLOYEE_LIST_USERNAME",
-                "EMPLOYEE_LIST_PASSWORD", "EMPLOYEE_LIST_MAPPINGS"):
+                "EMPLOYEE_LIST_PASSWORD", "EMPLOYEE_LIST_MAPPINGS",
+                # The bridge listing's token sits in its query string, so the URL is a Secret
+                # field rather than a chart value.
+                "HUTBOT_CALENDAR_BRIDGE_URL"):
         assert secret_refs[key] == {"name": SECRET_NAME, "key": key, "optional": True}
     # Potentially large JSON must exist only in the mounted file, never execve's environment.
     assert "HUTBOT_BUILTIN_CALENDARS" not in secret_refs
@@ -316,6 +319,28 @@ def test_calendar_allowed_hosts_reach_the_container_as_one_variable():
             "value": "bridge.internal.example,other.internal.example"} in _container(result)["env"]
 
 
+def test_the_bridge_refresh_interval_reaches_the_container():
+    result = _render("v1.2.3", "--set", "calendar.bridgeRefreshMinutes=15")
+
+    assert result.returncode == 0, result.stderr
+    assert {"name": "HUTBOT_CALENDAR_BRIDGE_REFRESH", "value": "15"} in _container(result)["env"]
+
+
+def test_a_zero_bridge_refresh_interval_is_a_setting_rather_than_a_default():
+    """`0` reads the listing once at startup, which is not what leaving it empty means."""
+    result = _render("v1.2.3", "--set", "calendar.bridgeRefreshMinutes=0")
+
+    assert result.returncode == 0, result.stderr
+    assert {"name": "HUTBOT_CALENDAR_BRIDGE_REFRESH", "value": "0"} in _container(result)["env"]
+
+
+def test_no_bridge_refresh_interval_means_no_variable():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_CALENDAR_BRIDGE_REFRESH" not in result.stdout
+
+
 def test_no_allowed_hosts_means_no_variable():
     """Absent, not empty: the bot's own default is to allow-list nothing."""
     result = _render()
@@ -355,6 +380,7 @@ VAULT_JSON = {
     "SLACK_APP_TOKEN": "xapp-1-abc",
     "SLACK_BOT_TOKEN": "xoxb-2-def",
     "OPSGENIE_TOKEN": "og-token",
+    "HUTBOT_CALENDAR_BRIDGE_URL": "https://bridge.example.com/calendars/?token=BRIDGETOKEN",
 }
 
 
@@ -426,6 +452,16 @@ def test_sync_secret_writes_every_known_key_without_putting_a_value_in_argv(tmp_
     for value in VAULT_JSON.values():
         assert value not in result.kubectl_calls
         assert value not in result.stdout
+
+
+def test_sync_secret_carries_the_calendar_bridge_url(tmp_path):
+    """The listing URL is secret material, so it travels with the tokens beside it."""
+    result = _run_sync(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_CALENDAR_BRIDGE_URL=" in result.kubectl_calls
+    # By file, like every other value: the token must not appear in an argument list.
+    assert VAULT_JSON["HUTBOT_CALENDAR_BRIDGE_URL"] not in result.kubectl_calls
 
 
 def test_sync_secret_refuses_a_foreign_kube_context(tmp_path):

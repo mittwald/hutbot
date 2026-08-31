@@ -2,6 +2,7 @@
 
 import collections
 from dataclasses import dataclass
+from typing import NamedTuple
 
 ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
 # `is_bot` defaults to False so the many four-field constructions stay valid.
@@ -25,9 +26,29 @@ CalendarContext = collections.namedtuple('CalendarContext', ['name', 'event'])
 # `test` prints these, so a preview can show which event each moment actually found without
 # fetching the feed a second time.
 CalendarSelection = collections.namedtuple('CalendarSelection', ['at', 'offset', 'prefix', 'instant', 'event'])
-# One of the instance's built-in calendars, read from HUTBOT_BUILTIN_CALENDARS. `url` carries a
-# secret token, so only `name` and `title` are ever echoed to a user or handed to the web UI.
-BuiltinCalendar = collections.namedtuple('BuiltinCalendar', ['name', 'title', 'url'])
+
+
+class BuiltinCalendar(NamedTuple):
+    """One of the instance's built-in calendars: from the calendar bridge, or from the environment.
+
+    `url` carries a secret token, so only `name` and `title` are ever echoed to a user or handed
+    to the web UI. `title` is empty for a bridge calendar whose ICS has not been read yet, which
+    is what `display_title` covers; `bridge` says which of the two sources brought this one.
+    """
+
+    name: str
+    title: str
+    url: str
+    # Whether the bridge listing brought this one, as opposed to HUTBOT_BUILTIN_CALENDARS. Defaults
+    # to False so the many three-field constructions stay valid.
+    bridge: bool = False
+
+    @property
+    def display_title(self) -> str:
+        """What to print for this calendar: its own title, or its name until that is known."""
+        return self.title or self.name
+
+
 # The feed a config reads, resolved at fetch time. `builtin` is the built-in's name ("" for a
 # per-config URL); `url` is "" when there is nothing to fetch, and `missing` tells the two
 # reasons for that apart: nothing configured, or a built-in this instance no longer offers.

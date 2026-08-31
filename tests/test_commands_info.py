@@ -523,6 +523,21 @@ async def test_process_command_list_calendars():
 
 
 @pytest.mark.asyncio
+async def test_process_command_list_calendars_names_one_without_a_title():
+    """A bridge calendar whose ICS has not been read yet is listed by its name."""
+    app = AsyncMock()
+    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+    untitled = [BuiltinCalendar("rota", "", "https://cal.example.com/SECRETTOKEN/rota.ics", True)]
+
+    with _patch_builtin_calendars(untitled), patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "list calendars", channel, user)
+
+    message = mock_send_message.call_args.args[3]
+    assert "`rota` — rota" in message
+
+
+@pytest.mark.asyncio
 async def test_process_command_list_calendars_without_any():
     app = AsyncMock()
     channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})

@@ -523,7 +523,7 @@ async def set_calendar(app: AsyncApp, channel, config_name: str, value: str, use
         config['calendar_builtin'] = builtin.name
         config['calendar_url'] = ""
         await persistence.save_configuration()
-        await messaging.send_message(app, channel, user, f"*Calendar* set to the built-in calendar *{builtin.title}* (`{builtin.name}`) in configuration `{config_name}`.", thread_ts)
+        await messaging.send_message(app, channel, user, f"*Calendar* set to the built-in calendar *{builtin.display_title}* (`{builtin.name}`) in configuration `{config_name}`.", thread_ts)
         return
 
     if not calendarfeed.looks_like_a_calendar_url(value):

@@ -58,6 +58,8 @@ _CALENDAR_LOOKAHEAD_EVENTS = 200
 # A feed that is not a calendar (an HTML sign-in page) or is absurdly large is rejected
 # before it reaches the parser.
 _MAX_ICS_BYTES = 5 * 1024 * 1024
+# What an ICS request says it wants. Some publishers answer an `Accept`-less request with HTML.
+_ICS_ACCEPT = "text/calendar, text/plain;q=0.5, */*;q=0.1"
 _HTTP_TIMEOUT = 10
 _MAX_REDIRECTS = 3
 # How far back a negative `offset` searches. The ICS library has no `before()`, so the
@@ -82,6 +84,25 @@ BUILTIN_CALENDARS_FILE_ENV = f'{BUILTIN_CALENDARS_ENV}_FILE'
 # What a built-in calendar may be called. Deliberately free of `:` and `/`, which is what lets
 # `set calendar <value>` tell a name from a URL without guessing.
 BUILTIN_CALENDAR_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
+
+# The calendar bridge serving this instance: mittwald-outlook-bridge publishes which calendars it
+# serves at `https://<host>/calendars/?token=…`, and every one of them sits beside that listing as
+# `<name>.ics` with the same token. That listing is where the built-in calendars come from, so the
+# deployment names the calendars it offers in one place — the bridge — rather than in a registry
+# that has to be edited again every time the bridge gains one. The token in the URL is a bearer
+# capability, so the value is a Secret field like the tokens beside it and never a chart value.
+# Read per call rather than at import: a rotated or removed URL takes effect at the next refresh.
+CALENDAR_BRIDGE_URL_ENV = 'HUTBOT_CALENDAR_BRIDGE_URL'
+# How often the listing is read again, in minutes. A calendar the bridge gains shows up within
+# this long rather than at the next restart; the request is a few hundred bytes, so it is cheap to
+# keep short. `0` reads the listing once at startup and never again.
+CALENDAR_BRIDGE_REFRESH_ENV = 'HUTBOT_CALENDAR_BRIDGE_REFRESH'
+_CALENDAR_BRIDGE_REFRESH_MINUTES = 60
+# A listing of a few dozen names is a few hundred bytes; anything past this is not one.
+_CALENDAR_BRIDGE_MAX_LISTING_BYTES = 256 * 1024
+# Bridge calendars whose titles are read at the same time. Their ICS documents are fetched in full
+# for it, so this is what bounds how much a first refresh pulls at once.
+_CALENDAR_BRIDGE_TITLE_CONCURRENCY = 4
 
 
 # ----- pure helpers -----
@@ -615,7 +636,12 @@ def parse_builtin_calendars(raw: str) -> list[BuiltinCalendar]:
 
 
 def load_builtin_calendars() -> list[BuiltinCalendar]:
-    """The instance's built-in calendars, read from startup configuration once.
+    """The calendars the deployment adds by hand, read from startup configuration once.
+
+    These are additions to — and overrides of — what the calendar bridge serves; the bridge's own
+    list arrives with the first `refresh_bridge_calendars`, which its refresh task runs as soon as
+    the bot comes up. Both halves are merged by `rebuild_builtin_calendars`, which this calls, so
+    `state.builtin_calendars` is usable before the first listing has been read.
 
     `HUTBOT_BUILTIN_CALENDARS_FILE` names a file holding the JSON, which is how a Kubernetes
     Secret is projected in production: the value is used verbatim, it has no length limit to
@@ -639,15 +665,32 @@ def load_builtin_calendars() -> list[BuiltinCalendar]:
             pass
         except OSError as e:
             log_error(f"Failed to read the built-in calendars from {path}:", e)
+            state.configured_calendars = []
+            rebuild_builtin_calendars()
             return []
     if not raw:
         raw = get_env_var(BUILTIN_CALENDARS_ENV)
     calendars = parse_builtin_calendars(raw)
+    state.configured_calendars = calendars
+    rebuild_builtin_calendars()
     if calendars:
         # Names only: the titles are harmless but the URLs are not, and one log line that
         # names every feed is exactly what an operator greps for.
-        log(f"Built-in calendars available: {', '.join(calendar.name for calendar in calendars)}.")
+        log(f"Built-in calendars configured: {', '.join(calendar.name for calendar in calendars)}.")
     return calendars
+
+
+def rebuild_builtin_calendars() -> None:
+    """`state.builtin_calendars` from the bridge listing plus whatever the deployment adds.
+
+    A name in both belongs to the configured entry: the registry is how an operator overrides one
+    the bridge serves — a different URL, a better title — without having to change the bridge.
+    Rebound as a whole rather than mutated, because every reader of the list is synchronous and
+    must never see it half-built.
+    """
+    merged: dict[str, BuiltinCalendar] = {calendar.name: calendar for calendar in state.bridge_calendars}
+    merged.update({calendar.name: calendar for calendar in state.configured_calendars})
+    state.builtin_calendars = sorted(merged.values(), key=lambda calendar: calendar.name)
 
 
 def lookup_builtin_calendar(name: str) -> BuiltinCalendar | None:
@@ -682,7 +725,7 @@ def resolve_calendar_feed(config: dict | None) -> CalendarFeed:
         builtin = lookup_builtin_calendar(builtin_name)
         if builtin is None:
             return CalendarFeed("", "", builtin_name, True)
-        return CalendarFeed(builtin.url, builtin.title, builtin.name, False)
+        return CalendarFeed(builtin.url, builtin.display_title, builtin.name, False)
     url = str(config.get('calendar_url') or "").strip()
     return CalendarFeed(url, describe_calendar_url(url), "", False)
 
@@ -697,11 +740,220 @@ def describe_calendar_feed(feed: CalendarFeed) -> str:
     return feed.title if feed.builtin else describe_calendar_url(feed.url)
 
 
+# ----- the calendar bridge -----
+
+
+def calendar_bridge_listing_url() -> str:
+    """The bridge's listing URL, or "" when this instance has no bridge.
+
+    Never echoes the value: the token sits in its query string. A bad one is reported by host
+    alone and then ignored, which leaves the instance with whatever `HUTBOT_BUILTIN_CALENDARS`
+    adds rather than keeping the bot from starting.
+    """
+    raw = (os.environ.get(CALENDAR_BRIDGE_URL_ENV) or "").strip()
+    if not raw:
+        return ""
+    try:
+        url = validate_calendar_url(raw)
+    except ValueError as e:
+        log_error(f"Ignoring {CALENDAR_BRIDGE_URL_ENV}: {e} "
+                  f"({describe_calendar_url(raw) or 'no URL'}).")
+        return ""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.query:
+        # The listing is only served to a caller carrying the token, so a URL without one is a
+        # copy-paste that lost its query string — worth saying before every fetch 401s.
+        log_warning(f"{CALENDAR_BRIDGE_URL_ENV} carries no query string; the bridge needs `?token=…`.")
+    if not parts.path.endswith("/"):
+        # Every calendar hangs off the listing path as `<name>.ics`, so the trailing slash is what
+        # makes that a sibling rather than a replacement of the last segment.
+        url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, f"{parts.path or '/'}/",
+                                       parts.query, parts.fragment))
+    return url
+
+
+def calendar_bridge_refresh_minutes() -> int:
+    """How often the bridge listing is read again; `0` reads it once at startup."""
+    raw = os.environ.get(CALENDAR_BRIDGE_REFRESH_ENV)
+    if raw is None or not raw.strip():
+        return _CALENDAR_BRIDGE_REFRESH_MINUTES
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        log_warning(f"Ignoring invalid value `{raw}` for {CALENDAR_BRIDGE_REFRESH_ENV}. "
+                    f"Using {_CALENDAR_BRIDGE_REFRESH_MINUTES}.")
+        return _CALENDAR_BRIDGE_REFRESH_MINUTES
+    return value if value >= 0 else _CALENDAR_BRIDGE_REFRESH_MINUTES
+
+
+def calendar_bridge_ics_url(listing_url: str, name: str) -> str:
+    """Where the bridge serves one calendar: `<name>.ics` beside the listing, same token.
+
+    `name` has already been through `normalize_builtin_calendar_name`, which admits neither `/`
+    nor `:` nor a leading `.`, so it cannot climb out of the listing path; it is still
+    percent-encoded, because a check that holds today is not a reason to build the URL as if it
+    did not.
+    """
+    parts = urllib.parse.urlsplit(listing_url)
+    path = parts.path if parts.path.endswith("/") else f"{parts.path}/"
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc,
+                                    f"{path}{urllib.parse.quote(name, safe='')}.ics",
+                                    parts.query, ""))
+
+
+def parse_calendar_bridge_listing(raw: str) -> list[str] | None:
+    """The calendar names in a bridge listing, or ``None`` when it is not one.
+
+    The document is `{"feeds": ["notfallhotline", …]}`. ``None`` and an empty list are different
+    answers: the first means the listing could not be read and the calendars from the last one are
+    kept, the second means the bridge really serves nothing.
+    """
+    try:
+        document = json.loads(raw)
+    except ValueError as e:
+        log_error("The calendar bridge listing is not valid JSON:", e)
+        return None
+    if not isinstance(document, dict):
+        log_error("The calendar bridge listing is not an object with a `feeds` array.")
+        return None
+    feeds = document.get("feeds")
+    if not isinstance(feeds, list):
+        log_error("The calendar bridge listing has no `feeds` array.")
+        return None
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for entry in feeds:
+        raw_name = entry if isinstance(entry, str) else ""
+        name = normalize_builtin_calendar_name(raw_name)
+        if not name:
+            log_warning(f"Skipping the bridge calendar `{raw_name}`: it is not a usable name "
+                        "(lower-case letters, digits, `.`, `-` and `_`, starting with a letter "
+                        "or digit).")
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+async def fetch_calendar_bridge_listing(listing_url: str) -> list[str] | None:
+    """The calendar names the bridge serves, or ``None`` when the listing could not be read."""
+    try:
+        raw = await _get_calendar_document(listing_url,
+                                           accept="application/json, */*;q=0.1",
+                                           max_bytes=_CALENDAR_BRIDGE_MAX_LISTING_BYTES,
+                                           what="calendar bridge listing")
+    except Exception as e:
+        log_error(f"Failed to fetch the calendar bridge listing {describe_calendar_url(listing_url)}:", e)
+        return None
+    if raw is None:
+        return None
+    return parse_calendar_bridge_listing(raw)
+
+
+async def resolve_bridge_calendar_titles(pairs: Sequence[tuple[str, str]]) -> None:
+    """Fill `state.bridge_calendar_titles` for the `(name, url)` pairs still without a title.
+
+    The listing carries names only, so a calendar's title is what its own ICS calls itself
+    (`X-WR-CALNAME`) — the same string a pasted feed announces under. Reading it means fetching
+    the document, so it is done once per name and only for names not resolved yet: after the first
+    refresh an hourly one makes no ICS request at all. The fetch goes through `fetch_calendar`, so
+    it also warms the cache the feeds read from, and a calendar whose title cannot be read keeps
+    its name as its title rather than holding up the rest.
+    """
+    unresolved = [pair for pair in pairs if not state.bridge_calendar_titles.get(pair[0])]
+    if not unresolved:
+        return
+    limit = asyncio.Semaphore(_CALENDAR_BRIDGE_TITLE_CONCURRENCY)
+
+    async def resolve(name: str, url: str) -> None:
+        async with limit:
+            _, title = await fetch_calendar(url)
+        title = (title or "").strip()
+        if title:
+            state.bridge_calendar_titles[name] = title
+
+    await asyncio.gather(*(resolve(name, url) for name, url in unresolved),
+                        return_exceptions=True)
+
+
+async def refresh_bridge_calendars() -> None:
+    """Rebuild the bridge half of the built-in calendars from the bridge's own listing.
+
+    Never raises, and never empties a list it could not replace: a bridge that is briefly
+    unreachable leaves the calendars from the last successful listing in place, so an outage does
+    not take every channel's calendar feed down with it until the next refresh succeeds. An
+    instance with no bridge configured leaves the half empty and keeps only what
+    `HUTBOT_BUILTIN_CALENDARS` adds.
+    """
+    listing_url = calendar_bridge_listing_url()
+    if not listing_url:
+        if state.bridge_calendars:
+            state.bridge_calendars = []
+            rebuild_builtin_calendars()
+        return
+
+    names = await fetch_calendar_bridge_listing(listing_url)
+    if names is None:
+        log_warning("Could not read the calendar bridge listing; keeping the "
+                    f"{len(state.bridge_calendars)} calendar(s) from the last one.")
+        return
+
+    pairs = [(name, calendar_bridge_ics_url(listing_url, name)) for name in names]
+    # A name the deployment overrides is never read from the bridge, so its ICS is not fetched for
+    # a title nothing will print — the override may well be there *because* that document is bad.
+    overridden = {calendar.name for calendar in state.configured_calendars}
+    await resolve_bridge_calendar_titles([pair for pair in pairs if pair[0] not in overridden])
+    state.bridge_calendars = [BuiltinCalendar(name, state.bridge_calendar_titles.get(name, ""), url, True)
+                              for name, url in pairs]
+    rebuild_builtin_calendars()
+
+    # Names only: the titles are harmless but the URLs are not. Logged when the roster changes, so
+    # a refresh that finds what the last one found stays quiet.
+    roster = ", ".join(calendar.name for calendar in state.bridge_calendars) or "none"
+    if roster != state._logged_bridge_roster:
+        state._logged_bridge_roster = roster
+        log(f"Calendar bridge serves: {roster}.")
+
+
+async def run_bridge_refresh_loop() -> None:
+    """Read the bridge listing at startup, then again every refresh interval.
+
+    A task of its own rather than a turn of the scheduler's loop: `run_scheduler` returns at once
+    when `croniter` is missing, and the first read has to happen when the bot comes up rather than
+    one interval later. Never lets a failure end the loop — the next turn tries again, and until it
+    succeeds the calendars from the last listing stay in place.
+    """
+    # Read raw, without `calendar_bridge_listing_url`, so an unusable value is reported once by the
+    # refresh itself rather than twice. The environment cannot change under a running process, so
+    # an instance with no bridge needs no task at all.
+    if not (os.environ.get(CALENDAR_BRIDGE_URL_ENV) or "").strip():
+        return
+    minutes = calendar_bridge_refresh_minutes()
+    log(f"Calendar bridge refresh started ({f'every {minutes}min' if minutes else 'once'}).")
+    while True:
+        try:
+            await refresh_bridge_calendars()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log_error("Failed to refresh the built-in calendars from the bridge:", e)
+        # Re-read every turn, so a value that was unusable at startup is not held against the
+        # instance for the life of the process.
+        minutes = calendar_bridge_refresh_minutes()
+        if not minutes:
+            # `0` reads the listing once: the roster this process came up with is the one it keeps.
+            return
+        await asyncio.sleep(minutes * 60)
+
+
 # ----- fetching -----
 
 
-async def _read_capped(response) -> str | None:
-    """The response body, or ``None`` when it runs past ``_MAX_ICS_BYTES``.
+async def _read_capped(response, max_bytes: int = _MAX_ICS_BYTES) -> str | None:
+    """The response body, or ``None`` when it runs past ``max_bytes``.
 
     Read in chunks rather than with `response.text()`, which would pull the whole body into
     memory before any size check: a feed can omit `Content-Length`, use chunked transfer, or
@@ -711,7 +963,7 @@ async def _read_capped(response) -> str | None:
     chunks, total = [], 0
     async for chunk in response.content.iter_chunked(64 * 1024):
         total += len(chunk)
-        if total > _MAX_ICS_BYTES:
+        if total > max_bytes:
             return None
         chunks.append(chunk)
     body = b"".join(chunks)
@@ -721,49 +973,55 @@ async def _read_capped(response) -> str | None:
         return body.decode("utf-8", errors="replace")
 
 
-async def _get_calendar_document(url: str) -> str | None:
-    """Fetch the feed, checking every hop, or return ``None`` with the reason logged.
+async def _get_calendar_document(url: str, *, accept: str = _ICS_ACCEPT,
+                                 max_bytes: int = _MAX_ICS_BYTES,
+                                 what: str = "calendar feed") -> str | None:
+    """Fetch the document, checking every hop, or return ``None`` with the reason logged.
 
     Redirects are followed by hand so each target is validated before it is requested —
     aiohttp would otherwise follow a public HTTPS URL to `http://169.254.169.254` without
     another word.
+
+    `accept`, `max_bytes` and `what` are what let the bridge listing — JSON, small, and worth
+    naming as itself in an error — travel this same guarded path rather than one of its own.
     """
     timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)
+    headers = {"Accept": accept}
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for _ in range(_MAX_REDIRECTS + 1):
             try:
                 url = validate_calendar_url(url)
             except ValueError as e:
-                log_error(f"Refusing to fetch the calendar feed {describe_calendar_url(url)}: {e}.")
+                log_error(f"Refusing to fetch the {what} {describe_calendar_url(url)}: {e}.")
                 return None
             host = urllib.parse.urlsplit(url).hostname or ""
             if not _is_loopback_host(host) and not _is_allowed_host(host):
                 problem = await _resolve_public_host(host)
                 if problem:
-                    log_error(f"Refusing to fetch the calendar feed {describe_calendar_url(url)}: {problem} "
+                    log_error(f"Refusing to fetch the {what} {describe_calendar_url(url)}: {problem} "
                               f"(name the host in {ALLOWED_HOSTS_ENV} if it is meant to be reachable).")
                     return None
 
-            async with session.get(url, allow_redirects=False) as response:
+            async with session.get(url, headers=headers, allow_redirects=False) as response:
                 if response.status in (301, 302, 303, 307, 308):
                     location = response.headers.get("Location", "")
                     if not location:
-                        log_error(f"Calendar feed {describe_calendar_url(url)} redirected without a target.")
+                        log_error(f"The {what} {describe_calendar_url(url)} redirected without a target.")
                         return None
                     url = urllib.parse.urljoin(url, location)
                     continue
                 if response.status != 200:
-                    log_error(f"Failed to fetch the calendar feed {describe_calendar_url(url)}: {response.status}")
+                    log_error(f"Failed to fetch the {what} {describe_calendar_url(url)}: {response.status}")
                     return None
-                if response.content_length and response.content_length > _MAX_ICS_BYTES:
-                    log_error(f"Calendar feed {describe_calendar_url(url)} is too large ({response.content_length} bytes).")
+                if response.content_length and response.content_length > max_bytes:
+                    log_error(f"The {what} {describe_calendar_url(url)} is too large ({response.content_length} bytes).")
                     return None
-                text = await _read_capped(response)
+                text = await _read_capped(response, max_bytes)
                 if text is None:
-                    log_error(f"Calendar feed {describe_calendar_url(url)} is larger than {_MAX_ICS_BYTES} bytes.")
+                    log_error(f"The {what} {describe_calendar_url(url)} is larger than {max_bytes} bytes.")
                 return text
 
-    log_error(f"Calendar feed {describe_calendar_url(url)} redirected more than {_MAX_REDIRECTS} times.")
+    log_error(f"The {what} {describe_calendar_url(url)} redirected more than {_MAX_REDIRECTS} times.")
     return None
 
 

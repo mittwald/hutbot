@@ -63,11 +63,29 @@ bot_user_name = DEFAULT_BOT_NAME
 # True once an OpsGenie token + heartbeat name are configured.
 opsgenie_configured = False
 
-# The instance's built-in calendars (models.BuiltinCalendar), parsed once from
-# HUTBOT_BUILTIN_CALENDARS at startup, empty when none are configured. Every entry's URL
-# carries a secret token: nothing outside `calendarfeed` reads `.url`, and nothing serializes
-# this list — only `name` and `title` are ever echoed or handed to the web UI.
+# The instance's built-in calendars (models.BuiltinCalendar): what the calendar bridge serves
+# plus what HUTBOT_BUILTIN_CALENDARS adds, rebuilt by `calendarfeed.rebuild_builtin_calendars`
+# and empty when neither source has any. Every entry's URL carries a secret token: nothing
+# outside `calendarfeed` reads `.url`, and nothing serializes this list — only `name` and
+# `title` are ever echoed or handed to the web UI. Read synchronously on hot paths, so it is
+# rebound as a whole rather than mutated in place.
 builtin_calendars: list = []
+
+# The calendars the bridge listing named at the last successful refresh (see
+# `calendarfeed.refresh_bridge_calendars`). Kept apart from the list above so a bridge that is
+# briefly unreachable can leave them standing.
+bridge_calendars: list = []
+
+# The calendars HUTBOT_BUILTIN_CALENDARS adds on top, read once from the environment at startup.
+configured_calendars: list = []
+
+# Bridge calendar name -> what its ICS calls itself (`X-WR-CALNAME`). The listing carries names
+# only, so the title is read from the document once and kept for the life of the process: the
+# parsed-calendar cache below expires every few minutes and the titles must not go with it.
+bridge_calendar_titles: dict[str, str] = {}
+
+# The roster the last refresh logged, so an hourly refresh that changes nothing stays silent.
+_logged_bridge_roster: str | None = None
 
 # Slack member ids per channel, cached briefly (see slackcache.get_channel_members).
 _channel_members_cache: dict[str, tuple[float, set]] = {}
@@ -91,7 +109,7 @@ current_command: ContextVar[str] = ContextVar('current_command', default='')
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, builtin_calendars, slash_command, bot_name, default_datetime_locale, version
+    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, slash_command, bot_name, default_datetime_locale, version
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -105,12 +123,16 @@ def reset() -> None:
     team_cache.clear()
     _channel_members_cache.clear()
     _calendar_cache.clear()
+    bridge_calendar_titles.clear()
     current_command.set('')
     _scheduler_last_check = None
     bot_user_id = None
     bot_user_name = DEFAULT_BOT_NAME
     opsgenie_configured = False
     builtin_calendars = []
+    bridge_calendars = []
+    configured_calendars = []
+    _logged_bridge_roster = None
     slash_command = DEFAULT_SLASH_COMMAND
     bot_name = DEFAULT_BOT_NAME
     default_datetime_locale = ""

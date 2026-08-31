@@ -526,6 +526,15 @@ async def test_ui_meta_lists_the_builtin_calendars_without_their_urls():
 
 
 @pytest.mark.asyncio
+async def test_ui_meta_names_a_calendar_whose_title_is_not_known_yet():
+    """A bridge calendar is offered as soon as it is listed, titled or not."""
+    untitled = [BuiltinCalendar("rota", "", "https://cal.example.com/SECRETTOKEN/rota.ics", True)]
+    with _patch_builtin_calendars(untitled):
+        meta = hutbot.webui_backend.ui_meta()
+    assert meta["calendars"] == [{"name": "rota", "title": "rota"}]
+
+
+@pytest.mark.asyncio
 async def test_ui_meta_has_no_calendars_by_default():
     assert hutbot.webui_backend.ui_meta()["calendars"] == []
 

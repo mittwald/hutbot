@@ -17,9 +17,13 @@ image:
 # would template credentials back into the release.
 existingSecret: ""
 
-# Instance-wide "built-in" ICS calendar feeds every channel can point at by name, as a JSON
-# array of {"name","title","url"} objects. Their URLs carry tokens, so the list lives in the
-# Secret above and is mounted as a file rather than only injected as a variable.
+# The built-in ICS calendar feeds a channel can point at by name come from the calendar
+# bridge, which publishes the ones it serves at HUTBOT_CALENDAR_BRIDGE_URL — a Secret key,
+# since that URL carries a token. What follows is the registry for calendars offered *on top
+# of* those, and for overriding one the bridge serves: a JSON array of {"name","title","url"}
+# objects whose URLs are bearer capabilities too, so it lives in the Secret above and is
+# mounted as a file rather than only injected as a variable. Without the key the volume
+# projects nothing and the instance simply adds nothing to what the bridge serves.
 builtinCalendars:
   mountFile: true
   mountPath: /etc/hutbot
@@ -37,6 +41,11 @@ calendar:
   # disables the cache, which is a setting rather than a default. Trades freshness against a
   # host nobody here controls, and conditions can make the path hot.
   ttlSeconds: ""
+  # How often the calendar bridge's listing is read again, in minutes. Empty = the bot's
+  # default (60); `0` reads the listing once at startup and never again. The listing URL
+  # itself is a Secret key (HUTBOT_CALENDAR_BRIDGE_URL), not a value here, because it carries
+  # the bridge's token.
+  bridgeRefreshMinutes: ""
   # How far back `{{calendar_summary(offset=prev)}}` looks for the previous event, in days.
   # Empty = the bot's default (90), `0` stops the backward search entirely. Widen it for a
   # calendar whose events are months apart; the window is searched on every such lookup, so it

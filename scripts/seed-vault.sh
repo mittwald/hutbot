@@ -19,6 +19,7 @@ readonly SECRET_KEYS=(
   EMPLOYEE_LIST_USERNAME
   EMPLOYEE_LIST_PASSWORD
   EMPLOYEE_LIST_MAPPINGS
+  HUTBOT_CALENDAR_BRIDGE_URL
 )
 readonly REQUIRED_KEYS=(SLACK_APP_TOKEN SLACK_BOT_TOKEN)
 
@@ -42,7 +43,8 @@ Helm values. Run it once per environment; use \`vault kv patch\` for changes aft
 Options:
   --env prod|dev    Which path to seed: .../hutbot (default) or .../hutbot-dev.
   --env-file PATH   Env file to read (default: .env for prod, .env-dev for dev).
-  --calendars FILE  Also seed HUTBOT_BUILTIN_CALENDARS from this JSON file.
+  --calendars FILE  Also seed HUTBOT_BUILTIN_CALENDARS from this JSON file — the calendars
+                    offered on top of the ones the calendar bridge already serves.
   --dry-run         Print the field names and byte lengths, write nothing.
   --force           Overwrite a path that already has fields (a put replaces every field).
   --sync            Afterwards run scripts/sync-secret.sh for that environment.
@@ -151,7 +153,8 @@ set -a
 . "$HUTBOT_ENV_FILE"
 set +a
 jq -n '$ENV | {SLACK_APP_TOKEN, SLACK_BOT_TOKEN, OPSGENIE_TOKEN, OPSGENIE_HEARTBEAT_NAME,
-               EMPLOYEE_LIST_USERNAME, EMPLOYEE_LIST_PASSWORD, EMPLOYEE_LIST_MAPPINGS}
+               EMPLOYEE_LIST_USERNAME, EMPLOYEE_LIST_PASSWORD, EMPLOYEE_LIST_MAPPINGS,
+               HUTBOT_CALENDAR_BRIDGE_URL}
         | with_entries(select(.value != null and .value != ""))'
 INNER
 

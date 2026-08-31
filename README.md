@@ -258,10 +258,14 @@ event or a different moment: `{{calendar_summary(offset=next)}}`, `{{calendar_su
 
 ### Built-in calendars
 
-Built-in calendars are curated per instance: each has a `name` (what you type), a `title` (what
-Hutbot shows) and a feed URL that only the deployment knows. There are none by default — an
-operator adds them to `HUTBOT_BUILTIN_CALENDARS`, described under
-[Built-in calendar feeds](#built-in-calendar-feeds).
+Built-in calendars come from the instance's **calendar bridge**: it publishes which calendars it
+serves, and Hutbot reads that list at startup and then hourly, so a calendar the bridge gains shows
+up without a deployment. Each has a `name` (what you type), a `title` (what Hutbot shows — the name
+the calendar itself carries) and a feed URL that only the deployment knows. A deployment can offer
+further calendars on top, and override one the bridge serves, through
+`HUTBOT_BUILTIN_CALENDARS`; both are described under
+[Built-in calendar feeds](#built-in-calendar-feeds). An instance with neither has no built-in
+calendars, and a config there needs a published `.ics` URL of its own.
 
 Pointing a config at one stores **the name**, never the URL, so `bot.json` never holds a feed
 token and rotating one takes effect without editing a single config. `show config` names the
@@ -271,7 +275,9 @@ renders that same title. Two configs on the same built-in share one fetch.
 A built-in name may hold lower-case letters, digits, `.`, `-` and `_` — never `:` or `/` — which
 is how `set calendar <value>` tells a name from a URL. If a built-in is renamed or removed while
 a config still names it, that config fetches nothing, `{{calendar_name}}` renders
-`<unknown-calendar>`, and `show config` says `built-in: rota (not available on this instance)`.
+`<unknown-calendar>`, and `show config` says `built-in: rota (not available on this instance)`. A
+bridge that is briefly unreachable is *not* that case: the calendars from the last listing stay
+available until a later refresh replaces them.
 
 **The URL is a secret.** A published-calendar link needs no login, so possession of it *is* read
 access to the calendar. Hutbot therefore only ever echoes a redacted form
@@ -770,6 +776,9 @@ export HUTBOT_CALENDAR_ALLOWED_HOSTS='outlook-bridge.prod.example.systems'
 # Calendar tunables; unset means the bot's own defaults, 300 seconds and 90 days.
 export HUTBOT_CALENDAR_TTL=300
 export HUTBOT_CALENDAR_LOOKBACK_DAYS=90
+# Minutes between reads of the calendar bridge's listing; unset means 60, `0` reads it once at
+# startup. The listing URL itself carries a token and lives in the Secret, not here.
+export HUTBOT_CALENDAR_BRIDGE_REFRESH=60
 ```
 
 To query the employee list locally from your terminal, you can use the standalone helper script:
@@ -801,7 +810,8 @@ only as a file so large lists do not hit the process environment's size limit.
 | `EMPLOYEE_LIST_USERNAME` | no | Employee-list credentials for team lookups |
 | `EMPLOYEE_LIST_PASSWORD` | no | " |
 | `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record |
-| `HUTBOT_BUILTIN_CALENDARS` | no | The built-in calendar list (see below) |
+| `HUTBOT_CALENDAR_BRIDGE_URL` | no | The calendar bridge's listing endpoint, token included (see below) |
+| `HUTBOT_BUILTIN_CALENDARS` | no | Calendars offered on top of the bridge's, and overrides of them (see below) |
 
 ```bash
 export VAULT_ADDR=https://vault.m3.services
@@ -824,7 +834,7 @@ make seed-vault                         # and .../hutbot from .env
 make seed-vault ARGS='--calendars ./calendars.json --sync'
 ```
 
-It picks only the eight secret keys out of the file, drops the ones it does not set (an empty
+It picks only the nine secret keys out of the file, drops the ones it does not set (an empty
 `OPSGENIE_HEARTBEAT_NAME` stays unset rather than becoming `""`), requires both Slack tokens,
 validates a `--calendars` file the way the sync script does, and hands Vault a `@file` so no value
 reaches a command line. It **refuses a path that already has fields** unless `--force`, because a
@@ -856,21 +866,50 @@ set -a; . ./.env; set +a
 ./scripts/sync-secret.sh --local --restart
 ```
 
-Only the eight keys above are read — `NETWORKPOLICY_RULES` and the other deploy settings stay out of
+Only the nine keys above are read — `NETWORKPOLICY_RULES` and the other deploy settings stay out of
 the Secret — and a key missing from the environment is carried over from the Secret already in the
 cluster, so updating one value never needs the others at hand.
 
 ### Built-in calendar feeds
 
-`HUTBOT_BUILTIN_CALENDARS` is a JSON array of `{"name", "title", "url"}` objects: the instance-wide
-calendars every channel can point at with `/hutbot [config] set calendar <name>` (see
-[Built-in calendars](#built-in-calendars)). Each URL grants read access to its calendar, which is why
-the list lives in the Secret and not in a ConfigMap. The chart projects it as a file
-(`/etc/hutbot/builtin-calendars.json`, mode `0440`) and points `HUTBOT_BUILTIN_CALENDARS_FILE` at it;
-`builtinCalendars.mountFile=false` disables built-in calendars in the chart. Source checkouts can
-still use `HUTBOT_BUILTIN_CALENDARS` directly when no file is configured.
+The built-in calendars come from the **calendar bridge**. `HUTBOT_CALENDAR_BRIDGE_URL` is its
+listing endpoint — `https://<host>/calendars/?token=…`, the token included, which is why it is a
+Secret field — and the listing it answers with is a JSON document naming the calendars the bridge
+serves:
 
-Create or rotate one:
+```json
+{"feeds": ["notfallhotline", "cloudhosting", "mkubed", "infrastruktur"]}
+```
+
+Each of those hangs off the listing path as `<name>.ics` with the same token, so the bot needs
+nothing but that one URL: it reads the listing at startup and then every
+`HUTBOT_CALENDAR_BRIDGE_REFRESH` minutes (default 60, `0` reads it once at startup and never again;
+`calendar.bridgeRefreshMinutes` is the chart value), and a calendar the bridge gains shows up within
+that long rather than at the next restart. Each calendar's **title** is what its own ICS calls
+itself (`X-WR-CALNAME`), read once per name and kept for the life of the process; a calendar whose
+title cannot be read is shown by its name. One log line per change names the roster:
+
+```
+Calendar bridge serves: cloudhosting, infrastruktur, mkubed, notfallhotline.
+```
+
+The URLs never appear in a log, a reply or `bot.json` — a config stores the *name*, so rotating the
+bridge token takes effect without touching a single config. A bridge that cannot be read
+(unreachable, 503, a document that is not a listing) leaves the calendars from the last successful
+listing in place and says so; a listing that genuinely names nothing does clear them. An instance
+with no bridge configured simply has no bridge-served calendars.
+
+`HUTBOT_BUILTIN_CALENDARS` is the registry **on top of** that: a JSON array of
+`{"name", "title", "url"}` objects for calendars the bridge does not serve — one behind a different
+bridge, say, or a public feed — and for overriding one it does, since a name in both belongs to the
+registry entry (which is then never fetched for a title either). Each URL grants read access to its
+calendar, which is why the list lives in the Secret and not in a ConfigMap. The chart projects it as
+a file (`/etc/hutbot/builtin-calendars.json`, mode `0440`) and points
+`HUTBOT_BUILTIN_CALENDARS_FILE` at it; `builtinCalendars.mountFile=false` disables the registry in
+the chart. Source checkouts can still use `HUTBOT_BUILTIN_CALENDARS` directly when no file is
+configured.
+
+Create or rotate a registry entry:
 
 ```bash
 make calendars                      # $EDITOR on the list from Vault, validated, written back
@@ -915,10 +954,13 @@ kubectl -n mw-internal exec deploy/hutbot -- cat /etc/hutbot/builtin-calendars.j
 
 The first two print the feed tokens.
 
-The list is read at startup, so a change needs `make sync-secret ARGS='--restart'` (or
+The registry is read at startup, so a change to it needs `make sync-secret ARGS='--restart'` (or
 `kubectl -n mw-internal rollout restart deploy/hutbot`). The Deployment uses `strategy: Recreate` —
 hutbot is a singleton on a ReadWriteOnce volume, so a rolling restart would briefly run two bots
 against one `bot.json` — which means every restart has a few seconds of gap.
+
+The bridge's own listing is not read at startup only, so a calendar it gains needs no restart —
+but a change to `HUTBOT_CALENDAR_BRIDGE_URL` itself does, since the bot reads its environment once.
 
 **Egress:** a public feed host (`outlook.office365.com` and friends) is covered by the chart's
 default public-egress rule — everything outside the private, shared and link-local ranges, on any
@@ -926,7 +968,9 @@ port — so it needs no entry anywhere. An internal host needs a `HOST_ALIASES` 
 cluster DNS does not serve that zone, a `NETWORKPOLICY_RULES` entry on its port, **and** its name in
 `HUTBOT_CALENDAR_ALLOWED_HOSTS`, or the bot refuses the internal address before it dials. With only
 some of the three the fetch fails — with a resolution error, a refusal in the log, or no trace at
-all. `sync-secret.sh` prints the feed hosts so they can be checked against the rules.
+all. `sync-secret.sh` prints the feed hosts so they can be checked against the rules. The calendar
+bridge is such a host: `mittwald-outlook-bridge.prod.mittwald.systems` needs all three, and the
+listing goes down the same guarded path as any feed — https only, every redirect hop revalidated.
 
 ### Deploy
 
@@ -1133,6 +1177,9 @@ export HUTBOT_CALENDAR_ALLOWED_HOSTS='outlook-bridge.prod.example.systems'
 # Calendar tunables; unset means the bot's own defaults, 300 seconds and 90 days.
 export HUTBOT_CALENDAR_TTL=300
 export HUTBOT_CALENDAR_LOOKBACK_DAYS=90
+# Minutes between reads of the calendar bridge's listing; unset means 60, `0` reads it once at
+# startup. The listing URL itself carries a token and lives in the Secret, not here.
+export HUTBOT_CALENDAR_BRIDGE_REFRESH=60
 ./deploy-prod.sh v1.1.0
 ```
 

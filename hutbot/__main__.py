@@ -38,9 +38,11 @@ async def main() -> None:
     # Locale for configs that set none. The timezone counterpart is the container's
     # TZ: a config without its own timezone uses server local time anyway.
     state.default_datetime_locale = datetimefmt.resolve_default_locale(get_env_var("HUTBOT_DEFAULT_DATETIME_LOCALE"))
-    # Instance-wide ICS feeds every channel can point at by name. Parsed once, here, because
-    # the payload carries secret tokens and nothing but `calendarfeed` should see them again.
-    state.builtin_calendars = calendarfeed.load_builtin_calendars()
+    # The instance-wide ICS feeds a channel can point at by name that the deployment adds on top
+    # of what the calendar bridge serves. Parsed once, here, because the payload carries secret
+    # tokens and nothing but `calendarfeed` should see them again; the bridge's own calendars
+    # arrive with the first turn of its refresh task below.
+    calendarfeed.load_builtin_calendars()
     if slack_app_token is None or slack_bot_token is None:
         log_error("Environment variables SLACK_APP_TOKEN and SLACK_BOT_TOKEN must be set to run this app")
         exit(1)
@@ -48,6 +50,7 @@ async def main() -> None:
     handler = None
     heartbeat_task = None
     scheduler_task = None
+    calendar_task = None
     web_runner = None
     try:
         app = AsyncApp(token=slack_bot_token)
@@ -70,6 +73,10 @@ async def main() -> None:
             state.opsgenie_configured = True
             heartbeat_task = asyncio.create_task(opsgenie.send_heartbeat(opsgenie_token, opsgenie_heartbeat_name))
         scheduler_task = asyncio.create_task(scheduling.run_scheduler(app, opsgenie_token))
+        # Reads the calendar bridge's listing straight away and then on its own timer, so a
+        # calendar the bridge gains shows up without a restart. Returns at once when no bridge
+        # is configured.
+        calendar_task = asyncio.create_task(calendarfeed.run_bridge_refresh_loop())
         web_runner = await webui_backend.maybe_start_web_ui(app)
         await handler.start_async()
     except asyncio.CancelledError:
@@ -85,7 +92,7 @@ async def main() -> None:
                 await web_runner.cleanup()
             if handler:
                 await handler.close_async()
-            for background_task in (heartbeat_task, scheduler_task):
+            for background_task in (heartbeat_task, scheduler_task, calendar_task):
                 if background_task:
                     background_task.cancel()
                     try:

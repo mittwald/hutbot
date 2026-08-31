@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Edit the instance's built-in calendar list, which lives in Vault as the field
-# HUTBOT_BUILTIN_CALENDARS of secrets-coabkube/production/hutbot (or .../hutbot-dev).
+# Edit the calendars this instance offers *on top of* the ones the calendar bridge serves. They
+# live in Vault as the field HUTBOT_BUILTIN_CALENDARS of secrets-coabkube/production/hutbot
+# (or .../hutbot-dev).
 #
-# The list is a JSON array of {"name","title","url"} objects. Its URLs carry feed tokens —
+# The bridge is the source of the built-in calendars: it publishes which ones it serves at
+# HUTBOT_CALENDAR_BRIDGE_URL, and the bot reads that listing on a timer. This registry is only
+# for what the bridge does not serve — a feed behind a different bridge, say — and for overriding
+# one it does, since a name in both belongs to the entry here.
+#
+# The registry is a JSON array of {"name","title","url"} objects. Its URLs carry feed tokens —
 # possession of a published-calendar link *is* read access — so it is secret material and
 # lives in Vault rather than in a ConfigMap the way a non-secret feed map would.
 #
@@ -25,12 +31,13 @@ usage() {
   cat <<EOF
 Usage: ${0##*/} [--env prod|dev] [--sync] [--show]
 
-Opens the built-in calendar list from Vault in \$EDITOR, validates it, and patches it back.
+Opens the additional built-in calendars from Vault in \$EDITOR, validates them, and patches
+them back. The bridge's own calendars are not in here — see HUTBOT_CALENDAR_BRIDGE_URL.
 
 Options:
   --env prod|dev  Which release's secret to edit: "hutbot" (default) or "hutbot-dev".
   --sync          Afterwards run scripts/sync-secret.sh --restart for that environment.
-  --show          Print the current list and exit — it contains the feed tokens.
+  --show          Print the current registry and exit — it contains the feed tokens.
   -h, --help      Show this help.
 
 Environment overrides: VAULT_MOUNT (${VAULT_MOUNT}), VAULT_PATH, EDITOR.

@@ -59,6 +59,10 @@ releases:
       - calendar:
           ttlSeconds: {{ env "HUTBOT_CALENDAR_TTL" | default "" | quote }}
           lookbackDays: {{ env "HUTBOT_CALENDAR_LOOKBACK_DAYS" | default "" | quote }}
+          # Minutes between reads of the calendar bridge's listing. The listing URL itself
+          # carries a token and is a Vault field (HUTBOT_CALENDAR_BRIDGE_URL), never a value
+          # passed through here.
+          bridgeRefreshMinutes: {{ env "HUTBOT_CALENDAR_BRIDGE_REFRESH" | default "" | quote }}
 {{- if env "HUTBOT_CALENDAR_ALLOWED_HOSTS" }}
       # Feed hosts the bot may fetch despite their internal address. Keep in sync with
       # NETWORKPOLICY_RULES and HOST_ALIASES: all three are needed for an internal feed.

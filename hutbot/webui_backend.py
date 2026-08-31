@@ -555,7 +555,7 @@ def ui_meta() -> dict:
         # Name and title only, spelled out rather than handed over as the namedtuple: this
         # dict is JSON-dumped verbatim, and a BuiltinCalendar would serialize as a
         # three-element array *including the URL* — every feed token, to every viewer.
-        'calendars': [{'name': calendar.name, 'title': calendar.title}
+        'calendars': [{'name': calendar.name, 'title': calendar.display_title}
                       for calendar in sorted(state.builtin_calendars, key=lambda c: c.name)],
         'template_variables': sorted(SUPPORTED_TEMPLATE_VARIABLES),
         # Which variables the editor may offer a moment and an offset for.

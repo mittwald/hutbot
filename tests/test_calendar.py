@@ -2100,6 +2100,318 @@ def test_the_missing_builtin_placeholder_counts_as_empty_for_a_condition():
     assert UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER in hutbot.constants.UNKNOWN_PLACEHOLDERS
 
 
+# ----- the calendar bridge -----
+
+# The listing endpoint as a deployment writes it: a path the calendars hang off, and a token in
+# the query string. BRIDGETOKEN is the marker a leak test looks for.
+BRIDGE_URL = "https://bridge.example.com/calendars/?token=BRIDGETOKEN"
+BRIDGE_ICS_URL = "https://bridge.example.com/calendars/{name}.ics?token=BRIDGETOKEN"
+
+
+def _bridge_listing(*names) -> str:
+    return json.dumps({"feeds": list(names)})
+
+
+def _bridge_ics(title: str = "") -> str:
+    """The smallest document `fetch_calendar` accepts, named or anonymous."""
+    return "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0",
+        *([f"X-WR-CALNAME:{title}"] if title else []),
+        "END:VCALENDAR", "",
+    ])
+
+
+class _MapSession:
+    """A fake transport keyed by URL rather than by call order.
+
+    The title fetches run concurrently, so which one asks first is not fixed — an
+    order-indexed `_FakeSession` would answer the wrong document half the time.
+    """
+
+    def __init__(self, pages, requests):
+        self._pages = pages
+        self.requests = requests
+
+    def get(self, url, **kwargs):
+        self.requests.append(url)
+        page = self._pages.get(url)
+        return page if page is not None else _FakeResponse(status=404, text="")
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+@contextlib.contextmanager
+def _patch_bridge_http(pages, requests):
+    """Fake the transport for the listing and every ICS beside it, and skip real DNS."""
+    with patch('hutbot.calendarfeed.aiohttp.ClientSession',
+               lambda *a, **k: _MapSession(pages, requests)), \
+         patch('hutbot.calendarfeed._resolve_public_host', new=AsyncMock(return_value="")):
+        yield
+
+
+def _bridge_pages(listing, titles=None, listing_status=200):
+    """The documents a refresh reads: the listing, plus one ICS per calendar in `titles`."""
+    pages = {BRIDGE_URL: _FakeResponse(status=listing_status, text=listing)}
+    for name, title in (titles or {}).items():
+        pages[BRIDGE_ICS_URL.format(name=name)] = _FakeResponse(text=_bridge_ics(title))
+    return pages
+
+
+async def _refresh_bridge(pages, requests=None):
+    requests = requests if requests is not None else []
+    with _patch_bridge_http(pages, requests):
+        await hutbot.calendarfeed.refresh_bridge_calendars()
+    return requests
+
+
+def test_the_listing_url_gains_the_trailing_slash_its_names_hang_off(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', "https://bridge.example.com/calendars?token=BRIDGETOKEN")
+    assert hutbot.calendarfeed.calendar_bridge_listing_url() == BRIDGE_URL
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    assert hutbot.calendarfeed.calendar_bridge_listing_url() == BRIDGE_URL
+
+
+def test_the_listing_url_is_empty_when_no_bridge_is_configured(monkeypatch):
+    monkeypatch.delenv('HUTBOT_CALENDAR_BRIDGE_URL', raising=False)
+    assert hutbot.calendarfeed.calendar_bridge_listing_url() == ""
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', "   ")
+    assert hutbot.calendarfeed.calendar_bridge_listing_url() == ""
+
+
+def test_a_bridge_url_that_is_not_usable_is_ignored_without_echoing_its_token(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', "http://bridge.example.com/calendars/?token=BRIDGETOKEN")
+    with patch('hutbot.calendarfeed.log_error') as log_error:
+        assert hutbot.calendarfeed.calendar_bridge_listing_url() == ""
+    logged = " ".join(str(arg) for call in log_error.call_args_list for arg in call.args)
+    assert "BRIDGETOKEN" not in logged and "HUTBOT_CALENDAR_BRIDGE_URL" in logged
+
+
+def test_a_listing_url_without_a_token_is_used_but_reported(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', "https://bridge.example.com/calendars/")
+    with patch('hutbot.calendarfeed.log_warning') as log_warning:
+        assert hutbot.calendarfeed.calendar_bridge_listing_url() == "https://bridge.example.com/calendars/"
+    assert log_warning.called
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, 60), ("", 60), ("  ", 60), ("15", 15), (" 15 ", 15), ("0", 0), ("-5", 60), ("hourly", 60),
+])
+def test_the_refresh_interval_falls_back_to_the_default(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv('HUTBOT_CALENDAR_BRIDGE_REFRESH', raising=False)
+    else:
+        monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_REFRESH', raw)
+    assert hutbot.calendarfeed.calendar_bridge_refresh_minutes() == expected
+
+
+def test_a_calendar_hangs_off_the_listing_path_with_the_same_token():
+    assert hutbot.calendarfeed.calendar_bridge_ics_url(BRIDGE_URL, "notfallhotline") == \
+        "https://bridge.example.com/calendars/notfallhotline.ics?token=BRIDGETOKEN"
+    # A fragment on the listing is not part of a calendar's URL.
+    assert hutbot.calendarfeed.calendar_bridge_ics_url(
+        "https://bridge.example.com/calendars/?token=T#frag", "rota") == \
+        "https://bridge.example.com/calendars/rota.ics?token=T"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ('{"feeds": ["rota", "holidays"]}', ["rota", "holidays"]),
+    ('{"feeds": ["Rota", "rota"]}', ["rota"]),
+    ('{"feeds": ["rota", "../secret", 42, null, "has space"]}', ["rota"]),
+    ('{"feeds": []}', []),
+    ('{"broken": ', None),
+    ('["rota"]', None),
+    ('{"calendars": ["rota"]}', None),
+])
+def test_a_listing_is_read_or_refused_as_a_whole(raw, expected):
+    with patch('hutbot.calendarfeed.log_warning'), patch('hutbot.calendarfeed.log_error'):
+        assert hutbot.calendarfeed.parse_calendar_bridge_listing(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_the_bridge_listing_becomes_the_builtin_calendars(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    pages = _bridge_pages(_bridge_listing("rota", "holidays"),
+                          {"rota": "Platform on-call rota", "holidays": "Company holidays"})
+    requests = await _refresh_bridge(pages)
+    assert [(c.name, c.title, c.bridge) for c in hutbot.state.builtin_calendars] == [
+        ("holidays", "Company holidays", True),
+        ("rota", "Platform on-call rota", True),
+    ]
+    # The listing plus one ICS per calendar, and nothing else.
+    assert sorted(requests) == sorted([BRIDGE_URL,
+                                       BRIDGE_ICS_URL.format(name="rota"),
+                                       BRIDGE_ICS_URL.format(name="holidays")])
+
+
+@pytest.mark.asyncio
+async def test_a_builtin_from_the_bridge_resolves_to_the_url_beside_the_listing(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    await _refresh_bridge(_bridge_pages(_bridge_listing("rota"), {"rota": "Platform on-call rota"}))
+    feed = resolve_calendar_feed({"calendar_builtin": "rota"})
+    assert feed.url == BRIDGE_ICS_URL.format(name="rota")
+    assert describe_calendar_feed(feed) == "Platform on-call rota"
+
+
+@pytest.mark.asyncio
+async def test_a_calendar_without_a_title_of_its_own_is_shown_by_name(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    await _refresh_bridge(_bridge_pages(_bridge_listing("rota"), {"rota": ""}))
+    calendar = lookup_builtin_calendar("rota")
+    assert calendar.title == "" and calendar.display_title == "rota"
+    assert describe_calendar_feed(resolve_calendar_feed({"calendar_builtin": "rota"})) == "rota"
+
+
+@pytest.mark.asyncio
+async def test_a_title_is_read_once_and_kept_across_refreshes(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    pages = _bridge_pages(_bridge_listing("rota"), {"rota": "Platform on-call rota"})
+    await _refresh_bridge(pages)
+    # The parsed-calendar cache expires; the title must not go with it.
+    hutbot.state._calendar_cache.clear()
+    requests = await _refresh_bridge(pages)
+    assert requests == [BRIDGE_URL]
+    assert lookup_builtin_calendar("rota").title == "Platform on-call rota"
+
+
+@pytest.mark.asyncio
+async def test_a_bridge_that_cannot_be_read_keeps_the_calendars_from_the_last_listing(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    await _refresh_bridge(_bridge_pages(_bridge_listing("rota"), {"rota": "Platform on-call rota"}))
+    with patch('hutbot.calendarfeed.log_warning') as log_warning, \
+         patch('hutbot.calendarfeed.log_error'):
+        await _refresh_bridge(_bridge_pages("", listing_status=503))
+    assert builtin_calendar_names() == ["rota"]
+    assert log_warning.called
+
+
+@pytest.mark.asyncio
+async def test_a_calendar_the_bridge_stops_serving_goes_away(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    await _refresh_bridge(_bridge_pages(_bridge_listing("rota", "holidays"),
+                                        {"rota": "Rota", "holidays": "Holidays"}))
+    # An empty listing is an answer, not a failure: it really serves nothing now.
+    await _refresh_bridge(_bridge_pages(_bridge_listing()))
+    assert builtin_calendar_names() == []
+
+
+@pytest.mark.asyncio
+async def test_the_registry_adds_to_what_the_bridge_serves(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    monkeypatch.setenv('HUTBOT_BUILTIN_CALENDARS', json.dumps([
+        {"name": "extra", "title": "Behind another bridge", "url": "https://cal.example.com/OTHER/extra.ics"},
+    ]))
+    load_builtin_calendars()
+    await _refresh_bridge(_bridge_pages(_bridge_listing("rota"), {"rota": "Rota"}))
+    assert builtin_calendar_names() == ["extra", "rota"]
+    assert lookup_builtin_calendar("extra").bridge is False
+    assert lookup_builtin_calendar("rota").bridge is True
+
+
+@pytest.mark.asyncio
+async def test_a_configured_calendar_overrides_the_bridge_and_is_never_fetched_for_a_title(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    monkeypatch.setenv('HUTBOT_BUILTIN_CALENDARS', json.dumps([
+        {"name": "rota", "title": "The curated one", "url": "https://cal.example.com/OTHER/rota.ics"},
+    ]))
+    load_builtin_calendars()
+    requests = await _refresh_bridge(_bridge_pages(_bridge_listing("rota"), {"rota": "Whatever the bridge says"}))
+    calendar = lookup_builtin_calendar("rota")
+    assert calendar.title == "The curated one" and calendar.bridge is False
+    assert calendar.url == "https://cal.example.com/OTHER/rota.ics"
+    # Only the listing: the overridden name's document is never read.
+    assert requests == [BRIDGE_URL]
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_never_logs_the_bridge_token(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    with patch('hutbot.calendarfeed.log') as log_, \
+         patch('hutbot.calendarfeed.log_warning') as log_warning, \
+         patch('hutbot.calendarfeed.log_error') as log_error:
+        await _refresh_bridge(_bridge_pages(_bridge_listing("rota"), {"rota": "Rota"}))
+        await _refresh_bridge(_bridge_pages("", listing_status=503))
+    logged = " ".join(str(arg) for mock in (log_, log_warning, log_error)
+                      for call in mock.call_args_list for arg in call.args)
+    assert "BRIDGETOKEN" not in logged
+    assert "Calendar bridge serves: rota." in logged
+
+
+@pytest.mark.asyncio
+async def test_a_roster_that_does_not_change_is_logged_once(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    pages = _bridge_pages(_bridge_listing("rota"), {"rota": "Rota"})
+    with patch('hutbot.calendarfeed.log') as log_:
+        await _refresh_bridge(pages)
+        await _refresh_bridge(pages)
+    assert [call.args[0] for call in log_.call_args_list] == ["Calendar bridge serves: rota."]
+
+
+@pytest.mark.asyncio
+async def test_removing_the_bridge_empties_its_half_of_the_list(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    monkeypatch.setenv('HUTBOT_BUILTIN_CALENDARS', json.dumps([
+        {"name": "extra", "title": "Behind another bridge", "url": "https://cal.example.com/OTHER/extra.ics"},
+    ]))
+    load_builtin_calendars()
+    await _refresh_bridge(_bridge_pages(_bridge_listing("rota"), {"rota": "Rota"}))
+    monkeypatch.delenv('HUTBOT_CALENDAR_BRIDGE_URL')
+    await _refresh_bridge({})
+    assert builtin_calendar_names() == ["extra"]
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_loop_returns_at_once_without_a_bridge(monkeypatch):
+    monkeypatch.delenv('HUTBOT_CALENDAR_BRIDGE_URL', raising=False)
+    with patch('hutbot.calendarfeed.refresh_bridge_calendars', new=AsyncMock()) as refresh:
+        await hutbot.calendarfeed.run_bridge_refresh_loop()
+    refresh.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_loop_reads_the_listing_once_at_zero_minutes(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_REFRESH', '0')
+    with patch('hutbot.calendarfeed.refresh_bridge_calendars', new=AsyncMock()) as refresh, \
+         patch('hutbot.calendarfeed.asyncio.sleep', new=AsyncMock()) as sleep:
+        await hutbot.calendarfeed.run_bridge_refresh_loop()
+    assert refresh.await_count == 1
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_does_not_end_the_loop(monkeypatch):
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_URL', BRIDGE_URL)
+    monkeypatch.setenv('HUTBOT_CALENDAR_BRIDGE_REFRESH', '15')
+    turns = []
+
+    async def refresh():
+        turns.append(len(turns))
+        if len(turns) == 1:
+            raise RuntimeError("bridge on fire")
+        # Second turn: stop the loop the way the interval would.
+        os.environ['HUTBOT_CALENDAR_BRIDGE_REFRESH'] = '0'
+
+    with patch('hutbot.calendarfeed.refresh_bridge_calendars', new=refresh), \
+         patch('hutbot.calendarfeed.asyncio.sleep', new=AsyncMock()), \
+         patch('hutbot.calendarfeed.log_error') as log_error:
+        await hutbot.calendarfeed.run_bridge_refresh_loop()
+    assert len(turns) == 2 and log_error.called
+
+
+def test_state_reset_clears_the_bridge_calendars():
+    hutbot.state.bridge_calendars = list(BUILTIN_CALENDARS)
+    hutbot.state.configured_calendars = list(BUILTIN_CALENDARS)
+    hutbot.state.bridge_calendar_titles['rota'] = "Rota"
+    hutbot.state._logged_bridge_roster = "rota"
+    hutbot.state.reset()
+    assert hutbot.state.bridge_calendars == [] and hutbot.state.configured_calendars == []
+    assert hutbot.state.bridge_calendar_titles == {} and hutbot.state._logged_bridge_roster is None
+
+
 # ----- built-in calendar commands -----
 
 @pytest.mark.asyncio
@@ -2118,6 +2430,21 @@ async def test_set_calendar_accepts_a_builtin_name(command):
     confirmation = send.call_args.args[3]
     assert "Platform on-call rota" in confirmation and "`rota`" in confirmation
     assert "SECRETTOKEN" not in confirmation and "cal.example.com" not in confirmation
+
+
+@pytest.mark.asyncio
+async def test_set_calendar_confirms_an_untitled_builtin_by_its_name():
+    """A bridge calendar can be set before its ICS has been read for a title."""
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User("U1", "dave", "Dave", "T")
+    untitled = [BuiltinCalendar("rota", "", "https://cal.example.com/SECRETTOKEN/rota.ics", True)]
+    with _patch_builtin_calendars(untitled), patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set calendar rota", channel, user)
+    assert channel.configs["default"]["calendar_builtin"] == "rota"
+    confirmation = send.call_args.args[3]
+    assert "*rota* (`rota`)" in confirmation and "SECRETTOKEN" not in confirmation
 
 
 @pytest.mark.asyncio
