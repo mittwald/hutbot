@@ -694,7 +694,7 @@ async def test_process_command_news_mentions_on_call_and_test_commands():
     with patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, "news", channel, user)
 
-    sent_message = mock_send_message.call_args.args[3]
+    sent_message = sent_messages(mock_send_message)
     assert "`/hutbot [config] on-call [schedule name]`" in sent_message
     assert "`/hutbot [config] test`" in sent_message
     assert "`@Hutbot [config] test <message>`" in sent_message

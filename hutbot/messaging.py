@@ -310,31 +310,49 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
     name = state.bot_name
     version = state.version
     mention = f"@{state.bot_user_name}"
-    update_text = (
-        f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what's :new::\n\n"
+    intro = f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what's :new::"
+    entries = [
         "> :robot_face: *Triggers, actions & buttons*\n>\n"
-        f"> Rules can now run on a `cron` schedule, DM a user or group, post to a channel, and carry interactive buttons (with an auto-press default + timeout escalation). See `{command} help`.\n>\n"
-        "> :calendar: *OpsGenie date/time template variables and defaults*\n>\n"
-        f"> OpsGenie templates can now include current and next on-call start/end dates, times, and datetimes. Use `{command} [config] set datetime-format \"<date>\" \"<time>\" [<timezone> <locale>]` to set the defaults.\n>\n"
-        "> :date: *Calendar feeds*\n>\n"
-        f"> Point a config at an ICS calendar URL — or one of the instance's built-in calendars — with `{command} [config] set calendar <name|url>`, then read it from any message: `{{{{calendar_summary}}}}` is the event running now, `{{{{calendar_summary(offset=next)}}}}` the one after it, and `{{{{calendar_summary(at=\"+1d\")}}}}` what is on this time tomorrow. `{command} [config] show calendar` prints the event before, the one now and the next.\n>\n"
+        f"> A rule no longer has to wait for a message: `{command} [config] set trigger cron \"0 9 * * 1-5\"` "
+        f"fires it on a schedule, `{command} [config] set trigger manual` only on request. What it then does "
+        f"is up to `{command} [config] set action`: reply here, `post-channel <#channel>`, `dm-user <@user>` "
+        f"or `group-dm <@usergroup>`. Add interactive buttons with `{command} [config] add button \"<label>\" "
+        "<ack|delay|config>`, and have one of them press itself if nobody does: "
+        f"`{command} [config] set escalation <minutes> button \"<label>\"`.",
+
         "> :traffic_light: *Conditions on any variable*\n>\n"
-        f"> A rule can now be gated on any `{{{{variable}}}}`: `{command} [config] add condition <var> <operator> [value]`, with `empty`, `equals`, `contains`, `starts-with`, `ends-with`, `regex` and their `not-` forms. Chain several and pick `{command} [config] set condition-mode <all|any>`. Conditions apply to every trigger, and `{command} [config] test` shows which ones pass.\n>\n"
-        "> :pencil: *Customize reply messages with `{{placeholders}}`*\n>\n"
-        "> That means " + name + " can include details like the `{{user}}`, `{{team}}`, `{{channel}}` or `{{wait_minutes}}`, or even mention the person who is currently on-call `{{opsgenie_current_user}}` in the reply message :exploding_head:.\n>\n"
-        "> :sparkles: Just configure an Opsgenie schedule and you are good to go.\n>\n"
-        "> :list-item: *List available Opsgenie schedules*\n>\n"
-        "> :telephone_receiver: *Print the current on-call user*\n"
-        f"> Use `{command} [config] on-call [schedule name]` to get the current OpsGenie on-call user as a Slack mention.\n>\n"
-        "> :test_tube: *Preview a whole rule*\n"
-        f"> `{command} [config] test` now renders the message *and* reports where it would go (with the target resolved to real people), when the rule fires next, which variables each field reads, and every calendar event behind those values. Mention me with `{mention} [config] test <message>` to preview it against a message of your own.\n>\n"
-        f"> :bug: *{name} now ONLY cancels replying, when the _expected_ team(s) have already replied* :lightbulb:\n>\n"
-        "> Issue was:\n>\n"
-        "> 1. Team *A* sends a message intended for Team *B*\n"
-        "> 2. Someone else from Team *A* adds additional information\n"
-        f"> 3. {name} cancels the reply and does NOT remind Team *B* anymore :fail:\n"
-    )
-    await send_message(app, channel, user, update_text, thread_ts)
+        f"> A rule can be gated on any `{{{{variable}}}}`: `{command} [config] add condition <var> <operator> "
+        "[value]`, with `empty`, `equals`, `contains`, `starts-with`, `ends-with`, `regex` and their `not-` "
+        f"forms. Chain several and pick `{command} [config] set condition-mode <all|any>`. Conditions apply to "
+        f"every trigger, and `{command} [config] test` shows which ones pass.",
+
+        "> :date: *Use Calendars*\n>\n"
+        f"> Point a config at a calendar via an URL or by using the built-in calendars, which "
+        f"`{command} list calendars` names — with `{command} [config] set calendar <name|url>`, then read it "
+        "from any message: `{{calendar_summary}}` is the event running now, `{{calendar_summary(offset=next)}}` "
+        "the one after it, and `{{calendar_summary(at=\"+1d\")}}` what is on this time tomorrow. Organizer and "
+        "attendees come with it — `{{calendar_organizer_user}}` and `{{calendar_attendee_users}}` are the "
+        "ones whose email address belongs to somebody here, as Slack mentions, so a rule can DM whoever is "
+        "on the event; `{{calendar_attendees(nth=2)}}` picks a single one out of a list. "
+        f"`{command} [config] show calendar` prints the event before, the one now and the next.",
+
+        "> :test_tube: *Preview a whole rule, or run it now*\n>\n"
+        f"> `{command} [config] test` renders the message *and* reports where it would go (with the target "
+        "resolved to real people), when the rule fires next, which variables each field reads, and every "
+        f"calendar event behind those values. Mention me with `{mention} [config] test <message>` to preview it "
+        f"against a message of your own, or use `{command} [config] run` to let it act for real, right now.",
+
+        "> :books: *Look things up*\n>\n"
+        f"> `{command} help variables` lists every `{{{{variable}}}}` a message or a condition can read, and "
+        f"every condition operator. `{command} list opsgenie-schedules`, `{command} list calendars` and "
+        f"`{command} list teams` name what this instance offers, and `{command} [config] on-call [schedule "
+        "name]` prints the current OpsGenie on-call user as a Slack mention.",
+    # One entry is never split, and entries stay in one quote block per message: a blank line
+    # between them would end the quote, so they are joined by an empty quoted line.
+    chunks = pack_message_chunks(entries, separator="\n>\n", limit=SLACK_MESSAGE_CHARACTER_LIMIT - 200)
+    messages = [f"{intro}\n\n{chunks[0]}", *chunks[1:]]
+    for index, message in enumerate(messages):
+        await send_message(app, channel, user, message, thread_ts, footer=index == len(messages) - 1)
 
 
 def tokenize_command(command: str) -> list[str]:
