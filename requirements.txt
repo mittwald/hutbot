@@ -4,3 +4,6 @@ asyncio
 aiohttp
 aiofiles
 unidecode
+croniter
+icalendar~=7.2
+recurring-ical-events~=3.8

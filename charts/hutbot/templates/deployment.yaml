@@ -1,3 +1,18 @@
+{{- $imageTag := required "image.tag must be set to a specific image tag (e.g. v1.0.9); floating tags like 'latest' and 'main' are not allowed" .Values.image.tag -}}
+{{- if has (lower (toString $imageTag)) (list "latest" "main") -}}
+{{- fail "image.tag must be set to a specific image tag (e.g. v1.0.9); floating tags like 'latest' and 'main' are not allowed" -}}
+{{- end }}
+{{- if and (include "hutbot.mountBuiltinCalendars" .) .Values.persistence.enabled }}
+{{- if eq (trimSuffix "/" (clean .Values.builtinCalendars.mountPath)) (trimSuffix "/" (clean .Values.persistence.mountPath)) }}
+{{- fail "builtinCalendars.mountPath must differ from persistence.mountPath; mounting the Secret there would hide the state volume" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.stateImport.enabled (not .Values.persistence.enabled) }}
+{{- fail "stateImport.enabled requires persistence.enabled: the import seeds the state volume, and without one there is nowhere to import to" }}
+{{- end }}
+{{- if and .Values.stateImport.enabled (eq (trimSuffix "/" (clean .Values.persistence.mountPath)) "/state-import") }}
+{{- fail "persistence.mountPath must not be /state-import; the init container mounts the import Secret there, and Kubernetes rejects two mounts on one path" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,6 +21,12 @@ metadata:
     app: {{ .Release.Name }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  # Recreate, not RollingUpdate: hutbot is a singleton on a ReadWriteOnce volume, so a rolling
+  # restart would briefly run two bots — two writers on bot.json, two schedulers and two
+  # OpsGenie heartbeats. The trade-off is a few seconds of gap per restart, which is why
+  # sync-secret.sh and the deploy scripts check the Secret before they touch anything.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: {{ .Release.Name }}
@@ -18,30 +39,220 @@ spec:
       hostAliases:
 {{ toYaml .Values.hostAliases | indent 8 }}
       {{- end }}
+      {{- if .Values.stateImport.enabled }}
+      # One-time seeding of the state volume from the out-of-band state-import Secret, for
+      # starting this instance with the state of another one. Copy-if-missing on purpose: a
+      # file already on the volume wins, so a flag left on cannot overwrite live state and
+      # re-running the import is harmless. The bot's own image, so no extra image needs to
+      # be pulled or allowed.
+      initContainers:
+        - name: state-import
+          image: "{{ .Values.image.repository }}:{{ $imageTag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            # `*` skips the volume's dot-prefixed bookkeeping (`..data`); an empty Secret
+            # leaves the glob unexpanded, which `-e` filters out. The chmod is what makes the
+            # copy writable for the bot — the Secret projects files read-only. The final
+            # check is the fail-closed part: an import that ends without a bot.json (an
+            # empty or mis-built Secret on a fresh volume) must hold the pod here, because
+            # the bot itself treats a missing configuration as empty defaults and would
+            # happily start with nothing.
+            - |
+              for source in /state-import/*; do
+                [ -e "$source" ] || continue
+                file="$(basename "$source")"
+                target="{{ .Values.persistence.mountPath }}/$file"
+                if [ -e "$target" ]; then
+                  echo "state-import: $file is already on the state volume; keeping it"
+                else
+                  cp "$source" "$target"
+                  chmod 600 "$target"
+                  echo "state-import: imported $file"
+                fi
+              done
+              if [ ! -f "{{ .Values.persistence.mountPath }}/bot.json" ]; then
+                echo "state-import: bot.json is neither in the import Secret nor on the state volume" >&2
+                echo "state-import: refusing to let the bot start with an empty configuration" >&2
+                exit 1
+              fi
+          volumeMounts:
+            - name: config
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: state-import
+              mountPath: /state-import
+              readOnly: true
+      {{- end }}
       containers:
         - name: {{ .Release.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ $imageTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          envFrom:
-            - secretRef:
-                name: {{ .Release.Name }}-secret
-          {{- if .Values.persistence.enabled }}
+          {{- if .Values.ui.enabled }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ui.port }}
+          {{- end }}
           env:
+            # Synced from Vault out of band; the chart renders references, never values.
+            # Keep these individual so HUTBOT_BUILTIN_CALENDARS is not also injected by
+            # envFrom: that value can exceed execve's per-variable size limit and exists only
+            # in the Secret-backed file mounted below.
+            - name: SLACK_APP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hutbot.secretName" . }}
+                  key: SLACK_APP_TOKEN
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hutbot.secretName" . }}
+                  key: SLACK_BOT_TOKEN
+            # HUTBOT_CALENDAR_BRIDGE_URL is in here rather than among the values below because
+            # its query string carries the bridge's token: the listing it names, and every
+            # calendar hanging off it, is readable by whoever holds that URL.
+            {{- range $key := list "OPSGENIE_TOKEN" "OPSGENIE_HEARTBEAT_NAME" "EMPLOYEE_LIST_USERNAME" "EMPLOYEE_LIST_PASSWORD" "EMPLOYEE_LIST_MAPPINGS" "HUTBOT_CALENDAR_BRIDGE_URL" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hutbot.secretName" $ }}
+                  key: {{ $key }}
+                  optional: true
+            {{- end }}
+            # What `help` / `news` report as the running version.
+            - name: HUTBOT_VERSION
+              value: {{ $imageTag | quote }}
+            {{- if .Values.time.timezone }}
+            - name: TZ
+              value: {{ .Values.time.timezone | quote }}
+            {{- end }}
+            {{- if .Values.time.locale }}
+            - name: HUTBOT_DEFAULT_DATETIME_LOCALE
+              value: {{ .Values.time.locale | quote }}
+            {{- end }}
+            {{- if .Values.slack.slashCommand }}
+            - name: HUTBOT_SLASH_COMMAND
+              value: {{ .Values.slack.slashCommand | quote }}
+            {{- end }}
+            {{- if .Values.slack.botName }}
+            - name: HUTBOT_BOT_NAME
+              value: {{ .Values.slack.botName | quote }}
+            {{- end }}
+            {{- if .Values.persistence.enabled }}
             - name: HUTBOT_CONFIG_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "bot.json" }}
             - name: HUTBOT_EMPLOYEE_CACHE_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "employees.json" }}
+            # Hand-placed beside the cache, never written by the bot: records for people the
+            # employee API does not return. The cache above is rewritten on every successful
+            # fetch, so the fallback needs a file of its own.
+            - name: HUTBOT_EMPLOYEE_FALLBACK_FILE
+              value: {{ printf "%s/%s" .Values.persistence.mountPath "employees-fallback.json" }}
+            - name: HUTBOT_SCHEDULED_REPLIES_CACHE_FILE
+              value: {{ printf "%s/%s" .Values.persistence.mountPath "scheduled_replies.json" }}
+            - name: HUTBOT_BUTTON_CACHE_FILE
+              value: {{ printf "%s/%s" .Values.persistence.mountPath "button_states.json" }}
+            {{- end }}
+            {{- if include "hutbot.mountBuiltinCalendars" . }}
+            # The built-in calendar list is a multi-line JSON document whose URLs carry feed
+            # tokens. Read from a file rather than the environment: no per-variable exec
+            # limit to run into, the kubelet refreshes a mounted Secret in place, and local
+            # runs can point at a file too — `.env` cannot hold a multi-line value.
+            - name: HUTBOT_BUILTIN_CALENDARS_FILE
+              value: {{ include "hutbot.builtinCalendarsFile" . | quote }}
+            {{- end }}
+            {{- with .Values.calendar.allowedHosts }}
+            # Feed hosts exempt from the internal-address refusal. Not secret, and set by
+            # whoever runs the instance rather than per channel, so it belongs in the chart
+            # rather than in the Secret.
+            - name: HUTBOT_CALENDAR_ALLOWED_HOSTS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" .Values.calendar.ttlSeconds)) (ne (printf "%v" .Values.calendar.ttlSeconds) "") }}
+            # `if` on an explicit emptiness test, not `with`: `0` is falsy to Go templates, and
+            # a zero TTL is a real setting — it disables the feed cache rather than asking for
+            # the default.
+            - name: HUTBOT_CALENDAR_TTL
+              value: {{ .Values.calendar.ttlSeconds | quote }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" .Values.calendar.bridgeRefreshMinutes)) (ne (printf "%v" .Values.calendar.bridgeRefreshMinutes) "") }}
+            # Minutes between reads of the calendar bridge's listing. Zero is a real setting here
+            # too: it reads the listing once at startup and never again.
+            - name: HUTBOT_CALENDAR_BRIDGE_REFRESH
+              value: {{ .Values.calendar.bridgeRefreshMinutes | quote }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" .Values.calendar.lookbackDays)) (ne (printf "%v" .Values.calendar.lookbackDays) "") }}
+            # How far back the `offset=prev` search goes; the ICS library has no `before()`.
+            # Zero is meaningful here too: it stops the backward search entirely.
+            - name: HUTBOT_CALENDAR_LOOKBACK_DAYS
+              value: {{ .Values.calendar.lookbackDays | quote }}
+            {{- end }}
+            {{- if .Values.ui.enabled }}
+            - name: HUTBOT_UI_ENABLED
+              value: "true"
+            - name: HUTBOT_UI_PORT
+              value: {{ .Values.ui.port | quote }}
+            - name: HUTBOT_UI_HOST
+              value: {{ .Values.ui.host | quote }}
+            - name: HUTBOT_UI_USER_HEADER
+              value: {{ .Values.ui.userHeader | quote }}
+            {{- end }}
+          {{- if or .Values.persistence.enabled (include "hutbot.mountBuiltinCalendars" .) }}
           volumeMounts:
+            {{- if .Values.persistence.enabled }}
             - name: config
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- if include "hutbot.mountBuiltinCalendars" . }}
+            - name: builtin-calendars
+              mountPath: {{ trimSuffix "/" (clean .Values.builtinCalendars.mountPath) | quote }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
+          {{- if .Values.ui.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.ui.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.ui.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
           {{- end }}
           {{- if .Values.resources }}
           resources:
             {{ toYaml .Values.resources | indent 12 }}
           {{- end }}
-      {{- if .Values.persistence.enabled }}
+      {{- if or .Values.persistence.enabled (include "hutbot.mountBuiltinCalendars" .) }}
       volumes:
+        {{- if .Values.persistence.enabled }}
         - name: config
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-pvc
+        {{- end }}
+        {{- if .Values.stateImport.enabled }}
+        # Deliberately not `optional`: with the import switched on, a missing or misnamed
+        # Secret must hold the pod at init rather than let the bot start with an empty state
+        # volume. Turn the flag off and deploy before deleting the Secret.
+        - name: state-import
+          secret:
+            secretName: {{ include "hutbot.stateImportSecretName" . }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if include "hutbot.mountBuiltinCalendars" . }}
+        # One key projected as one file. `optional: true` on purpose: an instance with no
+        # built-in calendars must still start. A missing file means the feature is unset.
+        - name: builtin-calendars
+          secret:
+            secretName: {{ include "hutbot.secretName" . }}
+            optional: true
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.builtinCalendars.secretKey | quote }}
+                path: {{ .Values.builtinCalendars.fileName | quote }}
+        {{- end }}
       {{- end }}

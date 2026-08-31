@@ -1,0 +1,11 @@
+# Deny by default. Keep this aligned with Dockerfile's explicit runtime copies so a future
+# broad COPY cannot publish .env files, bot state, employee data, or repository history.
+*
+!requirements.txt
+!employee_list.py
+!logutil.py
+!webui.py
+!hutbot/
+!hutbot/**
+!webui_static/
+!webui_static/**

@@ -4,23 +4,126 @@ replicaCount: 1
 
 image:
   repository: hutbot
-  tag: "latest"
-  pullPolicy: Always
+  # Must be set to a specific, immutable tag (e.g. v1.0.9). Rendering fails if empty.
+  # Floating tags (latest, main) are intentionally not used for deployments.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Kubernetes Secret holding every credential, managed out of band by scripts/sync-secret.sh
+# (sourced from Vault) and only read here. It must carry SLACK_APP_TOKEN and SLACK_BOT_TOKEN;
+# OPSGENIE_*, EMPLOYEE_LIST_* and HUTBOT_BUILTIN_CALENDARS are optional additions. Runtime
+# variables use individual key references; the potentially large calendar value is mounted
+# only as a file. Rendering fails while this is empty, on purpose: there is no fallback that
+# would template credentials back into the release.
+existingSecret: ""
+
+# The built-in ICS calendar feeds a channel can point at by name come from the calendar
+# bridge, which publishes the ones it serves at HUTBOT_CALENDAR_BRIDGE_URL — a Secret key,
+# since that URL carries a token. What follows is the registry for calendars offered *on top
+# of* those, and for overriding one the bridge serves: a JSON array of {"name","title","url"}
+# objects whose URLs are bearer capabilities too, so it lives in the Secret above and is
+# mounted as a file rather than only injected as a variable. Without the key the volume
+# projects nothing and the instance simply adds nothing to what the bridge serves.
+builtinCalendars:
+  mountFile: true
+  mountPath: /etc/hutbot
+  fileName: builtin-calendars.json
+  secretKey: HUTBOT_BUILTIN_CALENDARS
+
+calendar:
+  # Feed hosts that resolve to an internal address and are meant to be fetched anyway — an
+  # in-cluster ICS bridge, say. The bot refuses internal addresses on its own and cannot tell
+  # a legitimate one from a target somebody talked it into; each entry here vouches for one
+  # host name (exact match, https still required), not for a range. Every entry also needs a
+  # networkPolicy rule below on its port, or the request is dropped on the way out.
+  allowedHosts: []
+  # How long a fetched feed stays usable, in seconds. Empty = the bot's default (300); `0`
+  # disables the cache, which is a setting rather than a default. Trades freshness against a
+  # host nobody here controls, and conditions can make the path hot.
+  ttlSeconds: ""
+  # How often the calendar bridge's listing is read again, in minutes. Empty = the bot's
+  # default (60); `0` reads the listing once at startup and never again. The listing URL
+  # itself is a Secret key (HUTBOT_CALENDAR_BRIDGE_URL), not a value here, because it carries
+  # the bridge's token.
+  bridgeRefreshMinutes: ""
+  # How far back `{{calendar_summary(offset=prev)}}` looks for the previous event, in days.
+  # Empty = the bot's default (90), `0` stops the backward search entirely. Widen it for a
+  # calendar whose events are months apart; the window is searched on every such lookup, so it
+  # costs recurrence expansion.
+  lookbackDays: ""
 
 slack:
-  appToken: ""
-  botToken: ""
+  # Slash command this instance listens on. Must match the command configured in
+  # the Slack app backing these tokens. Empty = the bot's default (/hutbot).
+  slashCommand: ""
+  # Name the bot calls itself in user-facing text, e.g. "Hutbot (DEV)".
+  # Empty = the bot's default ("Hutbot").
+  botName: ""
 
-opsgenie:
-  token: ""
-  heartbeatName: ""
+# Timezone and date/time locale the whole instance runs in.
+time:
+  # IANA zone name forced into the container as TZ, e.g. "Europe/Berlin". This is
+  # the server local timezone: configs that set no timezone of their own format
+  # date/times in it and have their work days/work hours counted in it. Empty =
+  # the image default, UTC.
+  timezone: ""
+  # Fallback date/time locale for configs that set none, e.g. "de_DE". Only `de`
+  # has translations; every other locale renders English day/month names.
+  locale: ""
 
-employeeList:
-  username: ""
-  password: ""
-  mappings: ""
+# Egress NetworkPolicy for the pod. A policy naming Egress denies everything it does not
+# list, so DNS and public destinations are part of it rather than assumed.
+networkPolicy:
+  enabled: true
+  # Cluster DNS on 53/UDP and 53/TCP, to any destination (the resolver's service address is
+  # inside the cluster range, which publicEgress excludes).
+  allowDNS: true
+  publicEgress:
+    # Everything outside private, shared and link-local ranges, on any port: Slack Socket Mode
+    # and Web API, and every public calendar feed — including the built-in ones, which are
+    # fetched from inside the cluster like any other.
+    enabled: true
+    # Private, shared and link-local ranges carved out of 0.0.0.0/0, so an internal destination
+    # stays a matter of `rules` below and nothing reaches an internal service by accident.
+    except:
+      - 10.0.0.0/8
+      - 100.64.0.0/10
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16
+  # Internal destinations, one entry per port: {port, cidrs: [], protocol}. Helmfile builds
+  # this from NETWORKPOLICY_RULES. Keep in sync with hostAliases — an aliased address that
+  # has no rule here resolves and is then dropped on the way out.
+  rules: []
+  # Additional egress rules, rendered verbatim (e.g. a namespaceSelector peer).
+  extraEgress: []
 
 resources: {}
+
+# Web UI served by the bot over HTTP
+ui:
+  enabled: false
+  port: 8080
+  host: "0.0.0.0"
+  # Trusted reverse-proxy header carrying the authenticated user's email.
+  userHeader: "X-Forwarded-Email"
+  # NetworkPolicy ingress sources allowed to reach the UI port. Each entry is a
+  # NetworkPolicy peer (e.g. namespaceSelector / podSelector / ipBlock) and is
+  # rendered verbatim into the ingress rule's `from:`. STRONGLY recommended: the UI
+  # trusts a proxy-set email header, so any pod that can reach the port can spoof it.
+  # Empty list = allow all sources (back-compat, insecure). Example:
+  #   allowedIngress:
+  #     - namespaceSelector:
+  #         matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+  allowedIngress: []
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tls: []   # list of {secretName, hosts: []}
 
 # Persistence configuration for storing the bot config file on a PersistentVolumeClaim
 persistence:
@@ -30,3 +133,20 @@ persistence:
   size: 100Mi
   storageClass: ""
   mountPath: "/data"
+
+# One-time state import, for starting a fresh instance with the state of an existing one —
+# moving to another cluster, say. When enabled, an init container seeds the state volume from
+# an out-of-band Secret before the bot starts: every key of that Secret becomes one file on
+# the volume (bot.json, scheduled_replies.json, button_states.json, employees.json, ...), and
+# a file already on the volume is never overwritten — the import happens exactly once per
+# file, and a flag left on cannot clobber live state. The Secret is created by
+# scripts/import-state.sh, never by the chart. It is deliberately not `optional`: with the
+# import switched on, a missing or misnamed Secret holds the pod at init rather than letting
+# the bot start with an empty state volume — and the init container refuses in the same way
+# when the import ends without a bot.json on the volume, because the bot treats a missing
+# configuration as empty defaults. So: turn the flag off and deploy *before* deleting the
+# Secret.
+stateImport:
+  enabled: false
+  # Name of the Secret holding the state files. Empty = <release>-state-import.
+  secretName: ""

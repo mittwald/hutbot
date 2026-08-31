@@ -4,6 +4,16 @@ __pycache__
 hutmensch.json
 bot.json
 employees.json
+employees-fallback.json
 .env
 .codex
 scheduled_replies.json
+button_states.json
+.env-dev
+
+# Editor swap files
+*.swp
+*.swo
+
+# One-time state migration exports (scripts/import-state.sh)
+/state-export/

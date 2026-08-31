@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hutbot · Watch Desk</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M6 23h20v3H6z' fill='%230e7c7b'/%3E%3Cpath d='M11 23c0-5 1-12 5-12s5 7 5 12' fill='none' stroke='%230e7c7b' stroke-width='2.4'/%3E%3Ccircle cx='16' cy='13' r='1.7' fill='%23c97a14'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="app" id="app" aria-busy="true">
+  <aside class="rail" id="rail">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <path d="M6 23h20v3H6z"/>
+        <path d="M11 23c0-5 1-12 5-12s5 7 5 12" fill="none" stroke-width="2.4"/>
+        <circle class="brand-eye" cx="16" cy="13" r="1.7"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">hutbot</span>
+        <span class="brand-sub">watch desk</span>
+      </div>
+    </div>
+
+    <div class="identity" id="identity" hidden>
+      <span class="identity-avatar" id="identity-avatar" aria-hidden="true"></span>
+      <span class="identity-body">
+        <span class="identity-name" id="identity-name"></span>
+        <span class="identity-meta" id="identity-meta"></span>
+      </span>
+      <span class="on-watch" title="On watch">on watch</span>
+    </div>
+
+    <nav class="channels" id="channels" aria-label="Your channels"></nav>
+  </aside>
+
+  <main class="stage" id="stage">
+    <div class="stage-loading" id="stage-loading">Loading your watch desk…</div>
+  </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<script src="/static/app.js" defer></script>
+</body>
+</html>

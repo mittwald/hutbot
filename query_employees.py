@@ -6,6 +6,7 @@ import json
 import sys
 
 from employee_list import (
+    EMPLOYEE_MAPPING_IGNORE,
     load_employee_mappings,
     load_employees,
     load_employees_from_disk,
@@ -20,6 +21,9 @@ from employee_list import (
 def invert_employee_mappings(mappings: dict[str, str]) -> dict[str, set[str]]:
     aliases_by_employee: dict[str, set[str]] = {}
     for slack_name, employee_name in mappings.items():
+        if employee_name == EMPLOYEE_MAPPING_IGNORE:
+            # Not an employee, just a user nobody wants warnings about.
+            continue
         aliases = aliases_by_employee.setdefault(employee_name, set())
         aliases.add(slack_name)
     return aliases_by_employee

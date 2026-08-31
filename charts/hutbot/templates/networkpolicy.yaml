@@ -1,6 +1,16 @@
-{{- $rules := .Values.networkPolicy.rules }}
-{{- $port := .Values.networkPolicy.port | int }}
-{{- $cidr := .Values.networkPolicy.cidr }}
+{{- $np := .Values.networkPolicy }}
+{{- if $np.enabled }}
+{{- range $rule := $np.rules }}
+{{- if not $rule.port }}
+{{- fail "every networkPolicy.rules entry needs a port" }}
+{{- end }}
+{{- if not $rule.cidrs }}
+{{- fail "every networkPolicy.rules entry needs at least one entry in cidrs" }}
+{{- end }}
+{{- end }}
+{{- if and (not $np.allowDNS) (not $np.publicEgress.enabled) (not $np.rules) (not $np.extraEgress) }}
+{{- fail "networkPolicy.enabled=true with no rules would deny all egress; allow DNS, allow public egress, or list rules — or set networkPolicy.enabled=false." }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -13,23 +23,59 @@ spec:
       app: {{ .Release.Name }}
   policyTypes:
   - Egress
-  egress:
-{{- if $rules }}
-{{- range $rule := $rules }}
+  {{- if .Values.ui.enabled }}
+  - Ingress
+  {{- end }}
+  {{- if .Values.ui.enabled }}
+  ingress:
   - ports:
-    - port: {{ $rule.port }}
+    - port: {{ .Values.ui.port }}
       protocol: TCP
-  - to:
-    {{- range $cidr := $rule.cidrs }}
-    - ipBlock:
-        cidr: "{{ $cidr }}"
+    {{- with .Values.ui.allowedIngress }}
+    from:
+      {{- toYaml . | nindent 6 }}
     {{- end }}
-{{- end }}
-{{- else }}
-  - ports:
-    - port: {{ $port }}
-      protocol: TCP
-  - to:
-    - ipBlock:
-        cidr: "{{ $cidr }}"
+  {{- end }}
+  # A policy naming Egress denies everything it does not list, and within one item `to` and
+  # `ports` are ANDed while the items themselves are ORed. So each rule pairs its ports with
+  # its destinations in the SAME item: emitting them as two items — as this template used to —
+  # means "this port to anywhere" plus "any port to this CIDR", which is far wider than
+  # intended and was the reason 443 stood open to the whole internet.
+  egress:
+    {{- if $np.allowDNS }}
+    # Cluster DNS, to any destination: the resolver's service address sits inside the cluster
+    # range, which publicEgress carves out. Hosts from .Values.hostAliases come out of
+    # /etc/hosts and never reach a resolver at all.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- range $rule := $np.rules }}
+    # An internal destination: routable, but deliberately not covered by publicEgress.
+    - to:
+        {{- range $cidr := $rule.cidrs }}
+        - ipBlock:
+            cidr: {{ $cidr | quote }}
+        {{- end }}
+      ports:
+        - port: {{ $rule.port }}
+          protocol: {{ $rule.protocol | default "TCP" }}
+    {{- end }}
+    {{- if $np.publicEgress.enabled }}
+    # Slack (Socket Mode and Web API) and every public calendar feed. No `ports`, so all
+    # outbound ports to public destinations are allowed — which is what the old two-item
+    # rendering granted by accident, kept here on purpose so no feed host needs an entry.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- with $np.publicEgress.except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+    {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}

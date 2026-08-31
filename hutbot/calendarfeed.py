@@ -1,0 +1,1466 @@
+"""Calendar integration: read an ICS feed from a URL, resolve the current/next event.
+
+Named `calendarfeed` rather than `calendar` so nothing in the package can shadow the
+standard library's `calendar` module (the same reason `datetimefmt` is not `datetime`).
+
+Layered like ``opsgenie``: pure parsers and selectors, a thin cached HTTP wrapper, one
+aggregator, and one template-variable builder. The pure half needs no network, so most of
+it is directly testable.
+"""
+
+import asyncio
+import datetime
+import ipaddress
+import itertools
+import json
+import os
+import re
+import time
+import urllib.parse
+from collections.abc import Sequence
+
+import aiohttp
+import icalendar
+import recurring_ical_events
+
+from employee_list import get_env_var
+from logutil import log, log_error, log_warning
+
+from . import conditionutil
+from . import datetimefmt
+from . import messaging
+from . import slackcache
+from . import state
+from .constants import (
+    CALENDAR_DATETIME_TEMPLATE_VARIABLES,
+    CALENDAR_EVENT_TEMPLATE_VARIABLES,
+    CALENDAR_LIST_TEMPLATE_VARIABLES,
+    CALENDAR_SELECTIONS_KEY,
+    UNKNOWN_USER_ONCALL_PLACEHOLDER,
+    UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER,
+    UNKNOWN_CALENDAR_EVENT_PLACEHOLDER,
+    UNKNOWN_CALENDAR_PLACEHOLDER,
+    UNKNOWN_PERIOD_PLACEHOLDER,
+    EVENT_OFFSET_SAME_DAY,
+    event_slice_prefix,
+    normalize_selector,
+)
+from .models import BuiltinCalendar, CalendarContext, CalendarEvent, CalendarFeed, CalendarSelection
+from .textutil import escape_newlines
+
+# How long a fetched calendar stays usable. Matches slackcache's channel-member TTL, but
+# is env-tunable because it trades freshness against a host we do not control, and
+# conditions can make this path hot. Read at import; tests patch the module attribute.
+_CALENDAR_TTL = float(os.environ.get('HUTBOT_CALENDAR_TTL', '300'))
+# Safety valve for `find_next_event`: `after()` is a lazy generator over possibly infinite
+# recurrences, so bound how many occurrences we are willing to skip. Not a time horizon —
+# a calendar whose only future entry is months away is still found.
+_CALENDAR_LOOKAHEAD_EVENTS = 200
+# A feed that is not a calendar (an HTML sign-in page) or is absurdly large is rejected
+# before it reaches the parser.
+_MAX_ICS_BYTES = 5 * 1024 * 1024
+# What an ICS request says it wants. Some publishers answer an `Accept`-less request with HTML.
+_ICS_ACCEPT = "text/calendar, text/plain;q=0.5, */*;q=0.1"
+_HTTP_TIMEOUT = 10
+_MAX_REDIRECTS = 3
+# How far back a negative `offset` searches. The ICS library has no `before()`, so the
+# previous event is found by scanning a window; env-tunable because a sparse calendar may
+# need a wider one. Read at import; tests patch the module attribute.
+_CALENDAR_LOOKBACK_DAYS = int(os.environ.get('HUTBOT_CALENDAR_LOOKBACK_DAYS', '90'))
+# Hosts the operator vouches for even though they resolve to an internal address — an
+# in-cluster feed bridge, say, which the address checks below cannot tell from a target an
+# attacker picked. Comma-separated host names, matched exactly and case-folded; https is
+# still required, and the exemption is per host rather than per range, so it does not widen
+# to the rest of the cluster. The NetworkPolicy egress rule for the host has to exist too,
+# or the request is dropped on the way out. Read at import; tests patch the attribute.
+ALLOWED_HOSTS_ENV = 'HUTBOT_CALENDAR_ALLOWED_HOSTS'
+_CALENDAR_ALLOWED_HOSTS = frozenset(
+    host.strip().lower() for host in os.environ.get(ALLOWED_HOSTS_ENV, '').split(',') if host.strip()
+)
+
+# The instance's built-in calendars: a JSON array of {name, title, url} objects, or the path to
+# a file holding the same JSON. Read once at startup (see `load_builtin_calendars`).
+BUILTIN_CALENDARS_ENV = 'HUTBOT_BUILTIN_CALENDARS'
+BUILTIN_CALENDARS_FILE_ENV = f'{BUILTIN_CALENDARS_ENV}_FILE'
+# What a built-in calendar may be called. Deliberately free of `:` and `/`, which is what lets
+# `set calendar <value>` tell a name from a URL without guessing.
+BUILTIN_CALENDAR_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
+
+# The calendar bridge serving this instance: mittwald-outlook-bridge publishes which calendars it
+# serves at `https://<host>/calendars/?token=…`, and every one of them sits beside that listing as
+# `<name>.ics` with the same token. That listing is where the built-in calendars come from, so the
+# deployment names the calendars it offers in one place — the bridge — rather than in a registry
+# that has to be edited again every time the bridge gains one. The token in the URL is a bearer
+# capability, so the value is a Secret field like the tokens beside it and never a chart value.
+# Read per call rather than at import: a rotated or removed URL takes effect at the next refresh.
+CALENDAR_BRIDGE_URL_ENV = 'HUTBOT_CALENDAR_BRIDGE_URL'
+# How often the listing is read again, in minutes. A calendar the bridge gains shows up within
+# this long rather than at the next restart; the request is a few hundred bytes, so it is cheap to
+# keep short. `0` reads the listing once at startup and never again.
+CALENDAR_BRIDGE_REFRESH_ENV = 'HUTBOT_CALENDAR_BRIDGE_REFRESH'
+_CALENDAR_BRIDGE_REFRESH_MINUTES = 60
+# A listing of a few dozen names is a few hundred bytes; anything past this is not one.
+_CALENDAR_BRIDGE_MAX_LISTING_BYTES = 256 * 1024
+# Bridge calendars whose titles are read at the same time. Their ICS documents are fetched in full
+# for it, so this is what bounds how much a first refresh pulls at once.
+_CALENDAR_BRIDGE_TITLE_CONCURRENCY = 4
+# How long startup waits for the first listing before coming up without it. One listing fetch is
+# bounded by `_HTTP_TIMEOUT` per hop, so this only has to cover the redirects; past it the bot
+# starts with the calendars it has and the refresh task keeps trying.
+_CALENDAR_BRIDGE_FIRST_LISTING_WAIT = 45
+
+
+# ----- pure helpers -----
+
+
+def _text(event, key: str) -> str:
+    """A calendar property as a plain string.
+
+    icalendar returns `vText`, which subclasses `str` but whose repr is `vText(b'...')`;
+    without `str()` that representation leaks into logs and JSON. Missing keys are `None`.
+    """
+    value = event.get(key)
+    return "" if value is None else str(value).strip()
+
+
+def _properties(event, key: str) -> list:
+    """Every occurrence of a repeatable property.
+
+    icalendar returns a bare value for one `ATTENDEE` and a list for several, so callers
+    would otherwise have to branch on the type.
+    """
+    value = event.get(key)
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list) else [value]
+
+
+def _address(value) -> str:
+    """The email address of a CAL-ADDRESS, or "" when it does not carry one.
+
+    Real feeds put all sorts of things here: Exchange writes an X.500 distinguished name
+    (`mailto:/O=EXCHANGELABS/OU=.../CN=...`) and a room mailbox can be `invalid:nomail`.
+    Better empty than gibberish.
+    """
+    address = str(value if value is not None else "").strip()
+    if address.lower().startswith("mailto:"):
+        address = address[len("mailto:"):]
+    return address if "@" in address and "/" not in address else ""
+
+
+def _common_name(value) -> str:
+    return str((getattr(value, 'params', None) or {}).get('CN') or "").strip()
+
+
+def _display_name(value) -> str:
+    """What to call a participant: their `CN`, else their address."""
+    return _common_name(value) or _address(value)
+
+
+def _participants(values: list) -> list[tuple[str, str]]:
+    """`(display name, address)` per participant, dropping only the entries with neither.
+
+    Kept as pairs so the name and address lists stay index-aligned: an attendee with a name
+    but no usable address still occupies a position, with "" for the address.
+    """
+    pairs = []
+    for value in values:
+        name, email = _display_name(value), _address(value)
+        if name or email:
+            pairs.append((name, email))
+    return pairs
+
+
+def _is_organizer(attendee, organizer_email: str, organizer_name: str) -> bool:
+    """Whether this attendee is the event's organizer, invited to their own event.
+
+    Matched on the address first, and on the display name when the organizer has no usable
+    address — which is exactly the case for a shared mailbox published as `invalid:nomail`.
+    """
+    email = _address(attendee)
+    if organizer_email and email and email.casefold() == organizer_email.casefold():
+        return True
+    name = _display_name(attendee)
+    return bool(organizer_name and name and name.casefold() == organizer_name.casefold())
+
+
+def _organizer(event) -> str:
+    """A human-readable organizer, or "" when there is none worth showing.
+
+    Exchange publishes `ORGANIZER;CN="Real Name":mailto:/O=EXCHANGELABS/OU=.../CN=...`,
+    where the mailto value is useless as a display value. So the `CN` parameter wins, and the
+    address is only used when it actually looks like one.
+    """
+    value = event.get("ORGANIZER")
+    return _display_name(value) if value is not None else ""
+
+
+def _aware(value, timezone: datetime.tzinfo) -> datetime.datetime:
+    """An aware datetime for any DTSTART/DTEND icalendar hands back.
+
+    All-day events come back as `date`, which cannot be compared with a `datetime` at all,
+    so they are anchored at midnight in the config's timezone — an all-day event means
+    "that calendar day where the reader is". Floating (naive) times get the same treatment.
+    """
+    if isinstance(value, datetime.datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone)
+    return datetime.datetime.combine(value, datetime.time.min, tzinfo=timezone)
+
+
+def _is_all_day(event) -> bool:
+    return not isinstance(event.start, datetime.datetime)
+
+
+def _is_usable(event) -> bool:
+    """False for events that are not happening.
+
+    Only `CANCELLED` is dropped. `TENTATIVE` is kept — it is on the calendar, and
+    `{{calendar_status}}` lets a template say so. A missing STATUS is normal in
+    Outlook feeds and means confirmed.
+    """
+    return _text(event, "STATUS").upper() != "CANCELLED"
+
+
+def _is_busy(event) -> bool:
+    """Whether the event occupies the owner's time (`TRANSP` is not `TRANSPARENT`).
+
+    A free block is still an event, so it is never filtered out — it just loses to a real
+    meeting when both cover this instant (see `_current_rank`). Exposed as its own predicate
+    so an "is this person available" check has it ready.
+    """
+    return _text(event, "TRANSP").upper() != "TRANSPARENT"
+
+
+def _current_rank(event, timezone: datetime.tzinfo) -> tuple:
+    """Sort key deciding which of several overlapping events is "happening now".
+
+    A feed routinely has an all-day marker, a multi-day conference, a free/busy block and
+    the actual meeting all covering this instant, so "earliest start" picks the wrong one.
+    Preference order: a timed event over an all-day one, then one that occupies the owner
+    over a `TRANSP:TRANSPARENT` free block, then the most recently started (the thing you
+    just walked into), then the shortest — a session beats the conference containing it —
+    and finally the UID so ties are stable.
+    """
+    start = _aware(event.start, timezone)
+    end = _aware(event.end, timezone)
+    return (
+        1 if _is_all_day(event) else 0,
+        0 if _is_busy(event) else 1,
+        -start.timestamp(),
+        (end - start).total_seconds(),
+        _text(event, "UID"),
+    )
+
+
+def build_calendar_event(event, config: dict | None = None) -> CalendarEvent:
+    """Convert an icalendar event into the flat, JSON-friendly shape templates see."""
+    timezone = datetimefmt.get_config_timezone(config)
+    all_day = _is_all_day(event)
+    start = _aware(event.start, timezone)
+    end = _aware(event.end, timezone)
+    # An all-day DTEND is exclusive per RFC 5545 (a one-day event on the 19th ends on the
+    # 20th). Overlap maths wants that, but a reader does not, so the stored end is the
+    # inclusive last day. Guard against a zero-length all-day event going backwards.
+    if all_day and end - start >= datetime.timedelta(days=1):
+        end -= datetime.timedelta(days=1)
+    attendees = _properties(event, "ATTENDEE")
+    organizer_name, organizer_email = _organizer(event), _address(event.get("ORGANIZER"))
+    others = [a for a in attendees if not _is_organizer(a, organizer_email, organizer_name)]
+    return CalendarEvent(
+        uid=_text(event, "UID"),
+        summary=_text(event, "SUMMARY"),
+        location=_text(event, "LOCATION"),
+        description=_text(event, "DESCRIPTION"),
+        organizer=organizer_name,
+        organizer_email=organizer_email,
+        # Positionally aligned: entry *n* of every attendee list is the same participant, so
+        # `attendees(nth=2)` and `attendee_emails(nth=2)` cannot describe two different
+        # people. A participant missing one of the two contributes "" there rather than
+        # being skipped, which would shift everyone after them.
+        attendees=[name for name, _ in _participants(attendees)],
+        attendee_emails=[email for _, email in _participants(attendees)],
+        other_attendees=[name for name, _ in _participants(others)],
+        other_attendee_emails=[email for _, email in _participants(others)],
+        status=_text(event, "STATUS").upper() or "CONFIRMED",
+        start=start.isoformat(),
+        end=end.isoformat(),
+        all_day=all_day,
+    )
+
+
+def index_calendar(calendar):
+    """The recurrence index every selection over one calendar shares, or ``None``.
+
+    Built once per resolve rather than per selector: expanding the recurrences is the
+    expensive part, and a message asking about three moments must not pay for it three times.
+    """
+    try:
+        # Malformed RRULEs are common in real Outlook feeds; without skip_bad_series a
+        # single broken series would take the whole calendar down with it.
+        return recurring_ical_events.of(calendar, skip_bad_series=True)
+    except Exception as e:
+        log_error("Failed to index calendar events:", e)
+        return None
+
+
+def _covering_event(query, timezone, instant):
+    """The raw event covering `instant`, picked by `_current_rank` when several overlap."""
+    candidates = [event for event in query.at(instant.astimezone(timezone)) if _is_usable(event)]
+    candidates.sort(key=lambda event: _current_rank(event, timezone))
+    return candidates[0] if candidates else None
+
+
+def _distinct_by_occurrence(events, timezone):
+    """The events, with one entry per (UID, start) — an occurrence cannot count twice."""
+    seen = set()
+    for event in events:
+        key = (_text(event, "UID"), _aware(event.start, timezone).isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+        yield event
+
+
+def _event_after(query, timezone, instant, count: int):
+    """The `count`-th event starting strictly after `instant`."""
+    # `after()` deliberately yields events that are *ongoing* at the instant before future
+    # ones, so the start filter is what keeps this from echoing the covering event.
+    upcoming = (event for event in itertools.islice(query.after(instant.astimezone(timezone)),
+                                                    _CALENDAR_LOOKAHEAD_EVENTS)
+                if _aware(event.start, timezone) > instant and _is_usable(event))
+    for position, event in enumerate(_distinct_by_occurrence(upcoming, timezone), start=1):
+        if position == count:
+            return event
+    return None
+
+
+def _event_on_same_day(query, timezone, instant):
+    """The first event starting after `instant` on `instant`'s own calendar day, in `timezone`.
+
+    The day is the one a reader means: the anchor's date where the config lives, so a rota
+    entry at 18:00 belongs to the day the 10:00 check asks about. `after()` yields the events
+    ongoing at the instant first and the future ones in start order, so the first future start
+    past that date ends the search — there can be no later-yielded event back inside the day.
+    """
+    day = instant.astimezone(timezone).date()
+    upcoming = (event for event in itertools.islice(query.after(instant.astimezone(timezone)),
+                                                    _CALENDAR_LOOKAHEAD_EVENTS)
+                if _is_usable(event))
+    for event in _distinct_by_occurrence(upcoming, timezone):
+        # Moved into the config's zone before its *date* is read: `_aware` keeps whatever
+        # tzinfo the feed carried, so a `DTSTART` in UTC would otherwise be dated by the UTC
+        # day. 23:00Z is already tomorrow in Berlin, and 22:00Z the day before is not.
+        start = _aware(event.start, timezone).astimezone(timezone)
+        if start <= instant:
+            # Ongoing when the anchor hit: `_covering_event` is what reports those.
+            continue
+        return event if start.date() == day else None
+    return None
+
+
+def _event_before(query, timezone, boundary, count: int):
+    """The `count`-th event starting before `boundary`, counting backwards.
+
+    The ICS library has no `before()`, so this searches a window: everything overlapping
+    ``[boundary - HUTBOT_CALENDAR_LOOKBACK_DAYS, boundary]``, newest start first. A gap wider
+    than the window therefore reports nothing, which reads the same as an empty calendar —
+    the price of not walking a feed's whole history on every render.
+    """
+    window_start = boundary - datetime.timedelta(days=_CALENDAR_LOOKBACK_DAYS)
+    earlier = [event for event in query.between(window_start.astimezone(timezone),
+                                                boundary.astimezone(timezone))
+               if _aware(event.start, timezone) < boundary and _is_usable(event)]
+    earlier.sort(key=lambda event: _aware(event.start, timezone), reverse=True)
+    for position, event in enumerate(_distinct_by_occurrence(earlier, timezone), start=1):
+        if position == count:
+            return event
+    return None
+
+
+def select_event(query, config: dict | None, instant: datetime.datetime, offset: int | str = 0) -> CalendarEvent | None:
+    """The event `offset` places from the one covering `instant`.
+
+    `0` is the event running then; `+n` counts forward over the events starting after that
+    moment, and `-n` backwards over the ones starting before it. The anchor for counting
+    backwards is the covering event's start when there is one, so `-1` and `+1` are the
+    neighbours either side of a running event — and in a gap they are still the events either
+    side of the moment.
+
+    ``EVENT_OFFSET_SAME_DAY`` is the exception that counts nothing: the event running at
+    `instant`, or the first one starting later on `instant`'s own day, and nothing once that
+    day is out. "Is this day covered from here on?", which `+1` cannot ask — it would answer
+    with an entry days later.
+    """
+    if query is None:
+        return None
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=datetime.timezone.utc)
+    # Ask in the config's timezone. The library compares a `DTSTART;VALUE=DATE` against the
+    # date of the instant it is given, so querying in UTC would use the wrong calendar day
+    # either side of midnight: at 01:00 on the 2nd in Tokyo a whole-day event on the 2nd is
+    # still "tomorrow" in UTC, and in Los Angeles it turns current before local midnight.
+    timezone = datetimefmt.get_config_timezone(config)
+
+    try:
+        covering = _covering_event(query, timezone, instant)
+    except Exception as e:
+        log_error("Failed to resolve the calendar event at the requested moment:", e)
+        return None
+    if offset == 0:
+        return build_calendar_event(covering, config) if covering is not None else None
+
+    if offset == EVENT_OFFSET_SAME_DAY:
+        if covering is not None:
+            return build_calendar_event(covering, config)
+        try:
+            found = _event_on_same_day(query, timezone, instant)
+        except Exception as e:
+            log_error("Failed to resolve the calendar event later on the requested day:", e)
+            return None
+        return build_calendar_event(found, config) if found is not None else None
+
+    try:
+        if offset > 0:
+            found = _event_after(query, timezone, instant, offset)
+        else:
+            boundary = _aware(covering.start, timezone) if covering is not None else instant
+            found = _event_before(query, timezone, boundary, -offset)
+    except Exception as e:
+        # Plain, not `:+d`: a word offset would make the error handler itself raise and hide
+        # whatever actually went wrong.
+        log_error(f"Failed to resolve the calendar event at offset {offset}:", e)
+        return None
+    return build_calendar_event(found, config) if found is not None else None
+
+
+# ----- URL validation and display -----
+
+
+def _is_forbidden_address(address: ipaddress._BaseAddress) -> bool:
+    """Whether an address is one the bot must not be talked into reaching."""
+    # `is_private` is narrower than "not publicly routable": notably, Python does not mark
+    # the shared carrier-grade NAT range 100.64.0.0/10 private or reserved. Clusters can use
+    # that range for pods and services, so only globally routable addresses are safe by
+    # default. Operator allow-listed hosts bypass this check at the call sites.
+    return not address.is_global or address.is_multicast
+
+
+async def _resolve_public_host(host: str) -> str:
+    """The host's addresses, or a reason it must not be fetched.
+
+    `validate_calendar_url` can only judge the text of a URL. A public name that resolves to
+    `10.0.0.1`, or to the cloud metadata address, reaches the internal target all the same —
+    so the addresses behind the name are checked too, at every redirect hop.
+
+    This narrows the window rather than closing it: the name is resolved again by the
+    connector, so a record that changes between the two lookups (DNS rebinding) is still
+    possible. The NetworkPolicy egress allow-list is the control that actually closes it.
+    """
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    except Exception as e:
+        return f"could not resolve `{host}`: {e}"
+    for info in infos:
+        raw = info[4][0]
+        try:
+            address = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if _is_forbidden_address(address):
+            return f"`{host}` resolves to the internal address {raw}"
+    return ""
+
+
+def _is_allowed_host(host: str) -> bool:
+    """Whether the operator has named this host in `HUTBOT_CALENDAR_ALLOWED_HOSTS`.
+
+    An internal feed resolves into a private range and is refused by the address checks,
+    which cannot see the difference between it and a target chosen through the bot. Naming
+    the host is that difference: it is a deliberate act by whoever runs the instance, not
+    something a channel can set, and it exempts one name rather than a whole range.
+    """
+    return (host or "").lower() in _CALENDAR_ALLOWED_HOSTS
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Whether a host can only ever mean this machine.
+
+    RFC 6761 reserves `localhost` and everything under `.localhost` for loopback, and the
+    loopback ranges (`127.0.0.0/8`, `::1`) speak for themselves.
+    """
+    host = (host or "").lower()
+    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_calendar_url(url: str) -> str:
+    """Return a usable feed URL, or raise ``ValueError`` explaining why it is not.
+
+    The bot fetches this URL on a user's word, from inside the cluster in production, so a
+    remote feed has to be https and every address not globally routable is refused. The
+    NetworkPolicy egress allow-list is the real control; this is the readable first line of
+    defence.
+
+    Loopback is the exception, over http as well: serving a feed from a local file server is
+    how this gets developed, and `127.0.0.1` is not a target worth reaching through the bot
+    that anyone who can set a config could not already reach directly.
+    """
+    url = (url or "").strip()
+    if not url:
+        raise ValueError("calendar URL must be non-empty")
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError as e:
+        raise ValueError(f"calendar URL could not be parsed: {e}")
+    if not parts.hostname:
+        raise ValueError("calendar URL has no host")
+
+    scheme = parts.scheme.lower()
+    loopback = _is_loopback_host(parts.hostname)
+    allowed = _is_allowed_host(parts.hostname)
+    if scheme not in ("https", "http"):
+        raise ValueError("calendar URL must start with `https://`")
+    if scheme == "http" and not loopback:
+        raise ValueError("calendar URL must start with `https://` (plain `http://` is only allowed for localhost)")
+    if parts.username or parts.password:
+        raise ValueError("calendar URL must not embed credentials")
+
+    if not loopback and not allowed:
+        try:
+            address = ipaddress.ip_address(parts.hostname)
+        except ValueError:
+            address = None
+        if address is not None and _is_forbidden_address(address):
+            raise ValueError("calendar URL must not point at an internal address")
+    return url
+
+
+def describe_calendar_url(url: str) -> str:
+    """A safe-to-echo form of the feed URL.
+
+    A published-calendar link needs no credentials, so possession of it *is* access. It is
+    stored per config and anyone in the channel can run `show config`, so only the host is
+    ever printed back. No path segment is safe to retain: many providers put the bearer token
+    in the final segment rather than in a parent segment or query string.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "<unprintable URL>"
+    host = parts.hostname or ""
+    if not host:
+        return "<unprintable URL>"
+    return f"{host}/…"
+
+
+# ----- built-in calendars -----
+
+
+def normalize_builtin_calendar_name(value: str) -> str:
+    """The canonical form of a built-in calendar name, or "" when it cannot be one.
+
+    Casefolded, because the name is typed by hand in `set calendar <name>` and nobody should
+    have to remember how it was capitalized in the deployment.
+    """
+    value = (value or "").strip().casefold()
+    return value if BUILTIN_CALENDAR_NAME_PATTERN.match(value) else ""
+
+
+def looks_like_a_calendar_url(value: str) -> bool:
+    """Whether a value is an attempt at a URL rather than at a built-in calendar name.
+
+    A name can hold neither `:` nor `/`, so this splits the two readings of
+    `set calendar <value>` cleanly: what carries either character can only have been meant as
+    a URL, and gets the URL error rather than "unknown calendar".
+    """
+    value = (value or "").strip()
+    return ":" in value or "/" in value
+
+
+def parse_builtin_calendars(raw: str) -> list[BuiltinCalendar]:
+    """The built-in calendars in a JSON array of {name, title, url} objects.
+
+    Never raises, and never echoes the payload: every URL in it is a bearer capability, so a
+    bad entry is reported by its name (or its position) and its redacted URL, then skipped.
+    One typo must not keep the bot from starting, which is why the list degrades entry by
+    entry the way `load_employee_mappings` and `migrate_and_apply_defaults` do. Empty by
+    default: nothing about the feature is on until the deployment sets it.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except ValueError as e:
+        # The decoder's message carries a position, never the document itself.
+        log_error(f"Ignoring {BUILTIN_CALENDARS_ENV}: it is not valid JSON:", e)
+        return []
+    if not isinstance(entries, list):
+        log_error(f"Ignoring {BUILTIN_CALENDARS_ENV}: expected a JSON array of "
+                  "{name, title, url} objects.")
+        return []
+
+    calendars: list[BuiltinCalendar] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            log_warning(f"Skipping built-in calendar #{index}: expected an object with "
+                        "`name`, `title` and `url`.")
+            continue
+        raw_name = str(entry.get('name') or "").strip()
+        name = normalize_builtin_calendar_name(raw_name)
+        if not name:
+            log_warning(f"Skipping built-in calendar #{index}: `{raw_name}` is not a usable "
+                        "name (lower-case letters, digits, `.`, `-` and `_`, starting with a "
+                        "letter or digit).")
+            continue
+        title = str(entry.get('title') or "").strip()
+        if not title:
+            log_warning(f"Skipping built-in calendar `{name}`: it has no `title`.")
+            continue
+        url = str(entry.get('url') or "").strip()
+        try:
+            url = validate_calendar_url(url)
+        except ValueError as e:
+            log_warning(f"Skipping built-in calendar `{name}`: {e} "
+                        f"({describe_calendar_url(url) or 'no URL'}).")
+            continue
+        if name in seen:
+            log_warning(f"Skipping a second built-in calendar named `{name}`; keeping the first.")
+            continue
+        seen.add(name)
+        calendars.append(BuiltinCalendar(name, title, url))
+    return calendars
+
+
+def load_builtin_calendars() -> list[BuiltinCalendar]:
+    """The calendars the deployment adds by hand, read from startup configuration once.
+
+    These are additions to — and overrides of — what the calendar bridge serves; the bridge's own
+    list arrives with the first `refresh_bridge_calendars`, which its refresh task runs as soon as
+    the bot comes up. Both halves are merged by `rebuild_builtin_calendars`, which this calls, so
+    `state.builtin_calendars` is usable before the first listing has been read.
+
+    `HUTBOT_BUILTIN_CALENDARS_FILE` names a file holding the JSON, which is how a Kubernetes
+    Secret is projected in production: the value is used verbatim, it has no length limit to
+    run into, and a multi-line document survives a `.env` that cannot hold one. Without it —
+    or when the path names no file, because the deployment has no calendars to project —
+    `HUTBOT_BUILTIN_CALENDARS` is read through `get_env_var`, which also accepts the JSON
+    base64-encoded — a JSON array survives that untouched, because `[` is not in the base64
+    alphabet.
+    """
+    raw = ''
+    path = os.environ.get(BUILTIN_CALENDARS_FILE_ENV, '').strip()
+    if path:
+        try:
+            with open(path, encoding='utf-8') as handle:
+                raw = handle.read()
+        except FileNotFoundError:
+            # The chart points at the path unconditionally, but the Secret volume projects the
+            # key only when the deployment has one. No file means no built-in calendars — the
+            # ordinary state of an instance without them, not an error — so fall through to an
+            # environment value, which remains useful for source checkouts.
+            pass
+        except OSError as e:
+            log_error(f"Failed to read the built-in calendars from {path}:", e)
+            state.configured_calendars = []
+            rebuild_builtin_calendars()
+            return []
+    if not raw:
+        raw = get_env_var(BUILTIN_CALENDARS_ENV)
+    calendars = parse_builtin_calendars(raw)
+    state.configured_calendars = calendars
+    rebuild_builtin_calendars()
+    if calendars:
+        # Names only: the titles are harmless but the URLs are not, and one log line that
+        # names every feed is exactly what an operator greps for.
+        log(f"Built-in calendars configured: {', '.join(calendar.name for calendar in calendars)}.")
+    return calendars
+
+
+def rebuild_builtin_calendars() -> None:
+    """`state.builtin_calendars` from the bridge listing plus whatever the deployment adds.
+
+    A name in both belongs to the configured entry: the registry is how an operator overrides one
+    the bridge serves — a different URL, a better title — without having to change the bridge.
+    Rebound as a whole rather than mutated, because every reader of the list is synchronous and
+    must never see it half-built.
+    """
+    merged: dict[str, BuiltinCalendar] = {calendar.name: calendar for calendar in state.bridge_calendars}
+    merged.update({calendar.name: calendar for calendar in state.configured_calendars})
+    state.builtin_calendars = sorted(merged.values(), key=lambda calendar: calendar.name)
+
+
+def lookup_builtin_calendar(name: str) -> BuiltinCalendar | None:
+    """The built-in calendar going by `name`, or ``None``."""
+    name = normalize_builtin_calendar_name(name)
+    if not name:
+        return None
+    for calendar in state.builtin_calendars:
+        if calendar.name == name:
+            return calendar
+    return None
+
+
+def builtin_calendar_names() -> list[str]:
+    """Every built-in calendar name, sorted — safe to print, unlike the URLs."""
+    return sorted(calendar.name for calendar in state.builtin_calendars)
+
+
+def resolve_calendar_feed(config: dict | None) -> CalendarFeed:
+    """The feed a config reads, resolved when it is about to be fetched.
+
+    A `calendar_builtin` name becomes its URL *here* rather than when it is set, so `bot.json`
+    never holds a token and a rotated one takes effect without touching a single config. A
+    config carrying both keys — only a hand-edited file can — prefers the built-in, because
+    that is the value a user can see and change. A built-in this instance no longer offers
+    yields no URL and `missing`, which is what tells "nothing configured" from "configured,
+    but gone".
+    """
+    config = config or {}
+    builtin_name = normalize_builtin_calendar_name(str(config.get('calendar_builtin') or ""))
+    if builtin_name:
+        builtin = lookup_builtin_calendar(builtin_name)
+        if builtin is None:
+            return CalendarFeed("", "", builtin_name, True)
+        return CalendarFeed(builtin.url, builtin.display_title, builtin.name, False)
+    url = str(config.get('calendar_url') or "").strip()
+    return CalendarFeed(url, describe_calendar_url(url), "", False)
+
+
+def describe_calendar_feed(feed: CalendarFeed) -> str:
+    """A safe-to-echo label for a resolved feed: a built-in's title, or the redacted URL.
+
+    A built-in's URL is an instance-wide secret that nobody configuring a channel needs to
+    see, not even redacted — so a built-in is named by its title alone. A per-config URL keeps
+    the redacted form it already had, since whoever set it has seen the whole thing anyway.
+    """
+    return feed.title if feed.builtin else describe_calendar_url(feed.url)
+
+
+# ----- the calendar bridge -----
+
+
+def calendar_bridge_listing_url() -> str:
+    """The bridge's listing URL, or "" when this instance has no bridge.
+
+    Never echoes the value: the token sits in its query string. A bad one is reported by host
+    alone and then ignored, which leaves the instance with whatever `HUTBOT_BUILTIN_CALENDARS`
+    adds rather than keeping the bot from starting.
+    """
+    raw = (os.environ.get(CALENDAR_BRIDGE_URL_ENV) or "").strip()
+    if not raw:
+        return ""
+    try:
+        url = validate_calendar_url(raw)
+    except ValueError as e:
+        log_error(f"Ignoring {CALENDAR_BRIDGE_URL_ENV}: {e} "
+                  f"({describe_calendar_url(raw) or 'no URL'}).")
+        return ""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.query:
+        # The listing is only served to a caller carrying the token, so a URL without one is a
+        # copy-paste that lost its query string — worth saying before every fetch 401s.
+        log_warning(f"{CALENDAR_BRIDGE_URL_ENV} carries no query string; the bridge needs `?token=…`.")
+    if not parts.path.endswith("/"):
+        # Every calendar hangs off the listing path as `<name>.ics`, so the trailing slash is what
+        # makes that a sibling rather than a replacement of the last segment.
+        url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, f"{parts.path or '/'}/",
+                                       parts.query, parts.fragment))
+    return url
+
+
+def calendar_bridge_refresh_minutes() -> int:
+    """How often the bridge listing is read again; `0` reads it once at startup."""
+    raw = os.environ.get(CALENDAR_BRIDGE_REFRESH_ENV)
+    if raw is None or not raw.strip():
+        return _CALENDAR_BRIDGE_REFRESH_MINUTES
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        log_warning(f"Ignoring invalid value `{raw}` for {CALENDAR_BRIDGE_REFRESH_ENV}. "
+                    f"Using {_CALENDAR_BRIDGE_REFRESH_MINUTES}.")
+        return _CALENDAR_BRIDGE_REFRESH_MINUTES
+    return value if value >= 0 else _CALENDAR_BRIDGE_REFRESH_MINUTES
+
+
+def calendar_bridge_ics_url(listing_url: str, name: str) -> str:
+    """Where the bridge serves one calendar: `<name>.ics` beside the listing, same token.
+
+    `name` has already been through `normalize_builtin_calendar_name`, which admits neither `/`
+    nor `:` nor a leading `.`, so it cannot climb out of the listing path; it is still
+    percent-encoded, because a check that holds today is not a reason to build the URL as if it
+    did not.
+    """
+    parts = urllib.parse.urlsplit(listing_url)
+    path = parts.path if parts.path.endswith("/") else f"{parts.path}/"
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc,
+                                    f"{path}{urllib.parse.quote(name, safe='')}.ics",
+                                    parts.query, ""))
+
+
+def parse_calendar_bridge_listing(raw: str) -> list[str] | None:
+    """The calendar names in a bridge listing, or ``None`` when it is not one.
+
+    The document is `{"feeds": ["notfallhotline", …]}`. ``None`` and an empty list are different
+    answers: the first means the listing could not be read and the calendars from the last one are
+    kept, the second means the bridge really serves nothing.
+    """
+    try:
+        document = json.loads(raw)
+    except ValueError as e:
+        log_error("The calendar bridge listing is not valid JSON:", e)
+        return None
+    if not isinstance(document, dict):
+        log_error("The calendar bridge listing is not an object with a `feeds` array.")
+        return None
+    feeds = document.get("feeds")
+    if not isinstance(feeds, list):
+        log_error("The calendar bridge listing has no `feeds` array.")
+        return None
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for entry in feeds:
+        raw_name = entry if isinstance(entry, str) else ""
+        name = normalize_builtin_calendar_name(raw_name)
+        if not name:
+            log_warning(f"Skipping the bridge calendar `{raw_name}`: it is not a usable name "
+                        "(lower-case letters, digits, `.`, `-` and `_`, starting with a letter "
+                        "or digit).")
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+async def fetch_calendar_bridge_listing(listing_url: str) -> list[str] | None:
+    """The calendar names the bridge serves, or ``None`` when the listing could not be read."""
+    try:
+        raw = await _get_calendar_document(listing_url,
+                                           accept="application/json, */*;q=0.1",
+                                           max_bytes=_CALENDAR_BRIDGE_MAX_LISTING_BYTES,
+                                           what="calendar bridge listing")
+    except Exception as e:
+        log_error(f"Failed to fetch the calendar bridge listing {describe_calendar_url(listing_url)}:", e)
+        return None
+    if raw is None:
+        return None
+    return parse_calendar_bridge_listing(raw)
+
+
+async def resolve_bridge_calendar_titles(pairs: Sequence[tuple[str, str]]) -> None:
+    """Fill `state.bridge_calendar_titles` for the `(name, url)` pairs still without a title.
+
+    The listing carries names only, so a calendar's title is what its own ICS calls itself
+    (`X-WR-CALNAME`) — the same string a pasted feed announces under. Reading it means fetching
+    the document, so it is done once per name and only for names not resolved yet: after the first
+    refresh an hourly one makes no ICS request at all. The fetch goes through `fetch_calendar`, so
+    it also warms the cache the feeds read from, and a calendar whose title cannot be read keeps
+    its name as its title rather than holding up the rest.
+    """
+    unresolved = [pair for pair in pairs if not state.bridge_calendar_titles.get(pair[0])]
+    if not unresolved:
+        return
+    limit = asyncio.Semaphore(_CALENDAR_BRIDGE_TITLE_CONCURRENCY)
+
+    async def resolve(name: str, url: str) -> None:
+        async with limit:
+            _, title = await fetch_calendar(url)
+        title = (title or "").strip()
+        if title:
+            state.bridge_calendar_titles[name] = title
+
+    await asyncio.gather(*(resolve(name, url) for name, url in unresolved),
+                        return_exceptions=True)
+
+
+async def _publish_bridge_roster() -> list[tuple[str, str]] | None:
+    """Make the listing the bridge half of the built-in calendars, before any title is read.
+
+    Returns the `(name, url)` pairs whose titles are still worth reading, or ``None`` when there
+    was no listing to publish. The roster stands before a single ICS document is fetched: a
+    calendar is usable the moment it is listed — `display_title` falls back to its name — so a
+    title endpoint that hangs cannot keep a new calendar unavailable, keep a removed one alive, or
+    leave the list empty through a whole startup.
+    """
+    listing_url = calendar_bridge_listing_url()
+    if not listing_url:
+        if state.bridge_calendars:
+            state.bridge_calendars = []
+            rebuild_builtin_calendars()
+        return None
+
+    names = await fetch_calendar_bridge_listing(listing_url)
+    if names is None:
+        log_warning("Could not read the calendar bridge listing; keeping the "
+                    f"{len(state.bridge_calendars)} calendar(s) from the last one.")
+        return None
+
+    pairs = [(name, calendar_bridge_ics_url(listing_url, name)) for name in names]
+    state.bridge_calendars = [BuiltinCalendar(name, state.bridge_calendar_titles.get(name, ""), url, True)
+                              for name, url in pairs]
+    rebuild_builtin_calendars()
+
+    # Names only: the titles are harmless but the URLs are not. Logged when the roster changes, so
+    # a refresh that finds what the last one found stays quiet.
+    roster = ", ".join(calendar.name for calendar in state.bridge_calendars) or "none"
+    if roster != state._logged_bridge_roster:
+        state._logged_bridge_roster = roster
+        log(f"Calendar bridge serves: {roster}.")
+
+    # A name the deployment overrides is never read from the bridge, so its ICS is not fetched for
+    # a title nothing will print — the override may well be there *because* that document is bad.
+    overridden = {calendar.name for calendar in state.configured_calendars}
+    return [pair for pair in pairs if pair[0] not in overridden]
+
+
+def _apply_bridge_calendar_titles() -> None:
+    """Re-title the standing bridge calendars from the titles read since they were published."""
+    titled = [BuiltinCalendar(calendar.name,
+                              state.bridge_calendar_titles.get(calendar.name, calendar.title),
+                              calendar.url, calendar.bridge)
+              for calendar in state.bridge_calendars]
+    if titled == state.bridge_calendars:
+        return
+    state.bridge_calendars = titled
+    rebuild_builtin_calendars()
+
+
+async def refresh_bridge_calendars() -> None:
+    """Rebuild the bridge half of the built-in calendars from the bridge's own listing.
+
+    Never raises, and never empties a list it could not replace: a bridge that is briefly
+    unreachable leaves the calendars from the last successful listing in place, so an outage does
+    not take every channel's calendar feed down with it until the next refresh succeeds. An
+    instance with no bridge configured leaves the half empty and keeps only what
+    `HUTBOT_BUILTIN_CALENDARS` adds.
+
+    Two steps, in this order: the listing becomes the roster, and only then are the titles behind
+    it read. Nothing but a printed label depends on a title, so nothing waits for one.
+    """
+    try:
+        pairs = await _publish_bridge_roster()
+    finally:
+        # Startup waits for the first listing, so the wait ends whatever the listing did: an
+        # unusable URL or an unreachable bridge must not hold the bot at the gate.
+        state._bridge_roster_ready.set()
+    if not pairs:
+        return
+    await resolve_bridge_calendar_titles(pairs)
+    _apply_bridge_calendar_titles()
+
+
+async def wait_for_bridge_roster(timeout: float = _CALENDAR_BRIDGE_FIRST_LISTING_WAIT) -> None:
+    """Wait for the first listing to have been published, at most `timeout` seconds.
+
+    Startup calls this after starting the refresh task and before restoring the timers it
+    persisted: a reminder or button escalation that came due during the restart runs as soon as its
+    task is created, and a calendar condition evaluated then would otherwise read an empty roster —
+    reporting the config's built-in as one this instance does not offer, and skipping or sending on
+    that basis. Only the listing is waited for; the titles behind it arrive later.
+
+    Returns rather than raising when the wait runs out: coming up with the calendars this instance
+    has beats not coming up at all.
+    """
+    if not (os.environ.get(CALENDAR_BRIDGE_URL_ENV) or "").strip():
+        return
+    try:
+        await asyncio.wait_for(state._bridge_roster_ready.wait(), timeout)
+    except asyncio.TimeoutError:
+        log_warning(f"The calendar bridge listing has not been read within {timeout:g}s; starting "
+                    "with the built-in calendars this instance configures. Configurations naming a "
+                    "bridge calendar stay quiet until a refresh succeeds.")
+
+
+async def run_bridge_refresh_loop() -> None:
+    """Read the bridge listing at startup, then again every refresh interval.
+
+    A task of its own rather than a turn of the scheduler's loop: `run_scheduler` returns at once
+    when `croniter` is missing, and the first read has to happen when the bot comes up rather than
+    one interval later. Never lets a failure end the loop — the next turn tries again, and until it
+    succeeds the calendars from the last listing stay in place.
+    """
+    # Read raw, without `calendar_bridge_listing_url`, so an unusable value is reported once by the
+    # refresh itself rather than twice. The environment cannot change under a running process, so
+    # an instance with no bridge needs no task at all — and `wait_for_bridge_roster` returns at
+    # once for the same reason, rather than waiting for a task that was never started.
+    if not (os.environ.get(CALENDAR_BRIDGE_URL_ENV) or "").strip():
+        return
+    minutes = calendar_bridge_refresh_minutes()
+    log(f"Calendar bridge refresh started ({f'every {minutes}min' if minutes else 'once'}).")
+    while True:
+        try:
+            await refresh_bridge_calendars()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log_error("Failed to refresh the built-in calendars from the bridge:", e)
+        # Re-read every turn, so a value that was unusable at startup is not held against the
+        # instance for the life of the process.
+        minutes = calendar_bridge_refresh_minutes()
+        if not minutes:
+            # `0` reads the listing once: the roster this process came up with is the one it keeps.
+            return
+        await asyncio.sleep(minutes * 60)
+
+
+# ----- fetching -----
+
+
+async def _read_capped(response, max_bytes: int = _MAX_ICS_BYTES) -> str | None:
+    """The response body, or ``None`` when it runs past ``max_bytes``.
+
+    Read in chunks rather than with `response.text()`, which would pull the whole body into
+    memory before any size check: a feed can omit `Content-Length`, use chunked transfer, or
+    be a compression bomb. `response.content` yields *decompressed* bytes, so the cap counts
+    what a gzip bomb actually expands to.
+    """
+    chunks, total = [], 0
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            return None
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    try:
+        return body.decode(response.get_encoding(), errors="replace")
+    except (LookupError, RuntimeError):
+        return body.decode("utf-8", errors="replace")
+
+
+async def _get_calendar_document(url: str, *, accept: str = _ICS_ACCEPT,
+                                 max_bytes: int = _MAX_ICS_BYTES,
+                                 what: str = "calendar feed") -> str | None:
+    """Fetch the document, checking every hop, or return ``None`` with the reason logged.
+
+    Redirects are followed by hand so each target is validated before it is requested —
+    aiohttp would otherwise follow a public HTTPS URL to `http://169.254.169.254` without
+    another word.
+
+    `accept`, `max_bytes` and `what` are what let the bridge listing — JSON, small, and worth
+    naming as itself in an error — travel this same guarded path rather than one of its own.
+    """
+    timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)
+    headers = {"Accept": accept}
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for _ in range(_MAX_REDIRECTS + 1):
+            try:
+                url = validate_calendar_url(url)
+            except ValueError as e:
+                log_error(f"Refusing to fetch the {what} {describe_calendar_url(url)}: {e}.")
+                return None
+            host = urllib.parse.urlsplit(url).hostname or ""
+            if not _is_loopback_host(host) and not _is_allowed_host(host):
+                problem = await _resolve_public_host(host)
+                if problem:
+                    log_error(f"Refusing to fetch the {what} {describe_calendar_url(url)}: {problem} "
+                              f"(name the host in {ALLOWED_HOSTS_ENV} if it is meant to be reachable).")
+                    return None
+
+            async with session.get(url, headers=headers, allow_redirects=False) as response:
+                if response.status in (301, 302, 303, 307, 308):
+                    location = response.headers.get("Location", "")
+                    if not location:
+                        log_error(f"The {what} {describe_calendar_url(url)} redirected without a target.")
+                        return None
+                    url = urllib.parse.urljoin(url, location)
+                    continue
+                if response.status != 200:
+                    log_error(f"Failed to fetch the {what} {describe_calendar_url(url)}: {response.status}")
+                    return None
+                if response.content_length and response.content_length > max_bytes:
+                    log_error(f"The {what} {describe_calendar_url(url)} is too large ({response.content_length} bytes).")
+                    return None
+                text = await _read_capped(response, max_bytes)
+                if text is None:
+                    log_error(f"The {what} {describe_calendar_url(url)} is larger than {max_bytes} bytes.")
+                return text
+
+    log_error(f"The {what} {describe_calendar_url(url)} redirected more than {_MAX_REDIRECTS} times.")
+    return None
+
+
+async def fetch_calendar(url: str) -> tuple[object | None, str]:
+    """Fetch and parse a feed, returning ``(calendar, display_name)``.
+
+    Never raises: a failure logs and returns ``(None, "")`` so a broken feed degrades a
+    rule instead of taking down the event loop, matching the OpsGenie helpers.
+    Successful parses are cached per URL for ``_CALENDAR_TTL`` seconds.
+    """
+    url = (url or "").strip()
+    if not url:
+        return None, ""
+
+    cached = state._calendar_cache.get(url)
+    if cached and (time.monotonic() - cached[0]) < _CALENDAR_TTL:
+        return cached[1], cached[2]
+
+    try:
+        text = await _get_calendar_document(url)
+    except Exception as e:
+        log_error(f"Failed to fetch the calendar feed {describe_calendar_url(url)}:", e)
+        return None, ""
+    if text is None:
+        return None, ""
+
+    if "BEGIN:VCALENDAR" not in text:
+        # Usually an HTML sign-in page: say so instead of reporting an empty calendar.
+        log_error(f"Calendar feed {describe_calendar_url(url)} did not return an iCalendar document.")
+        return None, ""
+
+    try:
+        # Parsing a real feed takes tens of milliseconds, which is long enough to be worth
+        # keeping off the event loop while Slack events are queueing.
+        calendar = await asyncio.to_thread(icalendar.Calendar.from_ical, text)
+    except Exception as e:
+        log_error(f"Failed to parse the calendar feed {describe_calendar_url(url)}:", e)
+        return None, ""
+
+    name = ""
+    try:
+        name = str(calendar.get("X-WR-CALNAME") or "").strip()
+    except Exception:
+        name = ""
+
+    state._calendar_cache[url] = (time.monotonic(), calendar, name)
+    return calendar, name
+
+
+# ----- template variables -----
+
+
+def calendar_event_placeholder(variable: str) -> str:
+    """The stand-in one calendar variable renders when no event resolved.
+
+    One definition, so the placeholders seeded before a fetch and the fallback a missing
+    namespace slice renders can never disagree.
+    """
+    if variable in CALENDAR_DATETIME_TEMPLATE_VARIABLES:
+        return UNKNOWN_PERIOD_PLACEHOLDER
+    if variable == "calendar_organizer_user":
+        # Same placeholder OpsGenie uses for an unmapped person, so `empty` works on it.
+        return UNKNOWN_USER_ONCALL_PLACEHOLDER
+    return UNKNOWN_CALENDAR_EVENT_PLACEHOLDER
+
+
+def _slice_keys(prefix: str):
+    """Key builders for one namespace slice: `(value, raw, items)` for a variable.
+
+    The default selection keeps the public names (`calendar_summary`); a slice is internal, so
+    its value hides behind `__` alongside the `_raw`/`_items` companions it already had. Both
+    shapes come from here, so the writers and the renderer cannot drift apart.
+    """
+    def keys(variable: str) -> tuple[str, str, str]:
+        stem = f"{prefix}{variable}"
+        return (f"__{stem}" if prefix else stem), f"__{stem}_raw", f"__{stem}_items"
+    return keys
+
+
+def usable_selectors(selectors: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The selectors whose arguments parse, warning about the ones that do not.
+
+    Only a hand-edited config reaches an unusable one: every setter and the web UI validate
+    the arguments before storing them.
+    """
+    usable = []
+    for at, offset in selectors or ():
+        try:
+            normalize_selector(at, offset)
+        except ValueError as e:
+            log_warning(f"Ignoring an unusable calendar selector (at={at!r}, offset={offset!r}): {e}")
+            continue
+        usable.append((at, offset))
+    return usable
+
+
+def get_calendar_placeholder_variables(config: dict | None = None, selectors: Sequence[tuple[str, str]] = ()) -> dict[str, str]:
+    """Every calendar variable, filled with placeholders, plus one slice per selector.
+
+    Mirrors ``opsgenie.get_opsgenie_placeholder_variables``: a template referencing a
+    calendar variable renders a visible placeholder rather than an empty string when there is
+    no feed, no event, or a failed fetch.
+    """
+    feed = resolve_calendar_feed(config)
+    variables = {
+        # A named built-in this instance no longer offers gets its own placeholder: a rule
+        # going quiet because a name went away must not read like a rule with no calendar.
+        "calendar_name": (UNKNOWN_CALENDAR_BUILTIN_PLACEHOLDER if feed.missing
+                          else describe_calendar_feed(feed) or UNKNOWN_CALENDAR_PLACEHOLDER),
+    }
+    for prefix in ("", *(event_slice_prefix(at, offset) for at, offset in usable_selectors(selectors))):
+        keys = _slice_keys(prefix)
+        for variable in CALENDAR_EVENT_TEMPLATE_VARIABLES:
+            value_key, raw_key, items_key = keys(variable)
+            variables[value_key] = calendar_event_placeholder(variable)
+            if variable in CALENDAR_LIST_TEMPLATE_VARIABLES:
+                # The items a condition matches against, beside the joined form a message
+                # renders.
+                variables[items_key] = []
+            elif variable in CALENDAR_DATETIME_TEMPLATE_VARIABLES:
+                variables[raw_key] = ""
+    return variables
+
+
+def fill_calendar_event_variables(variables: dict[str, str], config: dict | None, keys, event: CalendarEvent | None) -> None:
+    """Overwrite one slice's placeholders from a resolved event."""
+    if event is None:
+        return
+    for field, value in (("summary", event.summary),
+                         ("location", event.location),
+                         ("description", event.description),
+                         ("organizer", event.organizer),
+                         ("organizer_email", event.organizer_email),
+                         ("uid", event.uid),
+                         ("status", event.status),
+                         ("attendee_count", str(len(event.attendees)))):
+        variables[keys(f"calendar_{field}")[0]] = value
+    for field, items in (("attendees", event.attendees),
+                         ("attendee_emails", event.attendee_emails),
+                         ("other_attendees", event.other_attendees),
+                         ("other_attendee_emails", event.other_attendee_emails)):
+        value_key, _, items_key = keys(f"calendar_{field}")
+        conditionutil.set_list_variable(variables, value_key, items_key, items)
+
+    for bound, value in (("start", event.start), ("end", event.end)):
+        for part in ("date", "time", "datetime"):
+            variable = f"calendar_{bound}_{part}"
+            value_key, raw_key, _ = keys(variable)
+            variables[raw_key] = value or ""
+            variables[value_key] = datetimefmt.format_template_datetime(value, variable, config)
+
+
+async def _mention(app, email: str) -> str:
+    """`<@U…>` for an address, or "" when it maps to no Slack user."""
+    # `is None` rather than a truth test: an app object should never be asked for its
+    # truthiness (on an AsyncMock that even orphans a coroutine).
+    if app is None or not email:
+        return ""
+    try:
+        user = await slackcache.get_user_by_email(app, email)
+    except Exception as e:
+        log_error(f"Failed to map the calendar address '{email}' to a Slack user:", e)
+        return ""
+    return f"<@{user.id}>" if user and user.id else ""
+
+
+async def _mentions(app, emails: list) -> list[str]:
+    """One entry per address, "" where it maps to no Slack user.
+
+    Aligned rather than compacted so `attendees(nth=2)` and `attendee_users(nth=2)` stay the
+    same participant; the joined form a message renders drops the blanks.
+    """
+    return [await _mention(app, email) for email in emails or []]
+
+
+async def fill_calendar_user_variables(app, variables: dict, keys, event: CalendarEvent | None) -> None:
+    """Map the event's addresses to Slack users, for @mentions and DM targets."""
+    if event is None:
+        return
+    organizer = await _mention(app, event.organizer_email)
+    if organizer:
+        variables[keys("calendar_organizer_user")[0]] = organizer
+    for field, emails in (("attendee_users", event.attendee_emails),
+                          ("other_attendee_users", event.other_attendee_emails)):
+        value_key, _, items_key = keys(f"calendar_{field}")
+        conditionutil.set_list_variable(variables, value_key, items_key, await _mentions(app, emails))
+
+
+async def get_calendar_template_variables(app, config: dict, now: datetime.datetime | None = None,
+                                          selectors: Sequence[tuple[str, str]] = ()) -> dict[str, str]:
+    """The `{{calendar_*}}` values for one config, plus one slice per `(at, offset)` selector.
+
+    `app` is only used to map attendee addresses to Slack users; pass ``None`` to skip that.
+
+    One `now` for the whole build, resolved here rather than deeper down, so the default
+    selection and every relative `at` in the same message describe one moment — which is what
+    makes `at="+0m"` agree with the plain form. One fetch and one index likewise serve every
+    selector: two fetches straddling the cache TTL could otherwise answer two halves of one
+    message from two different documents.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    selectors = usable_selectors(selectors)
+    variables = get_calendar_placeholder_variables(config, selectors)
+    # Every moment this build read, kept beside the values it filled, so `test` can print the
+    # events behind them without a clock, a fetch or an index of its own.
+    selections: list[CalendarSelection] = []
+    variables[CALENDAR_SELECTIONS_KEY] = selections
+    if not resolve_calendar_feed(config).url:
+        return variables
+
+    name, query = await _fetch_and_index(config)
+    if name:
+        variables["calendar_name"] = name
+    if query is None:
+        return variables
+
+    # The default selection first, then one slice per selector.
+    requests = [("", "", "", 0)] + [(event_slice_prefix(at, offset), at, offset, normalize_selector(at, offset)[1])
+                                    for at, offset in selectors]
+    for prefix, at, offset, count in requests:
+        instant = now
+        if at:
+            instant = datetimefmt.resolve_at_time(at, config, now)
+            if instant is None:
+                # Same reasoning: rather than quietly answering about the present, leave the
+                # slice as placeholders.
+                log_warning(f"Ignoring an unusable `at` value in a calendar variable: {at}")
+                continue
+        keys = _slice_keys(prefix)
+        event = select_event(query, config, instant, count)
+        selections.append(CalendarSelection(at, offset, prefix, instant, event))
+        fill_calendar_event_variables(variables, config, keys, event)
+        await fill_calendar_user_variables(app, variables, keys, event)
+    return variables
+
+
+async def _fetch_and_index(config: dict) -> tuple[str, object]:
+    """The feed's display name and its recurrence index, fetched and built once."""
+    feed = resolve_calendar_feed(config)
+    if not feed.url:
+        return "", None
+    calendar, fetched_name = await fetch_calendar(feed.url)
+    if calendar is None:
+        return "", None
+    # A built-in is named by the title an operator curated, not by whatever the feed calls
+    # itself: `X-WR-CALNAME` on a real rota feed is a bare mailbox address, which would
+    # contradict what `list calendars` and the web UI show for the same calendar.
+    name = feed.title if feed.builtin else (fetched_name or feed.title)
+    return name, index_calendar(calendar)
+
+
+async def resolve_calendar_events(config: dict, selectors: Sequence[tuple[datetime.datetime, int]]) -> tuple[str, list[CalendarEvent | None]]:
+    """The feed's name plus one event per `(instant, offset)` pair, index-aligned.
+
+    One fetch and one index for the whole list — see `get_calendar_template_variables`.
+    """
+    name, query = await _fetch_and_index(config)
+    if query is None:
+        return name, [None for _ in selectors]
+    return name, [select_event(query, config, instant, offset) for instant, offset in selectors]
+
+
+async def resolve_calendar_context(config: dict, now: datetime.datetime | None = None,
+                                   offset: int = 0) -> CalendarContext:
+    """The feed's name and the event `offset` places from the one running at `now`."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    name, events = await resolve_calendar_events(config, [(now, offset)])
+    return CalendarContext(name, events[0])
+
+
+# ----- the read command -----
+
+
+# How much of an event's body `test` prints. Long enough to recognise the entry, short
+# enough that a meeting invite full of dial-in boilerplate does not bury the rest of the
+# preview.
+_DESCRIPTION_PREVIEW_LIMIT = 400
+
+
+def describe_event(config: dict, label: str, event: CalendarEvent | None, verbose: bool = False) -> str:
+    """One event as chat text: `show calendar` prints the short form, `test` the full one.
+
+    `verbose` adds what a template can read but the short form leaves out — every attendee
+    with their address, the body, the UID — so a preview answers "why did that variable come
+    out like that?" from the event itself.
+    """
+    if event is None:
+        return f"*{label}*: _none_"
+    lines = [f"*{label}*: {event.summary or UNKNOWN_CALENDAR_EVENT_PLACEHOLDER}"]
+    if event.location:
+        lines.append(f"*Location*: {event.location}")
+    if event.organizer:
+        organizer = event.organizer
+        # Only worth printing the address when it says something the name does not.
+        if event.organizer_email and event.organizer_email != organizer:
+            organizer += f" ({event.organizer_email})"
+        lines.append(f"*Organizer*: {organizer}")
+    if verbose:
+        # Names and addresses paired, and both attendee lists, because `other_*` (the list a
+        # rota template reads) differs from the full one exactly where the organizer invited
+        # themselves — which is the thing worth seeing.
+        for field, names, emails in (("Attendees", event.attendees, event.attendee_emails),
+                                     ("Other attendees", event.other_attendees, event.other_attendee_emails)):
+            if names or emails:
+                lines.append(f"*{field}*: {', '.join(_participant_labels(names, emails))}")
+    else:
+        attendees = event.other_attendees or event.other_attendee_emails or event.attendees or event.attendee_emails
+        if attendees:
+            lines.append(f"*Attendees*: {', '.join(attendees)}")
+    part = "date" if event.all_day else "datetime"
+    lines.append(f"*Start*: `{datetimefmt.format_datetime_value(event.start, part, config)}`"
+                 + (" (all day)" if verbose and event.all_day else ""))
+    lines.append(f"*End*: `{datetimefmt.format_datetime_value(event.end, part, config)}`")
+    if event.status and (verbose or event.status != "CONFIRMED"):
+        lines.append(f"*Status*: `{event.status}`")
+    if verbose:
+        if event.description:
+            lines.append(f"*Description*: {_shorten(event.description, _DESCRIPTION_PREVIEW_LIMIT)}")
+        if event.uid:
+            lines.append(f"*UID*: `{event.uid}`")
+    return "\n".join(lines)
+
+
+def _participant_labels(names: list, emails: list) -> list[str]:
+    """`Name (address)` per participant, from the two index-aligned lists.
+
+    Either half may be blank — an attendee with no usable address, a room mailbox with no
+    name — so whichever is present stands on its own.
+    """
+    labels = []
+    for index in range(max(len(names or ()), len(emails or ()))):
+        name = (names[index] if index < len(names or ()) else "") or ""
+        email = (emails[index] if index < len(emails or ()) else "") or ""
+        if name and email and name != email:
+            labels.append(f"{name} ({email})")
+        elif name or email:
+            labels.append(name or email)
+    return labels
+
+
+def _shorten(text: str, limit: int) -> str:
+    """A value on one line, cut to `limit` characters — for a preview, not for a render."""
+    text = escape_newlines((text or "").strip())
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
+
+async def send_current_calendar_event(app, channel, config_name: str, user, thread_ts: str = "") -> None:
+    """`show calendar` — print the event running now and the next one."""
+    config = channel.configs.get(config_name) or {}
+    feed = resolve_calendar_feed(config)
+    if feed.missing:
+        await messaging.send_message(app, channel, user, f"Configuration `{config_name}` uses the built-in calendar `{feed.builtin}`, which this instance does not offer. `{state.slash_command} list calendars` shows the available ones.", thread_ts)
+        return
+    if not feed.url:
+        await messaging.send_message(app, channel, user, f"No calendar configured. Use `{state.slash_command} [config] set calendar <name|url>`; `{state.slash_command} list calendars` shows the built-in ones.", thread_ts)
+        return
+
+    label = describe_calendar_feed(feed)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # The previous, running and next event in one fetch: `show calendar` is where an operator
+    # checks what the feed actually contains, so the neighbours are worth the two extra
+    # selections.
+    name, (previous_event, current, next_event) = await resolve_calendar_events(
+        config, [(now, -1), (now, 0), (now, 1)])
+    if current is None and next_event is None and previous_event is None:
+        await messaging.send_message(app, channel, user, f"No current or upcoming events in the calendar `{label}`.", thread_ts)
+        return
+
+    header = f"*Calendar*: `{name or label}`"
+    parts = [header]
+    if previous_event is not None:
+        parts.append(describe_event(config, "Before", previous_event))
+    parts.append(describe_event(config, "Now", current))
+    parts.append(describe_event(config, "Next", next_event))
+    message = "\n\n".join(parts)
+    log(f"Reporting calendar events for config '{config_name}' in #{channel.name}.")
+    await messaging.send_message(app, channel, user, message, thread_ts)

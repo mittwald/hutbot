@@ -1,0 +1,1189 @@
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+# The Secret is managed out of band, so the chart refuses to render without a name for it.
+SECRET_NAME = "hutbot-test"
+
+# CI runs a bare `python -m pytest`, so the chart tests only run where helm is installed.
+pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+
+
+def _helm_template_command(tag, *extra, show_only="templates/deployment.yaml"):
+    command = [
+        "helm", "template", "hutbot", str(ROOT / "charts/hutbot"),
+        "--set", f"image.tag={tag}",
+        "--set", f"existingSecret={SECRET_NAME}",
+    ]
+    if show_only:
+        command += ["--show-only", show_only]
+    return command + list(extra)
+
+
+def _render(tag="v1.2.3", *extra, show_only="templates/deployment.yaml"):
+    return subprocess.run(
+        _helm_template_command(tag, *extra, show_only=show_only),
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+
+
+@pytest.mark.parametrize("script", ["deploy-dev.sh", "deploy-prod.sh"])
+@pytest.mark.parametrize("tag", ["latest", "main", "MAIN"])
+def test_deploy_scripts_reject_floating_tags(script, tag):
+    result = subprocess.run(
+        [str(ROOT / script), tag],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "must be pinned" in result.stderr
+
+
+@pytest.mark.parametrize("tag", ["latest", "main", "MAIN"])
+def test_chart_rejects_floating_tags(tag):
+    result = subprocess.run(
+        _helm_template_command(tag),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "floating tags" in result.stderr
+
+
+def test_chart_accepts_pinned_tag():
+    result = subprocess.run(
+        _helm_template_command("v1.2.3"),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "image: \"hutbot:v1.2.3\"" in result.stdout
+
+
+def test_chart_forces_timezone_and_default_locale_when_set():
+    result = subprocess.run(
+        _helm_template_command("v1.2.3") + [
+            "--set", "time.timezone=Europe/Berlin",
+            "--set", "time.locale=de_DE",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "- name: TZ\n              value: \"Europe/Berlin\"" in result.stdout
+    assert "- name: HUTBOT_DEFAULT_DATETIME_LOCALE\n              value: \"de_DE\"" in result.stdout
+
+
+def test_chart_omits_timezone_and_locale_by_default():
+    result = subprocess.run(
+        _helm_template_command("v1.2.3"),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "name: TZ" not in result.stdout
+    assert "HUTBOT_DEFAULT_DATETIME_LOCALE" not in result.stdout
+
+
+def test_chart_passes_the_image_tag_as_the_bot_version():
+    result = subprocess.run(
+        _helm_template_command("v1.2.3"),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "- name: HUTBOT_VERSION\n              value: \"v1.2.3\"" in result.stdout
+
+
+# ----- the Secret is managed out of band -----
+
+def test_chart_requires_an_existing_secret():
+    """No fallback that templates the credentials back into the release."""
+    result = subprocess.run(
+        ["helm", "template", "hutbot", str(ROOT / "charts/hutbot"), "--set", "image.tag=v1.2.3"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode != 0
+    assert "existingSecret is required" in result.stderr
+
+
+def test_chart_has_no_secret_template():
+    result = _render(show_only="templates/secret.yaml")
+
+    assert result.returncode != 0
+    assert "could not find template" in result.stderr
+
+
+def test_chart_never_renders_a_secret_of_its_own():
+    result = _render(show_only=None)
+
+    assert result.returncode == 0, result.stderr
+    assert "kind: Secret" not in result.stdout
+    assert "stringData" not in result.stdout
+
+
+def test_deployment_reads_the_out_of_band_secret():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    container = _container(result)
+    assert "envFrom" not in container
+    secret_refs = {
+        item["name"]: item["valueFrom"]["secretKeyRef"]
+        for item in container["env"] if "valueFrom" in item
+    }
+    assert secret_refs["SLACK_APP_TOKEN"] == {
+        "name": SECRET_NAME, "key": "SLACK_APP_TOKEN"
+    }
+    assert secret_refs["SLACK_BOT_TOKEN"] == {
+        "name": SECRET_NAME, "key": "SLACK_BOT_TOKEN"
+    }
+    for key in ("OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME", "EMPLOYEE_LIST_USERNAME",
+                "EMPLOYEE_LIST_PASSWORD", "EMPLOYEE_LIST_MAPPINGS",
+                # The bridge listing's token sits in its query string, so the URL is a Secret
+                # field rather than a chart value.
+                "HUTBOT_CALENDAR_BRIDGE_URL"):
+        assert secret_refs[key] == {"name": SECRET_NAME, "key": key, "optional": True}
+    # Potentially large JSON must exist only in the mounted file, never execve's environment.
+    assert "HUTBOT_BUILTIN_CALENDARS" not in secret_refs
+    assert "hutbot-secret" not in result.stdout
+
+
+def test_deployment_recreates_rather_than_rolls():
+    """A rolling restart would run two bots against one ReadWriteOnce volume."""
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "type: Recreate" in result.stdout
+
+
+# ----- egress policy -----
+
+def _egress(result):
+    return yaml.safe_load(result.stdout)["spec"]["egress"]
+
+
+def test_chart_renders_without_any_networkpolicy_values():
+    """values.yaml carries the defaults, so a plain render needs no --set placeholders."""
+    result = _render(show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    assert _egress(result)
+
+
+def test_egress_pairs_a_rules_ports_with_its_destinations():
+    """Two items — ports here, destinations there — would mean "this port to anywhere"."""
+    result = _render("v1.2.3",
+                     "--set", "networkPolicy.rules[0].port=443",
+                     "--set-string", "networkPolicy.rules[0].cidrs[0]=192.168.0.15/32",
+                     "--set-string", "networkPolicy.rules[0].cidrs[1]=192.168.0.16/32",
+                     show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    rule = next(item for item in _egress(result)
+                if item.get("to") == [{"ipBlock": {"cidr": "192.168.0.15/32"}},
+                                      {"ipBlock": {"cidr": "192.168.0.16/32"}}])
+    assert rule["ports"] == [{"port": 443, "protocol": "TCP"}]
+    # Nothing else may carry those ports, and no item may name that port without a destination.
+    assert [item for item in _egress(result) if item.get("ports") == rule["ports"]] == [rule]
+
+
+def test_egress_allows_dns_and_every_public_destination():
+    """Slack Socket Mode and public feeds must keep working without a rule per host."""
+    result = _render(show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    egress = _egress(result)
+    dns = next(item for item in egress if "to" not in item)
+    assert dns["ports"] == [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}]
+    public = next(item for item in egress
+                  if item.get("to", [{}])[0].get("ipBlock", {}).get("cidr") == "0.0.0.0/0")
+    # No `ports`: all outbound ports to public destinations.
+    assert "ports" not in public
+    assert public["to"][0]["ipBlock"]["except"] == [
+        "10.0.0.0/8", "100.64.0.0/10", "172.16.0.0/12", "192.168.0.0/16",
+        "169.254.0.0/16"]
+    # DNS is the only item allowed to name ports without a destination.
+    assert [item for item in egress if "to" not in item] == [dns]
+
+
+def test_egress_can_drop_dns_and_public_destinations():
+    result = _render("v1.2.3",
+                     "--set", "networkPolicy.allowDNS=false",
+                     "--set", "networkPolicy.publicEgress.enabled=false",
+                     "--set", "networkPolicy.rules[0].port=443",
+                     "--set-string", "networkPolicy.rules[0].cidrs[0]=192.168.0.15/32",
+                     show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    assert _egress(result) == [{"to": [{"ipBlock": {"cidr": "192.168.0.15/32"}}],
+                               "ports": [{"port": 443, "protocol": "TCP"}]}]
+
+
+def test_a_policy_that_allows_nothing_is_refused():
+    """`enabled` with no rule of any kind denies all egress — almost never the intent."""
+    result = _render("v1.2.3",
+                     "--set", "networkPolicy.allowDNS=false",
+                     "--set", "networkPolicy.publicEgress.enabled=false",
+                     show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode != 0
+    assert "would deny all egress" in result.stderr
+
+
+def test_a_rule_without_a_destination_is_refused():
+    result = _render("v1.2.3", "--set", "networkPolicy.rules[0].port=443",
+                    show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode != 0
+    assert "needs at least one entry in cidrs" in result.stderr
+
+
+# ----- built-in calendars are mounted as a file -----
+
+def _deployment(result):
+    return yaml.safe_load(result.stdout)
+
+
+def _container(result):
+    return _deployment(result)["spec"]["template"]["spec"]["containers"][0]
+
+
+def test_builtin_calendars_are_projected_as_one_file():
+    result = _render()
+    assert result.returncode == 0, result.stderr
+    container = _container(result)
+    spec = _deployment(result)["spec"]["template"]["spec"]
+
+    assert {"name": "HUTBOT_BUILTIN_CALENDARS_FILE",
+            "value": "/etc/hutbot/builtin-calendars.json"} in container["env"]
+    volume = next(v for v in spec["volumes"] if v["name"] == "builtin-calendars")
+    assert volume["secret"]["secretName"] == SECRET_NAME
+    # A instance with no built-in calendars must still start.
+    assert volume["secret"]["optional"] is True
+    assert volume["secret"]["defaultMode"] == 0o440
+    assert volume["secret"]["items"] == [{"key": "HUTBOT_BUILTIN_CALENDARS",
+                                          "path": "builtin-calendars.json"}]
+    mount = next(m for m in container["volumeMounts"] if m["name"] == "builtin-calendars")
+    assert mount["mountPath"] == "/etc/hutbot" and mount["readOnly"] is True
+
+
+def test_the_employee_fallback_file_sits_beside_the_cache_on_the_state_volume():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    env = _container(result)["env"]
+    assert {"name": "HUTBOT_EMPLOYEE_CACHE_FILE", "value": "/data/employees.json"} in env
+    assert {"name": "HUTBOT_EMPLOYEE_FALLBACK_FILE",
+            "value": "/data/employees-fallback.json"} in env
+
+
+def test_no_state_volume_means_no_employee_fallback_path():
+    """Absent, not empty: without the volume the bot falls back to its own default."""
+    result = _render("v1.2.3", "--set", "persistence.enabled=false")
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_EMPLOYEE_FALLBACK_FILE" not in result.stdout
+
+
+def test_calendar_allowed_hosts_reach_the_container_as_one_variable():
+    result = _render("v1.2.3", "--set",
+                     "calendar.allowedHosts={bridge.internal.example,other.internal.example}")
+
+    assert result.returncode == 0, result.stderr
+    assert {"name": "HUTBOT_CALENDAR_ALLOWED_HOSTS",
+            "value": "bridge.internal.example,other.internal.example"} in _container(result)["env"]
+
+
+def test_the_bridge_refresh_interval_reaches_the_container():
+    result = _render("v1.2.3", "--set", "calendar.bridgeRefreshMinutes=15")
+
+    assert result.returncode == 0, result.stderr
+    assert {"name": "HUTBOT_CALENDAR_BRIDGE_REFRESH", "value": "15"} in _container(result)["env"]
+
+
+def test_a_zero_bridge_refresh_interval_is_a_setting_rather_than_a_default():
+    """`0` reads the listing once at startup, which is not what leaving it empty means."""
+    result = _render("v1.2.3", "--set", "calendar.bridgeRefreshMinutes=0")
+
+    assert result.returncode == 0, result.stderr
+    assert {"name": "HUTBOT_CALENDAR_BRIDGE_REFRESH", "value": "0"} in _container(result)["env"]
+
+
+def test_no_bridge_refresh_interval_means_no_variable():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_CALENDAR_BRIDGE_REFRESH" not in result.stdout
+
+
+def test_no_allowed_hosts_means_no_variable():
+    """Absent, not empty: the bot's own default is to allow-list nothing."""
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_CALENDAR_ALLOWED_HOSTS" not in result.stdout
+
+
+def test_the_builtin_calendar_mount_can_be_switched_off():
+    result = _render("v1.2.3", "--set", "builtinCalendars.mountFile=false")
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_BUILTIN_CALENDARS_FILE" not in result.stdout
+    assert "builtin-calendars" not in result.stdout
+
+
+def test_the_builtin_calendar_mount_survives_persistence_being_off():
+    result = _render("v1.2.3", "--set", "persistence.enabled=false")
+
+    assert result.returncode == 0, result.stderr
+    spec = _deployment(result)["spec"]["template"]["spec"]
+    assert [v["name"] for v in spec["volumes"]] == ["builtin-calendars"]
+    assert [m["name"] for m in spec["containers"][0]["volumeMounts"]] == ["builtin-calendars"]
+
+
+def test_the_builtin_calendar_mount_must_not_shadow_the_data_volume():
+    result = _render("v1.2.3", "--set", "builtinCalendars.mountPath=/data")
+
+    assert result.returncode != 0
+    assert "must differ from persistence.mountPath" in result.stderr
+
+
+# ----- scripts/sync-secret.sh -----
+
+SYNC_SECRET = ROOT / "scripts/sync-secret.sh"
+VAULT_JSON = {
+    "SLACK_APP_TOKEN": "xapp-1-abc",
+    "SLACK_BOT_TOKEN": "xoxb-2-def",
+    "OPSGENIE_TOKEN": "og-token",
+    "HUTBOT_CALENDAR_BRIDGE_URL": "https://bridge.example.com/calendars/?token=BRIDGETOKEN",
+}
+
+
+def _stub(directory, name, body):
+    path = directory / name
+    path.write_text("#!/usr/bin/env bash\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+def _stub_cluster(tmp_path, vault_fields=None, live_secret=None, context="coabkube-prod"):
+    """A PATH holding fake `kubectl` and `vault`, plus the file recording kubectl's argv."""
+    import json as _json
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    calls = tmp_path / "kubectl-calls"
+    vault_payload = _json.dumps({"data": {"data": VAULT_JSON if vault_fields is None else vault_fields}})
+    live_secret = live_secret or {}
+    secret_payload = _json.dumps({"data": live_secret})
+    jsonpath_responses = "\n".join(
+        f'''  *"jsonpath={{.data.{key}}}"*) printf '%s' '{value}' ;;'''
+        for key, value in live_secret.items()
+    )
+    _stub(bin_dir, "vault", f'''
+if [[ "$1 $2" == "kv get" ]]; then
+  cat <<'JSON'
+{vault_payload}
+JSON
+  exit 0
+fi
+exit 0
+''')
+    _stub(bin_dir, "kubectl", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$*" in
+  "config current-context") echo "{context}" ;;
+{jsonpath_responses}
+  *"get secret"*"jsonpath"*) echo -n "" ;;
+  *"get secret"*"-o json") cat <<'JSON'
+{secret_payload}
+JSON
+    ;;
+  *"get secret"*) exit 0 ;;
+esac
+exit 0
+''')
+    return bin_dir, calls
+
+
+def _run_sync(tmp_path, *args, vault_fields=None, live_secret=None, context="coabkube-prod", env=None):
+    bin_dir, calls = _stub_cluster(tmp_path, vault_fields, live_secret, context)
+    import os
+
+    environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    environment.update(env or {})
+    result = subprocess.run([str(SYNC_SECRET), *args], cwd=ROOT, capture_output=True, text=True,
+                            check=False, env=environment)
+    result.kubectl_calls = calls.read_text() if calls.exists() else ""
+    return result
+
+
+def test_sync_secret_writes_every_known_key_without_putting_a_value_in_argv(tmp_path):
+    result = _run_sync(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "Secret mw-internal/hutbot synced." in result.stdout
+    assert "--from-literal" not in result.kubectl_calls
+    for value in VAULT_JSON.values():
+        assert value not in result.kubectl_calls
+        assert value not in result.stdout
+
+
+def test_sync_secret_carries_the_calendar_bridge_url(tmp_path):
+    """The listing URL is secret material, so it travels with the tokens beside it."""
+    result = _run_sync(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_CALENDAR_BRIDGE_URL=" in result.kubectl_calls
+    # By file, like every other value: the token must not appear in an argument list.
+    assert VAULT_JSON["HUTBOT_CALENDAR_BRIDGE_URL"] not in result.kubectl_calls
+
+
+def test_sync_secret_refuses_a_foreign_kube_context(tmp_path):
+    result = _run_sync(tmp_path, context="some-other-cluster")
+
+    assert result.returncode != 0
+    assert "refusing to run" in result.stderr
+
+
+def test_sync_secret_rejects_a_key_that_cannot_be_a_variable(tmp_path):
+    result = _run_sync(tmp_path, vault_fields={**VAULT_JSON, "my.key": "x"})
+
+    assert result.returncode != 0
+    assert "not a usable environment variable name" in result.stderr
+
+
+def test_sync_secret_requires_both_slack_tokens(tmp_path):
+    result = _run_sync(tmp_path, vault_fields={"OPSGENIE_TOKEN": "og"})
+
+    assert result.returncode != 0
+    assert "SLACK_APP_TOKEN" in result.stderr
+
+
+def test_sync_secret_rejects_a_null_field(tmp_path):
+    """`jq -j` renders a JSON null as the four bytes "null", which must not become a token."""
+    result = _run_sync(tmp_path, vault_fields={**VAULT_JSON, "SLACK_BOT_TOKEN": None})
+
+    assert result.returncode != 0
+    assert "SLACK_BOT_TOKEN is empty" in result.stderr
+
+
+def test_sync_secret_skips_an_empty_optional_field(tmp_path):
+    result = _run_sync(tmp_path, "--dry-run",
+                       vault_fields={**VAULT_JSON, "OPSGENIE_HEARTBEAT_NAME": ""})
+
+    assert result.returncode == 0, result.stderr
+    assert "OPSGENIE_HEARTBEAT_NAME is empty; leaving it out" in result.stdout
+    assert "OPSGENIE_HEARTBEAT_NAME" not in result.stdout.split("==> keys:")[1].splitlines()[0]
+
+
+def test_sync_secret_ignores_a_field_hutbot_does_not_read(tmp_path):
+    result = _run_sync(tmp_path, "--dry-run", vault_fields={**VAULT_JSON, "NETWORKPOLICY_RULES": "443:0.0.0.0/0"})
+
+    assert result.returncode == 0, result.stderr
+    assert "NETWORKPOLICY_RULES is not a key hutbot reads" in result.stderr
+
+
+def test_sync_secret_refuses_to_drop_a_key_the_live_secret_has(tmp_path):
+    """A `vault kv put` replaces the whole version; that must not silently retire a key."""
+    live = {"SLACK_APP_TOKEN": "eA==", "SLACK_BOT_TOKEN": "eA==", "EMPLOYEE_LIST_PASSWORD": "eA=="}
+    result = _run_sync(tmp_path, "--dry-run", live_secret=live)
+
+    assert result.returncode != 0
+    assert "would REMOVE" in result.stderr and "EMPLOYEE_LIST_PASSWORD" in result.stderr
+
+    allowed = _run_sync(tmp_path / "allowed", "--dry-run", "--allow-drop", live_secret=live)
+    assert allowed.returncode == 0, allowed.stderr
+
+
+def test_sync_secret_local_drop_flags_do_not_carry_live_keys_back(tmp_path):
+    live = {"SLACK_APP_TOKEN": "eA==", "SLACK_BOT_TOKEN": "eA==",
+            "OPSGENIE_TOKEN": "b2xkLW9wcy10b2tlbg=="}
+    local_env = {
+        "SLACK_APP_TOKEN": "xapp-local", "SLACK_BOT_TOKEN": "xoxb-local",
+        "OPSGENIE_TOKEN": "", "OPSGENIE_HEARTBEAT_NAME": "",
+        "EMPLOYEE_LIST_USERNAME": "", "EMPLOYEE_LIST_PASSWORD": "",
+        "EMPLOYEE_LIST_MAPPINGS": "", "HUTBOT_BUILTIN_CALENDARS": "",
+    }
+
+    carried = _run_sync(tmp_path / "carried", "--local", "--dry-run",
+                        live_secret=live, env=local_env)
+    assert carried.returncode == 0, carried.stderr
+    assert "OPSGENIE_TOKEN not in the environment; carrying it over" in carried.stdout
+    assert "OPSGENIE_TOKEN" in carried.stdout.split("==> keys:")[1].splitlines()[0]
+
+    dropped = _run_sync(tmp_path / "dropped", "--local", "--dry-run", "--drop",
+                        "OPSGENIE_TOKEN", live_secret=live, env=local_env)
+    assert dropped.returncode == 0, dropped.stderr
+    assert "OPSGENIE_TOKEN" not in dropped.stdout.split("==> keys:")[1].splitlines()[0]
+
+    allow_drop = _run_sync(tmp_path / "allow", "--local", "--dry-run", "--allow-drop",
+                           live_secret=live, env=local_env)
+    assert allow_drop.returncode == 0, allow_drop.stderr
+    assert "OPSGENIE_TOKEN" not in allow_drop.stdout.split("==> keys:")[1].splitlines()[0]
+
+
+def test_sync_secret_accepts_large_builtin_calendars_because_they_are_file_mounted(tmp_path):
+    import json as _json
+
+    payload = _json.dumps([{"name": "rota", "title": "Rota",
+                            "url": "https://cal.example/" + "x" * 100_000}])
+    result = _run_sync(tmp_path, "--dry-run",
+                       vault_fields={**VAULT_JSON, "HUTBOT_BUILTIN_CALENDARS": payload})
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_BUILTIN_CALENDARS" in result.stdout
+
+
+def test_sync_secret_rejects_a_malformed_builtin_calendar_list(tmp_path):
+    import json as _json
+
+    payloads = [
+        '{}',
+        _json.dumps([{"name": "rota", "title": "R", "url": "http://cal.example.com/x.ics"}]),
+        _json.dumps([{"name": "Rota", "title": "R", "url": "https://cal.example.com/x.ics"}]),
+        _json.dumps([{"name": "rota", "title": "", "url": "https://cal.example.com/x.ics"}]),
+        _json.dumps([{"name": "rota", "title": "A", "url": "https://a/x.ics"},
+                     {"name": "rota", "title": "B", "url": "https://b/x.ics"}]),
+    ]
+    for index, payload in enumerate(payloads):
+        result = _run_sync(tmp_path / f"case{index}", "--dry-run",
+                           vault_fields={**VAULT_JSON, "HUTBOT_BUILTIN_CALENDARS": payload})
+        assert result.returncode != 0, payload
+        assert "HUTBOT_BUILTIN_CALENDARS" in result.stderr or "built-in calendar" in result.stderr
+
+
+def test_sync_secret_names_the_builtin_calendar_feed_hosts(tmp_path):
+    import json as _json
+
+    payload = _json.dumps([{"name": "rota", "title": "Rota",
+                            "url": "https://cal.example.com/SECRETTOKEN/rota.ics"}])
+    result = _run_sync(tmp_path, "--dry-run",
+                       vault_fields={**VAULT_JSON, "HUTBOT_BUILTIN_CALENDARS": payload})
+
+    assert result.returncode == 0, result.stderr
+    # The host has to be checked against the egress allow-list; the token stays unprinted.
+    assert "cal.example.com" in result.stdout and "SECRETTOKEN" not in result.stdout
+
+
+def test_sync_secret_dry_run_writes_nothing(tmp_path):
+    result = _run_sync(tmp_path, "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert "dry run: nothing was written." in result.stdout
+    assert "apply" not in result.kubectl_calls
+
+
+@pytest.mark.parametrize("script", ["deploy-dev.sh", "deploy-prod.sh"])
+def test_deploy_scripts_require_the_secret(tmp_path, script):
+    import os
+
+    bin_dir, _ = _stub_cluster(tmp_path)
+    _stub(bin_dir, "kubectl", '''
+[[ "$*" == "config current-context" ]] && { echo coabkube-prod; exit 0; }
+[[ "$*" == *"get secret"* ]] && exit 1
+exit 0
+''')
+    _stub(bin_dir, "helmfile", "exit 0\n")
+    result = subprocess.run([str(ROOT / script), "-y", "v1.2.3"], cwd=ROOT, capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+    assert result.returncode != 0
+    assert "not found" in result.stderr and "sync it first" in result.stderr
+
+
+@pytest.mark.parametrize("script,env_file,args", [
+    ("deploy-dev.sh", ".env-dev", ["v1.2.3"]),
+    ("deploy-prod.sh", ".env", ["-y", "v1.2.3"]),
+])
+def test_deploy_loads_target_overrides_before_secret_preflight(tmp_path, script, env_file, args):
+    import os
+
+    script_copy = tmp_path / script
+    shutil.copy2(ROOT / script, script_copy)
+    (tmp_path / env_file).write_text(
+        "NAMESPACE=override-namespace\nHUTBOT_EXISTING_SECRET=override-secret\n",
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "kubectl-calls"
+    _stub(bin_dir, "kubectl", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$*" in
+  *"get secret"*jsonpath*) printf '%s' "eA==" ;;
+  *"get secret"*) exit 0 ;;
+  *"get deployment"*) printf '%s' "Recreate" ;;
+esac
+exit 0
+''')
+    _stub(bin_dir, "helmfile", "exit 0\n")
+
+    result = subprocess.run([str(script_copy), *args], cwd=ROOT, capture_output=True, text=True,
+                            check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+    assert result.returncode == 0, result.stderr
+    kubectl_calls = calls.read_text(encoding="utf-8")
+    assert "-n override-namespace get secret override-secret" in kubectl_calls
+    assert "namespace:   override-namespace" in result.stdout
+    assert "secret:      override-secret" in result.stdout
+
+
+def test_container_context_is_allow_listed_and_dockerfile_uses_narrow_copies():
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert dockerignore.splitlines()[2] == "*"
+    assert "!hutbot/**" in dockerignore and "!webui_static/**" in dockerignore
+    assert "COPY . ." not in dockerfile
+
+    # Every file the image copies has to be let back into the deny-by-default context, or its
+    # COPY fails the build with "file not found in build context". Derived from the Dockerfile
+    # so a module added to a COPY line fails here instead of in the pipeline.
+    allowed = set(dockerignore.split())
+    copied = [source
+              for line in dockerfile.splitlines() if line.startswith("COPY ")
+              for source in line.split()[1:-1]]
+    for source in copied:
+        assert f"!{source}" in allowed or f"!{source.rstrip('/')}/**" in allowed, source
+
+
+# ----- scripts/seed-vault.sh -----
+
+SEED_VAULT = ROOT / "scripts/seed-vault.sh"
+SEEDED_KEYS = ("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME",
+               "EMPLOYEE_LIST_USERNAME", "EMPLOYEE_LIST_PASSWORD", "EMPLOYEE_LIST_MAPPINGS")
+ENV_FILE = """export SLACK_APP_TOKEN='xapp-secretapp'
+export SLACK_BOT_TOKEN='xoxb-secretbot'
+export OPSGENIE_TOKEN='og-secret'
+export OPSGENIE_HEARTBEAT_NAME=''
+export EMPLOYEE_LIST_USERNAME='employee-user'
+export EMPLOYEE_LIST_PASSWORD='employee-pass'
+export NETWORKPOLICY_RULES='443:192.168.0.15/32'
+"""
+
+
+def _run_seed(tmp_path, *args, existing=None, env_file=ENV_FILE, ambient=None):
+    """Run the seeder against a stub `vault` that records its argv and the payload it got.
+
+    `ambient` fakes what an operator's shell already exports — the values in there must never
+    reach Vault, only what the env file says.
+    """
+    import json as _json
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    state = tmp_path / "vault-state.json"
+    state.write_text(_json.dumps({"data": {"data": existing or {}}}))
+    calls = tmp_path / "vault-calls"
+    payload = tmp_path / "payload.json"
+    _stub(bin_dir, "vault", f'''
+printf '%s\\n' "$*" >> {calls}
+if [[ "$1 $2" == "kv get" ]]; then cat {state}; fi
+if [[ "$1 $2" == "kv put" ]]; then cp "${{4#@}}" {payload}; fi
+exit 0
+''')
+    path = tmp_path / "env"
+    path.write_text(env_file)
+    # The env the script inherits is scrubbed of the keys it reads, so a value exported in
+    # whatever shell runs the suite cannot decide the outcome of these tests either.
+    inherited = {key: value for key, value in os.environ.items()
+                 if key not in SEEDED_KEYS}
+    result = subprocess.run([str(SEED_VAULT), "--env", "dev", "--env-file", str(path), *args],
+                            cwd=ROOT, capture_output=True, text=True, check=False,
+                            env={**inherited, **(ambient or {}),
+                                 "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+    result.vault_calls = calls.read_text() if calls.exists() else ""
+    result.payload = _json.loads(payload.read_text()) if payload.exists() else None
+    return result
+
+
+def test_seed_vault_writes_only_the_secret_keys(tmp_path):
+    result = _run_seed(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    # Deploy settings from the same env file are no secrets and stay out of Vault.
+    assert set(result.payload) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN",
+                                  "EMPLOYEE_LIST_USERNAME", "EMPLOYEE_LIST_PASSWORD"}
+    assert result.payload["SLACK_BOT_TOKEN"] == "xoxb-secretbot"
+    # An empty optional field is left unset rather than stored as "".
+    assert "OPSGENIE_HEARTBEAT_NAME" not in result.payload
+
+
+def test_seed_vault_never_puts_a_value_on_the_command_line(tmp_path):
+    result = _run_seed(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "kv put secrets-coabkube/production/hutbot-dev @" in result.vault_calls
+    for value in ("xoxb-secretbot", "xapp-secretapp", "og-secret", "employee-pass"):
+        assert value not in result.vault_calls
+        assert value not in result.stdout
+
+
+def test_seed_vault_refuses_a_path_that_already_has_fields(tmp_path):
+    """A put replaces the whole version, so seeding over a live path would drop fields."""
+    result = _run_seed(tmp_path, existing={"SLACK_APP_TOKEN": "x", "OPSGENIE_TOKEN": "y"})
+
+    assert result.returncode != 0
+    assert "already has fields" in result.stderr and "vault kv patch" in result.stderr
+    assert result.payload is None
+
+    forced = _run_seed(tmp_path / "forced", "--force",
+                       existing={"SLACK_APP_TOKEN": "x", "OPSGENIE_TOKEN": "y"})
+    assert forced.returncode == 0, forced.stderr
+
+
+def test_seed_vault_requires_both_slack_tokens(tmp_path):
+    env_file = "\n".join(line for line in ENV_FILE.splitlines() if "SLACK_BOT_TOKEN" not in line)
+    result = _run_seed(tmp_path, env_file=env_file)
+
+    assert result.returncode != 0
+    assert "SLACK_BOT_TOKEN is not set" in result.stderr
+
+
+def test_seed_vault_can_include_the_builtin_calendar_list(tmp_path):
+    calendars = tmp_path / "calendars.json"
+    calendars.write_text('[{"name":"rota","title":"Rota","url":"https://cal.example.com/T/rota.ics"}]')
+    result = _run_seed(tmp_path, "--calendars", str(calendars))
+
+    assert result.returncode == 0, result.stderr
+    assert '"name":"rota"' in result.payload["HUTBOT_BUILTIN_CALENDARS"].replace(" ", "")
+
+
+def test_seed_vault_rejects_a_malformed_builtin_calendar_list(tmp_path):
+    calendars = tmp_path / "calendars.json"
+    calendars.write_text('[{"name":"Rota","title":"Rota","url":"http://cal.example.com/x.ics"}]')
+    result = _run_seed(tmp_path, "--calendars", str(calendars))
+
+    assert result.returncode != 0
+    assert "must be a JSON array" in result.stderr
+    assert result.payload is None
+
+
+def test_seed_vault_ignores_what_the_shell_exports(tmp_path):
+    """`set -a; . ./.env` before `make seed-vault-dev` must not seed the dev path with prod."""
+    env_file = "export SLACK_APP_TOKEN='xapp-fromfile'\nexport SLACK_BOT_TOKEN='xoxb-fromfile'\n"
+    result = _run_seed(tmp_path, env_file=env_file,
+                       ambient={"SLACK_BOT_TOKEN": "xoxb-ambient",
+                                "OPSGENIE_TOKEN": "og-ambient",
+                                "EMPLOYEE_LIST_MAPPINGS": "ambient=leak"})
+
+    assert result.returncode == 0, result.stderr
+    assert set(result.payload) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"}
+    assert result.payload["SLACK_BOT_TOKEN"] == "xoxb-fromfile"
+
+
+def test_seed_vault_will_not_take_a_required_key_from_the_shell(tmp_path):
+    env_file = "export SLACK_APP_TOKEN='xapp-fromfile'\n"
+    result = _run_seed(tmp_path, env_file=env_file,
+                       ambient={"SLACK_BOT_TOKEN": "xoxb-ambient"})
+
+    assert result.returncode != 0
+    assert "SLACK_BOT_TOKEN is not set" in result.stderr
+    assert result.payload is None
+
+
+def test_seed_vault_dry_run_writes_nothing(tmp_path):
+    result = _run_seed(tmp_path, "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert "dry run: nothing was written." in result.stdout
+    assert "kv put" not in result.vault_calls
+
+
+# ----- scripts/edit-calendars.sh -----
+
+EDIT_CALENDARS = ROOT / "scripts/edit-calendars.sh"
+CALENDARS_JSON = ('[{"name":"notfallhotline","title":"Notfallhotline",'
+                  '"url":"https://bridge.example.com/calendars/notfallhotline.ics?token=SECRETTOKEN"}]')
+
+
+def _run_edit_calendars(tmp_path, state, edit=CALENDARS_JSON, *args):
+    """Run the editor flow against a stub `vault` and a non-interactive $EDITOR."""
+    import json as _json
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    state_file = tmp_path / "vault-state.json"
+    state_file.write_text(_json.dumps(state))
+    calls = tmp_path / "vault-calls"
+    payload = tmp_path / "payload.json"
+    _stub(bin_dir, "vault", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$1 $2" in
+  "kv get") cat {state_file} ;;
+  "kv put") cp "${{4#@}}" {payload} ;;
+  "kv patch") cp "${{4#*=@}}" {payload} ;;
+esac
+exit 0
+''')
+    _stub(bin_dir, "fake-editor", f'''
+cat > "$1" <<'JSON'
+{edit}
+JSON
+''')
+    result = subprocess.run([str(EDIT_CALENDARS), "--env", "dev", *args], cwd=ROOT,
+                            capture_output=True, text=True, check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                                 "EDITOR": "fake-editor"})
+    result.vault_calls = calls.read_text() if calls.exists() else ""
+    result.payload = _json.loads(payload.read_text()) if payload.exists() else None
+    return result
+
+
+def test_edit_calendars_patches_a_v2_mount(tmp_path):
+    state = {"data": {"data": {"SLACK_APP_TOKEN": "xapp-a"}, "metadata": {"version": 3}}}
+    result = _run_edit_calendars(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert "kv patch" in result.vault_calls and "kv put" not in result.vault_calls
+    # patch touches one field, so the payload is the list itself.
+    assert result.payload[0]["name"] == "notfallhotline"
+
+
+def test_edit_calendars_merges_the_other_fields_on_a_kv_v1_mount(tmp_path):
+    """v1 has no `kv patch`, so a put has to carry every sibling field back."""
+    state = {"data": {"SLACK_APP_TOKEN": "xapp-a", "SLACK_BOT_TOKEN": "xoxb-b",
+                      "OPSGENIE_TOKEN": "og"}}
+    result = _run_edit_calendars(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert "kv put" in result.vault_calls and "kv patch" not in result.vault_calls
+    assert "KV v1 mount" in result.stderr
+    assert set(result.payload) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN",
+                                   "HUTBOT_BUILTIN_CALENDARS"}
+    assert result.payload["SLACK_BOT_TOKEN"] == "xoxb-b"
+    assert "notfallhotline" in result.payload["HUTBOT_BUILTIN_CALENDARS"]
+
+
+def test_edit_calendars_never_puts_a_value_on_the_command_line(tmp_path):
+    result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}})
+
+    assert result.returncode == 0, result.stderr
+    assert "SECRETTOKEN" not in result.vault_calls
+    # The feed host is printed for the egress check; the token in its query string is not.
+    assert "bridge.example.com" in result.stdout and "SECRETTOKEN" not in result.stdout
+
+
+@pytest.mark.parametrize("edit", [
+    '{"notfallhotline": "…"}',
+    '[{"name":"Notfallhotline","title":"N","url":"https://bridge.example.com/x.ics"}]',
+    '[{"name":"rota","title":"","url":"https://bridge.example.com/x.ics"}]',
+    '[{"name":"rota","title":"R","url":"http://bridge.example.com/x.ics"}]',
+    # The seeded example, renamed but with its placeholder URL left in place.
+    '[{"name":"rota","title":"R","url":"https://REPLACE-ME.example.com/x.ics"}]',
+])
+def test_edit_calendars_refuses_to_write_an_invalid_list(tmp_path, edit):
+    result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}}, edit)
+
+    assert result.returncode != 0
+    assert result.payload is None
+    # The temp file is shredded on exit, so say plainly that the edit is gone.
+    assert "was NOT saved" in result.stderr
+
+
+def test_edit_calendars_seeds_an_example_when_the_field_is_unset(tmp_path):
+    """A blank page says nothing about the shape; the buffer starts as one example entry."""
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    state_file = tmp_path / "vault-state.json"
+    state_file.write_text('{"data": {"SLACK_APP_TOKEN": "xapp-a"}}')
+    calls = tmp_path / "vault-calls"
+    _stub(bin_dir, "vault", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$1 $2" in
+  "kv get") cat {state_file} ;;
+esac
+exit 0
+''')
+    # `cat` as the editor: it prints the buffer it was handed and changes nothing.
+    result = subprocess.run([str(EDIT_CALENDARS), "--env", "dev"], cwd=ROOT,
+                            capture_output=True, text=True, check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                                 "EDITOR": "cat"})
+
+    assert result.returncode == 0, result.stderr
+    assert '"name": "notfallhotline"' in result.stdout
+    assert "REPLACE-ME" in result.stdout
+    assert "the editor opens with an example" in result.stderr
+    # Handing the example straight back is not an edit.
+    assert "the example was left as it is; nothing was written." in result.stdout
+    assert "kv put" not in calls.read_text() and "kv patch" not in calls.read_text()
+
+
+def test_edit_calendars_shows_an_empty_list_rather_than_the_example(tmp_path):
+    result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}}, CALENDARS_JSON,
+                                 "--show")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
+    assert "has no HUTBOT_BUILTIN_CALENDARS" in result.stderr
+
+
+def test_edit_calendars_writes_nothing_when_the_list_is_unchanged(tmp_path):
+    state = {"data": {"HUTBOT_BUILTIN_CALENDARS": CALENDARS_JSON, "SLACK_APP_TOKEN": "xapp-a"}}
+    result = _run_edit_calendars(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert "unchanged; nothing was written." in result.stdout
+    assert "kv put" not in result.vault_calls and "kv patch" not in result.vault_calls
+
+
+def test_edit_calendars_show_prints_the_current_list(tmp_path):
+    state = {"data": {"HUTBOT_BUILTIN_CALENDARS": CALENDARS_JSON}}
+    result = _run_edit_calendars(tmp_path, state, CALENDARS_JSON, "--show")
+
+    assert result.returncode == 0, result.stderr
+    assert "notfallhotline" in result.stdout
+    assert "kv put" not in result.vault_calls
+
+
+# ----- Makefile deploy guard -----
+
+def _make(*args):
+    return subprocess.run(["make", *args], cwd=ROOT, capture_output=True, text=True, check=False)
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
+def test_the_deploy_targets_default_to_the_newest_tag():
+    """`make deploy-dev` with no IMAGE_TAG deploys the most recently cut release tag."""
+    newest = subprocess.run(["git", "tag", "-l", "v[0-9]*", "--sort=-creatordate"],
+                            cwd=ROOT, capture_output=True, text=True, check=False).stdout.split("\n")[0]
+    if not newest:
+        pytest.skip("no release tags in this clone")
+
+    result = _make("-n", "deploy-dev")
+
+    assert result.returncode == 0, result.stderr
+    assert f'./deploy-dev.sh "{newest}"' in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
+def test_the_deploy_guard_refuses_an_empty_image_tag():
+    """A clone without tags must not fall through to a deploy with no tag at all."""
+    result = _make("require-image-tag", "IMAGE_TAG=")
+
+    assert result.returncode != 0
+    assert "no v* git tag found" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
+def test_the_deploy_guard_warns_when_head_is_ahead_of_the_tag():
+    first = subprocess.run(["git", "tag", "-l", "v[0-9]*", "--sort=creatordate"],
+                           cwd=ROOT, capture_output=True, text=True, check=False).stdout.split("\n")[0]
+    if not first:
+        pytest.skip("no release tags in this clone")
+    # A clone whose oldest tag is HEAD (a shallow fetch, a fresh repo) has no drift to warn
+    # about, and the warning is what this test is for.
+    ahead = subprocess.run(["git", "rev-list", "--count", f"{first}..HEAD"],
+                           cwd=ROOT, capture_output=True, text=True, check=False).stdout.strip()
+    if ahead in ("", "0"):
+        pytest.skip("HEAD is not ahead of the oldest tag")
+
+    result = _make("require-image-tag", f"IMAGE_TAG={first}")
+
+    assert result.returncode == 0, result.stderr
+    assert "commit(s) ahead of" in result.stderr
+
+
+@pytest.mark.parametrize("value", ["0", "600"])
+def test_a_calendar_tunable_reaches_the_container_including_zero(value):
+    """`0` is a real setting — no cache, no backward search — not a request for the default."""
+    result = _render("v1.2.3", "--set", f"calendar.ttlSeconds={value}",
+                     "--set", f"calendar.lookbackDays={value}")
+
+    assert result.returncode == 0, result.stderr
+    env = _container(result)["env"]
+    assert {"name": "HUTBOT_CALENDAR_TTL", "value": value} in env
+    assert {"name": "HUTBOT_CALENDAR_LOOKBACK_DAYS", "value": value} in env
+
+
+def test_unset_calendar_tunables_leave_the_bot_defaults_alone():
+    """An empty value must omit the variable, not inject an empty one the bot would parse."""
+    result = _render()
+    empty = _render("v1.2.3", "--set-string", "calendar.ttlSeconds=",
+                    "--set-string", "calendar.lookbackDays=")
+
+    for rendered in (result, empty):
+        assert rendered.returncode == 0, rendered.stderr
+        assert "HUTBOT_CALENDAR_TTL" not in rendered.stdout
+        assert "HUTBOT_CALENDAR_LOOKBACK_DAYS" not in rendered.stdout
+
+
+# ----- the RollingUpdate → Recreate switch -----
+
+def _run_deploy(tmp_path, script, strategy):
+    """Run a deploy script against stub kubectl/helmfile, recording kubectl's argv."""
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    calls = tmp_path / "kubectl-calls"
+    _stub(bin_dir, "kubectl", f'''
+printf '%s\\n' "$*" >> {calls}
+case "$*" in
+  *"get secret"*jsonpath*) echo -n "eA==" ;;
+  *"get secret"*) exit 0 ;;
+  *"get deployment"*) printf '%s' "{strategy}" ;;
+esac
+exit 0
+''')
+    _stub(bin_dir, "helmfile", "exit 0\n")
+    result = subprocess.run([str(ROOT / script), "-y", "v1.2.3"], cwd=ROOT, capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+    result.kubectl_calls = calls.read_text() if calls.exists() else ""
+    return result
+
+
+@pytest.mark.parametrize("script,release", [("deploy-dev.sh", "hutbot-dev"),
+                                            ("deploy-prod.sh", "hutbot")])
+def test_deploy_clears_a_leftover_rollingupdate_block(tmp_path, script, release):
+    """Server-side apply keeps the defaulted block, and Recreate + rollingUpdate is invalid."""
+    result = _run_deploy(tmp_path, script, "RollingUpdate")
+
+    assert result.returncode == 0, result.stderr
+    assert f"patch deployment {release} --type=merge" in result.kubectl_calls
+    assert '"rollingUpdate":null' in result.kubectl_calls
+    assert "still has strategy RollingUpdate" in result.stdout
+
+
+@pytest.mark.parametrize("script", ["deploy-dev.sh", "deploy-prod.sh"])
+def test_deploy_leaves_an_already_recreated_deployment_alone(tmp_path, script):
+    result = _run_deploy(tmp_path, script, "Recreate")
+
+    assert result.returncode == 0, result.stderr
+    assert "patch deployment" not in result.kubectl_calls
+
+
+@pytest.mark.parametrize("script", ["deploy-dev.sh", "deploy-prod.sh"])
+def test_deploy_patches_nothing_on_a_first_install(tmp_path, script):
+    """No Deployment yet: the chart's own strategy applies and there is nothing to clear."""
+    result = _run_deploy(tmp_path, script, "")
+
+    assert result.returncode == 0, result.stderr
+    assert "patch deployment" not in result.kubectl_calls
+
+
+def test_state_import_absent_by_default():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "state-import" not in result.stdout
+    assert "initContainers" not in result.stdout
+
+
+def test_state_import_seeds_the_volume_without_overwriting():
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true")
+
+    assert result.returncode == 0, result.stderr
+    spec = yaml.safe_load(result.stdout)["spec"]["template"]["spec"]
+
+    init = spec["initContainers"][0]
+    assert init["name"] == "state-import"
+    # The bot's own image, so the import pulls nothing extra.
+    assert init["image"] == "hutbot:v1.2.3"
+    script = init["command"][-1]
+    # Copy-if-missing: a file already on the volume must win over the imported one.
+    assert 'if [ -e "$target" ]' in script
+    assert "cp" in script and "chmod 600" in script
+    # Fail-closed: an import that ends without a bot.json (empty or mis-built Secret on a
+    # fresh volume) must hold the pod, not let the bot start with empty defaults.
+    assert 'if [ ! -f "/data/bot.json" ]' in script
+    assert "exit 1" in script
+    mounts = {m["name"]: m for m in init["volumeMounts"]}
+    assert mounts["config"]["mountPath"] == "/data"
+    assert mounts["state-import"]["readOnly"] is True
+
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    secret = volumes["state-import"]["secret"]
+    assert secret["secretName"] == "hutbot-state-import"
+    # Not optional: a missing Secret must hold the pod at init, not start the bot empty.
+    assert "optional" not in secret
+
+
+def test_state_import_secret_name_override():
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true",
+                     "--set", "stateImport.secretName=my-import")
+
+    assert result.returncode == 0, result.stderr
+    spec = yaml.safe_load(result.stdout)["spec"]["template"]["spec"]
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    assert volumes["state-import"]["secret"]["secretName"] == "my-import"
+
+
+def test_state_import_requires_persistence():
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true",
+                     "--set", "persistence.enabled=false")
+
+    assert result.returncode != 0
+    assert "stateImport.enabled requires persistence.enabled" in result.stderr
+
+
+@pytest.mark.parametrize("script,release", [("deploy-dev.sh", "hutbot-dev"),
+                                            ("deploy-prod.sh", "hutbot")])
+def test_deploy_refuses_state_import_without_its_secret(tmp_path, script, release):
+    """Recreate takes the old pod down first; the non-optional import volume would then
+    hold the new pod at init forever, so the deploy script has to catch it up front."""
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    _stub(bin_dir, "kubectl", f'''
+case "$*" in
+  *"get secret {release}-state-import"*) exit 1 ;;
+  *"get secret"*jsonpath*) echo -n "eA==" ;;
+  *"get secret"*) exit 0 ;;
+esac
+exit 0
+''')
+    _stub(bin_dir, "helmfile", "exit 0\n")
+    result = subprocess.run([str(ROOT / script), "-y", "v1.2.3"], cwd=ROOT, capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "STATE_IMPORT_ENABLED": "true",
+                                 "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+    assert result.returncode != 0
+    assert f"{release}-state-import not found" in result.stderr
+    assert "import-state.sh" in result.stderr
+
+
+def test_state_import_rejects_the_reserved_mount_path():
+    """The init container mounts the Secret at /state-import; the PVC on the same path
+    would be a duplicate mount Kubernetes refuses at admission — catch it at render."""
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true",
+                     "--set", "persistence.mountPath=/state-import")
+
+    assert result.returncode != 0
+    assert "must not be /state-import" in result.stderr
