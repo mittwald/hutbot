@@ -347,6 +347,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"every condition operator. `{command} list opsgenie-schedules`, `{command} list calendars` and "
         f"`{command} list teams` name what this instance offers, and `{command} [config] on-call [schedule "
         "name]` prints the current OpsGenie on-call user as a Slack mention.",
+    ]
     # One entry is never split, and entries stay in one quote block per message: a blank line
     # between them would end the quote, so they are joined by an empty quoted line.
     chunks = pack_message_chunks(entries, separator="\n>\n", limit=SLACK_MESSAGE_CHARACTER_LIMIT - 200)

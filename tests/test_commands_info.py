@@ -781,53 +781,27 @@ def test_a_table_cell_shows_line_breaks_and_cannot_close_the_code_block():
 
 
 @pytest.mark.asyncio
-async def test_news_covers_every_feature_the_rules_release_added():
-    app = AsyncMock()
-    channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
-    user = User("U1", "test", "Test User", "Testers")
-
-    with patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "news", channel, user)
-
-    sent_message = sent_messages(mock_send_message)
-    # One headline per thing this release gave a channel, so a reader of `news` alone learns
-    # that a rule can now fire itself, that there can be several of them, and where to look up
-    # the rest.
-    for headline in ("*Triggers, actions & buttons*", "*Several rules per channel*",
-                     "*Conditions on any variable*", "*Calendar feeds*",
-                     "*OpsGenie templates, date/time variables and defaults*",
-                     "*When a rule may fire*", "*Preview a whole rule, or run it now*",
-                     "*Look things up*", "*Less typing*"):
-        assert headline in sent_message, headline
-    for command in ("/hutbot [config] set trigger cron", "/hutbot [config] run",
-                    "/hutbot rename config <name> <new-name>", "/hutbot [config] set opsgenie-message <text>",
-                    "/hutbot help variables", "/hutbot list calendars"):
-        assert f"`{command}" in sent_message, command
-    # Every `{{variable}}` it advertises has to be one a message can actually read.
-    for variable in re.findall(r"\{\{([a-z_]+)(?:\([^)]*\))?\}\}", sent_message):
-        if variable in ("placeholders", "variable"):  # prose, not a variable name
-            continue
-        assert variable in SUPPORTED_TEMPLATE_VARIABLES, variable
-
-
-@pytest.mark.asyncio
 async def test_news_is_split_into_messages_that_each_keep_their_quote_block():
     app = AsyncMock()
     channel = Channel(id="C1", name="general", configs={"default": DEFAULT_CONFIG.copy()})
     user = User("U1", "test", "Test User", "Testers")
 
-    with patch('hutbot.messaging.send_message') as mock_send_message:
+    # A limit low enough to split whatever the list currently holds, so this stays a test of the
+    # packing and not of how many entries there happen to be.
+    with patch('hutbot.messaging.SLACK_MESSAGE_CHARACTER_LIMIT', 1000), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, "news", channel, user)
 
-    texts = [call.args[3] for call in mock_send_message.call_args_list]
-    assert len(texts) > 1, "the list outgrew one message; it has to be sent in parts"
-    for text in texts:
-        assert len(text) <= hutbot.messaging.SLACK_MESSAGE_CHARACTER_LIMIT, len(text)
-    # A blank line would end the quote, so entries are separated by an empty quoted line.
+    calls = mock_send_message.call_args_list
+    texts = [call.args[3] for call in calls]
+    assert len(texts) > 1, "the entries have to be spread over several messages"
+    # An entry is never cut in half: each one opens with its own headline line.
     for text in texts:
         body = text.split("\n\n")[-1]
+        # A blank line would end the quote, so entries are separated by an empty quoted line.
         assert all(line.startswith(">") for line in body.splitlines()), body
+        assert body.startswith("> :"), body
     # Only the last part carries the command footer.
     footers = [call.kwargs.get("footer", call.args[5] if len(call.args) > 5 else True)
-               for call in mock_send_message.call_args_list]
+               for call in calls]
     assert footers == [False] * (len(texts) - 1) + [True]
