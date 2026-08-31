@@ -22,7 +22,7 @@ ARGS ?=
 
 .PHONY: help install run check python-check shellcheck helm-lint test test-deployment \
 	image push seed-vault seed-vault-dev sync-secret sync-secret-dev calendars calendars-dev \
-	tags require-image-tag deploy-dev deploy-prod
+	export-state import-state tags require-image-tag deploy-dev deploy-prod
 
 help: ## Show available targets
 	@echo "Hutbot targets:"
@@ -45,7 +45,7 @@ python-check: ## Compile-check the Python sources
 
 shellcheck: ## Check the deployment scripts
 	shellcheck deploy-dev.sh deploy-prod.sh scripts/sync-secret.sh scripts/edit-calendars.sh \
-		scripts/seed-vault.sh
+		scripts/seed-vault.sh scripts/import-state.sh
 
 helm-lint: ## Lint the Helm chart with safe placeholder values
 	$(HELM) lint charts/hutbot \
@@ -81,6 +81,12 @@ calendars: ## Edit the production built-in calendar list in Vault [ARGS='--sync'
 
 calendars-dev: ## Edit the dev built-in calendar list in Vault [ARGS='--sync']
 	./scripts/edit-calendars.sh --env dev $(ARGS)
+
+export-state: ## Copy the running instance's state files to ./state-export [ARGS='--stop']
+	./scripts/import-state.sh --export $(ARGS)
+
+import-state: ## Build the state-import Secret from ./state-export [ARGS='--env dev']
+	./scripts/import-state.sh --import $(ARGS)
 
 tags: ## Show the most recent release tags
 	@git tag -l 'v[0-9]*' --sort=-creatordate | head -n 5

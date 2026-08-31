@@ -54,6 +54,13 @@ releases:
           size: {{ env "PERSISTENCE_SIZE" | default "100Mi" | quote }}
           storageClass: {{ env "PERSISTENCE_STORAGE_CLASS" | default "" | quote }}
           mountPath: {{ env "PERSISTENCE_MOUNT_PATH" | default "/data" | quote }}
+      # One-time state import for a fresh instance (e.g. after a cluster move): create the
+      # Secret with scripts/import-state.sh, deploy once with STATE_IMPORT_ENABLED=true,
+      # then deploy again without it before deleting the Secret. Files already on the state
+      # volume are never overwritten.
+      - stateImport:
+          enabled: {{ env "STATE_IMPORT_ENABLED" | default "false" }}
+          secretName: {{ env "STATE_IMPORT_SECRET" | default "" | quote }}
       # Calendar tunables: the feed cache TTL and how far back `offset=prev` searches. Both
       # empty means the bot's own defaults, 300 seconds and 90 days.
       - calendar:

@@ -870,6 +870,106 @@ Only the nine keys above are read — `NETWORKPOLICY_RULES` and the other deploy
 the Secret — and a key missing from the environment is carried over from the Secret already in the
 cluster, so updating one value never needs the others at hand.
 
+### Moving to another cluster: one-time state import
+
+The bot's state — `bot.json` (the per-channel configuration), the scheduled-reply and button
+caches, the employee cache and its hand-placed fallback file — lives on the PersistentVolumeClaim,
+which does not follow the release to a new cluster. The chart's `stateImport` seeds a fresh state
+volume exactly once: an init container copies every key of an out-of-band Secret onto the volume
+as a file, and **never overwrites a file that already exists there**, so a flag left on cannot
+clobber live state and re-running the import is harmless.
+
+`scripts/import-state.sh` handles both ends of the move. It confirms the current kube-context
+instead of pinning one (an export runs against the old cluster, an import against the new), probes
+the app directory as well as the state volume (versions up to v1.0.x kept `scheduled_replies.json`
+next to the code), and validates every file as JSON before it becomes part of the Secret. Like the
+credential Secret, the state files never pass through Helm values or the release metadata.
+
+```bash
+# 1. old cluster: read the state files out of the running instance (to ./state-export),
+#    then stop it — the target runs with the same Slack tokens, so a source left running
+#    would answer alongside it and re-send restored reminders. --stop scales the source
+#    deployment to zero right after the export; its release and volume stay put.
+make export-state ARGS='--stop'         # = ./scripts/import-state.sh --env prod --export --stop
+
+# 2. new cluster: credentials first, then the state-import Secret
+make sync-secret
+make import-state                       # = ./scripts/import-state.sh --env prod --import
+
+# 3. deploy once with the import switched on, and check the init container's log
+STATE_IMPORT_ENABLED=true ./deploy-prod.sh v1.1.0
+kubectl -n mw-internal logs deploy/hutbot -c state-import
+
+# 4. deploy again with the flag off, then delete the Secret
+./deploy-prod.sh v1.1.0
+./scripts/import-state.sh --env prod --cleanup
+```
+
+Order matters at the end: the import volume is deliberately **not** `optional` — with the flag on,
+a missing or misnamed Secret holds the pod at init rather than letting the bot start with an empty
+state volume (and the deploy scripts refuse up front when `STATE_IMPORT_ENABLED=true` and the
+Secret is absent, because `strategy: Recreate` takes the old pod down first). The init container is
+fail-closed the same way: if the import ends without a `bot.json` on the volume — an empty or
+mis-built Secret on a fresh volume — it exits nonzero and holds the pod, because the bot itself
+treats a missing configuration as empty defaults and would happily start with nothing. So deploy
+with the flag off *before* `--cleanup`; the script refuses to delete a Secret the deployment still
+mounts. `STATE_IMPORT_SECRET` overrides the Secret name (default `<release>-state-import`) and is
+read by the deploy scripts, the chart, and `import-state.sh` alike, so all three name the same
+Secret.
+
+#### Starting from files already on disk
+
+The `--export` step only exists to get the files out of a running instance. When they are already
+at hand — copied off the old volume, restored from a backup, or kept locally — the import starts
+at the directory:
+
+1. Put the files into one directory. `bot.json` is required; the rest is optional and taken when
+   present. Only these five names are picked up — anything else in the directory is ignored:
+
+   | File | What it carries |
+   | ---- | --------------- |
+   | `bot.json` | the per-channel configuration (required) |
+   | `scheduled_replies.json` | reminders that were still waiting when the old instance stopped |
+   | `button_states.json` | button messages still waiting for a press or an escalation |
+   | `employees.json` | the employee cache, warm before the first fetch |
+   | `employees-fallback.json` | the hand-placed records for people the employee API does not return |
+
+   Every file must be valid JSON — the import refuses a truncated or hand-mangled file up front,
+   rather than letting the bot start and fail to parse its own state. An old flat-format
+   `bot.json` is fine: the bot migrates it at startup.
+
+2. Make sure no other instance is still running with the same Slack tokens — an old deployment
+   in another cluster included (`kubectl scale deploy/hutbot --replicas=0` there). Two bots on
+   one Slack app both answer, and both send the reminders restored from the copied caches.
+
+3. Point the kube-context at the target cluster and make sure the credential Secret is there
+   (`make sync-secret`, or `./scripts/sync-secret.sh --local` from `.env`).
+
+4. Build the state-import Secret from the directory:
+
+   ```bash
+   ./scripts/import-state.sh --env prod --import --dir ./my-state
+   # or, when the directory is ./state-export:  make import-state
+   ```
+
+5. Deploy once with the import switched on, and check what the init container did:
+
+   ```bash
+   STATE_IMPORT_ENABLED=true ./deploy-prod.sh v1.1.0
+   kubectl -n mw-internal logs deploy/hutbot -c state-import
+   # expected: "state-import: imported bot.json" (and one line per further file);
+   # "already on the state volume; keeping it" means the volume had the file and kept it
+   ```
+
+   The bot's own log should then say `Configuration loaded from disk.`
+
+6. Deploy again with the flag off, then delete the Secret:
+
+   ```bash
+   ./deploy-prod.sh v1.1.0
+   ./scripts/import-state.sh --env prod --cleanup
+   ```
+
 ### Built-in calendar feeds
 
 The built-in calendars come from the **calendar bridge**. `HUTBOT_CALENDAR_BRIDGE_URL` is its

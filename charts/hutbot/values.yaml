@@ -133,3 +133,20 @@ persistence:
   size: 100Mi
   storageClass: ""
   mountPath: "/data"
+
+# One-time state import, for starting a fresh instance with the state of an existing one —
+# moving to another cluster, say. When enabled, an init container seeds the state volume from
+# an out-of-band Secret before the bot starts: every key of that Secret becomes one file on
+# the volume (bot.json, scheduled_replies.json, button_states.json, employees.json, ...), and
+# a file already on the volume is never overwritten — the import happens exactly once per
+# file, and a flag left on cannot clobber live state. The Secret is created by
+# scripts/import-state.sh, never by the chart. It is deliberately not `optional`: with the
+# import switched on, a missing or misnamed Secret holds the pod at init rather than letting
+# the bot start with an empty state volume — and the init container refuses in the same way
+# when the import ends without a bot.json on the volume, because the bot treats a missing
+# configuration as empty defaults. So: turn the flag off and deploy *before* deleting the
+# Secret.
+stateImport:
+  enabled: false
+  # Name of the Secret holding the state files. Empty = <release>-state-import.
+  secretName: ""

@@ -14,3 +14,6 @@ button_states.json
 # Editor swap files
 *.swp
 *.swo
+
+# One-time state migration exports (scripts/import-state.sh)
+/state-export/

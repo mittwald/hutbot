@@ -89,6 +89,18 @@ for key in SLACK_APP_TOKEN SLACK_BOT_TOKEN; do
   fi
 done
 
+# The state-import Secret is out of band too (scripts/import-state.sh writes it), and its
+# volume is deliberately not `optional`: with the import switched on, deploying without the
+# Secret would take the old pod down (`strategy: Recreate`) and hold the new one at init.
+if [[ "${STATE_IMPORT_ENABLED:-false}" == "true" ]]; then
+  import_secret="${STATE_IMPORT_SECRET:-${release}-state-import}"
+  if ! kubectl -n "$namespace" get secret "$import_secret" >/dev/null 2>&1; then
+    echo "error: STATE_IMPORT_ENABLED is true but Secret ${namespace}/${import_secret} not found" >&2
+    echo "create it first: ./scripts/import-state.sh --env prod --import" >&2
+    exit 1
+  fi
+fi
+
 # A Deployment created with the default RollingUpdate strategy carries a spec.strategy.rollingUpdate
 # block the API server filled in. Server-side apply merges `type: Recreate` on top but leaves that
 # block alone — it belongs to no applier — and validation then refuses the whole object with

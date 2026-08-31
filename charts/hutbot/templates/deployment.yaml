@@ -7,6 +7,12 @@
 {{- fail "builtinCalendars.mountPath must differ from persistence.mountPath; mounting the Secret there would hide the state volume" }}
 {{- end }}
 {{- end }}
+{{- if and .Values.stateImport.enabled (not .Values.persistence.enabled) }}
+{{- fail "stateImport.enabled requires persistence.enabled: the import seeds the state volume, and without one there is nowhere to import to" }}
+{{- end }}
+{{- if and .Values.stateImport.enabled (eq (trimSuffix "/" (clean .Values.persistence.mountPath)) "/state-import") }}
+{{- fail "persistence.mountPath must not be /state-import; the init container mounts the import Secret there, and Kubernetes rejects two mounts on one path" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,6 +38,51 @@ spec:
       {{- if .Values.hostAliases }}
       hostAliases:
 {{ toYaml .Values.hostAliases | indent 8 }}
+      {{- end }}
+      {{- if .Values.stateImport.enabled }}
+      # One-time seeding of the state volume from the out-of-band state-import Secret, for
+      # starting this instance with the state of another one. Copy-if-missing on purpose: a
+      # file already on the volume wins, so a flag left on cannot overwrite live state and
+      # re-running the import is harmless. The bot's own image, so no extra image needs to
+      # be pulled or allowed.
+      initContainers:
+        - name: state-import
+          image: "{{ .Values.image.repository }}:{{ $imageTag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            # `*` skips the volume's dot-prefixed bookkeeping (`..data`); an empty Secret
+            # leaves the glob unexpanded, which `-e` filters out. The chmod is what makes the
+            # copy writable for the bot — the Secret projects files read-only. The final
+            # check is the fail-closed part: an import that ends without a bot.json (an
+            # empty or mis-built Secret on a fresh volume) must hold the pod here, because
+            # the bot itself treats a missing configuration as empty defaults and would
+            # happily start with nothing.
+            - |
+              for source in /state-import/*; do
+                [ -e "$source" ] || continue
+                file="$(basename "$source")"
+                target="{{ .Values.persistence.mountPath }}/$file"
+                if [ -e "$target" ]; then
+                  echo "state-import: $file is already on the state volume; keeping it"
+                else
+                  cp "$source" "$target"
+                  chmod 600 "$target"
+                  echo "state-import: imported $file"
+                fi
+              done
+              if [ ! -f "{{ .Values.persistence.mountPath }}/bot.json" ]; then
+                echo "state-import: bot.json is neither in the import Secret nor on the state volume" >&2
+                echo "state-import: refusing to let the bot start with an empty configuration" >&2
+                exit 1
+              fi
+          volumeMounts:
+            - name: config
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: state-import
+              mountPath: /state-import
+              readOnly: true
       {{- end }}
       containers:
         - name: {{ .Release.Name }}
@@ -182,6 +233,15 @@ spec:
         - name: config
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-pvc
+        {{- end }}
+        {{- if .Values.stateImport.enabled }}
+        # Deliberately not `optional`: with the import switched on, a missing or misnamed
+        # Secret must hold the pod at init rather than let the bot start with an empty state
+        # volume. Turn the flag off and deploy before deleting the Secret.
+        - name: state-import
+          secret:
+            secretName: {{ include "hutbot.stateImportSecretName" . }}
+            defaultMode: 0440
         {{- end }}
         {{- if include "hutbot.mountBuiltinCalendars" . }}
         # One key projected as one file. `optional: true` on purpose: an instance with no

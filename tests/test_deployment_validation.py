@@ -1084,3 +1084,96 @@ def test_deploy_patches_nothing_on_a_first_install(tmp_path, script):
 
     assert result.returncode == 0, result.stderr
     assert "patch deployment" not in result.kubectl_calls
+
+
+def test_state_import_absent_by_default():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "state-import" not in result.stdout
+    assert "initContainers" not in result.stdout
+
+
+def test_state_import_seeds_the_volume_without_overwriting():
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true")
+
+    assert result.returncode == 0, result.stderr
+    spec = yaml.safe_load(result.stdout)["spec"]["template"]["spec"]
+
+    init = spec["initContainers"][0]
+    assert init["name"] == "state-import"
+    # The bot's own image, so the import pulls nothing extra.
+    assert init["image"] == "hutbot:v1.2.3"
+    script = init["command"][-1]
+    # Copy-if-missing: a file already on the volume must win over the imported one.
+    assert 'if [ -e "$target" ]' in script
+    assert "cp" in script and "chmod 600" in script
+    # Fail-closed: an import that ends without a bot.json (empty or mis-built Secret on a
+    # fresh volume) must hold the pod, not let the bot start with empty defaults.
+    assert 'if [ ! -f "/data/bot.json" ]' in script
+    assert "exit 1" in script
+    mounts = {m["name"]: m for m in init["volumeMounts"]}
+    assert mounts["config"]["mountPath"] == "/data"
+    assert mounts["state-import"]["readOnly"] is True
+
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    secret = volumes["state-import"]["secret"]
+    assert secret["secretName"] == "hutbot-state-import"
+    # Not optional: a missing Secret must hold the pod at init, not start the bot empty.
+    assert "optional" not in secret
+
+
+def test_state_import_secret_name_override():
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true",
+                     "--set", "stateImport.secretName=my-import")
+
+    assert result.returncode == 0, result.stderr
+    spec = yaml.safe_load(result.stdout)["spec"]["template"]["spec"]
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    assert volumes["state-import"]["secret"]["secretName"] == "my-import"
+
+
+def test_state_import_requires_persistence():
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true",
+                     "--set", "persistence.enabled=false")
+
+    assert result.returncode != 0
+    assert "stateImport.enabled requires persistence.enabled" in result.stderr
+
+
+@pytest.mark.parametrize("script,release", [("deploy-dev.sh", "hutbot-dev"),
+                                            ("deploy-prod.sh", "hutbot")])
+def test_deploy_refuses_state_import_without_its_secret(tmp_path, script, release):
+    """Recreate takes the old pod down first; the non-optional import volume would then
+    hold the new pod at init forever, so the deploy script has to catch it up front."""
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    _stub(bin_dir, "kubectl", f'''
+case "$*" in
+  *"get secret {release}-state-import"*) exit 1 ;;
+  *"get secret"*jsonpath*) echo -n "eA==" ;;
+  *"get secret"*) exit 0 ;;
+esac
+exit 0
+''')
+    _stub(bin_dir, "helmfile", "exit 0\n")
+    result = subprocess.run([str(ROOT / script), "-y", "v1.2.3"], cwd=ROOT, capture_output=True,
+                            text=True, check=False,
+                            env={**os.environ, "STATE_IMPORT_ENABLED": "true",
+                                 "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+    assert result.returncode != 0
+    assert f"{release}-state-import not found" in result.stderr
+    assert "import-state.sh" in result.stderr
+
+
+def test_state_import_rejects_the_reserved_mount_path():
+    """The init container mounts the Secret at /state-import; the PVC on the same path
+    would be a duplicate mount Kubernetes refuses at admission — catch it at render."""
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true",
+                     "--set", "persistence.mountPath=/state-import")
+
+    assert result.returncode != 0
+    assert "must not be /state-import" in result.stderr

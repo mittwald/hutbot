@@ -16,6 +16,15 @@ Where the built-in calendar list is projected inside the container. One Secret k
 {{- end -}}
 
 {{/*
+The Secret the one-time state import reads its files from. Like the credential Secret it is
+managed out of band (scripts/import-state.sh) and only referenced here, so no state file
+passes through Helm values or the release metadata.
+*/}}
+{{- define "hutbot.stateImportSecretName" -}}
+{{- .Values.stateImport.secretName | default (printf "%s-state-import" .Release.Name) -}}
+{{- end -}}
+
+{{/*
 True when the calendar list should be mounted: asked for, and there is a Secret to read it
 from. Kept in one place because the volume, the mount and the env pointer must agree.
 */}}
