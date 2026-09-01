@@ -174,7 +174,7 @@ async def test_run_action_reply_posts_with_buttons():
     config["escalation_timeout"] = 0  # no timeout watch
     channel = _mk_channel({"src": config})
     with patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "src", context=None)
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", context=None)
     assert posted == {"channel": "C12345", "ts": "99.1", "text": "Hi there",
                       "recipients": ["#general"]}
     reg.assert_awaited_once()  # buttons present ⇒ escalation registered
@@ -208,7 +208,7 @@ async def test_handle_button_press_routes_to_target_and_cancels_timeout():
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     assert key not in hutbot.state.pending_buttons
     assert run.await_count == 1
     assert run.await_args.args[3] is target_config
@@ -231,7 +231,7 @@ async def test_button_press_ack_cancels_without_running_config():
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post, \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     assert key not in hutbot.state.pending_buttons
     run.assert_not_awaited()
     post.assert_awaited_once_with(app, "C12345", "Thanks!", None, "10.1")
@@ -256,7 +256,7 @@ async def test_button_press_config_passes_orig_context():
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     run.assert_awaited_once()
     assert run.await_args.args[4] == "oncall"
     ctx = run.await_args.kwargs["context"]
@@ -279,8 +279,8 @@ async def test_button_press_delay_reschedules():
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
          patch('hutbot.buttons.reschedule_escalation', new=AsyncMock()) as resched:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
-    assert resched.await_args.args == (app, "token", "C12345", "10.1", 3)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
+    assert resched.await_args.args == (app, OPSGENIE_TOKENS, "C12345", "10.1", 3)
     assert resched.await_args.kwargs == {"_entry": entry}
 
 
@@ -295,7 +295,7 @@ async def test_register_and_cancel_escalation():
     config["escalation_target"] = "escalate"
     hutbot.state.pending_buttons.clear()
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
-        await hutbot.buttons.register_escalation(app, "token", "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
+        await hutbot.buttons.register_escalation(app, OPSGENIE_TOKENS, "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
         entry = hutbot.state.pending_buttons.get(("C12345", "10.1"))
         assert entry is not None
         assert entry["escalation_kind"] == "config" and entry["escalation_target"] == "escalate"
@@ -316,7 +316,7 @@ async def test_cancelled_timer_keeps_persisted_record_for_restart():
 
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()) as flush:
         await hutbot.buttons.register_escalation(
-            app, "token", "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
+            app, OPSGENIE_TOKENS, "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
         task = hutbot.state.pending_buttons[key]["task"]
         await asyncio.sleep(0)
         flush.reset_mock()
@@ -348,10 +348,10 @@ async def test_button_record_is_consumed_once_for_duplicate_and_stale_presses():
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
         await asyncio.gather(
-            hutbot.buttons.handle_button_press(app, "token", body, button_action),
-            hutbot.buttons.handle_button_press(app, "token", body, button_action),
+            hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, button_action),
+            hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, button_action),
         )
-        await hutbot.buttons.handle_button_press(app, "token", body, button_action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, button_action)
 
     run.assert_awaited_once()
     assert key not in hutbot.state.pending_buttons
@@ -375,7 +375,7 @@ async def test_escalation_task_runs_config_target():
     with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
-        await hutbot.buttons._escalation_task(app, "token", key, 0)
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
     assert run.await_count == 1
     assert run.await_args.args[4] == "escalate"
 
@@ -402,7 +402,7 @@ async def test_escalation_task_config_passes_orig_context():
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
-        await hutbot.buttons._escalation_task(app, "token", key, 0)
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
     run.assert_awaited_once()
     assert run.await_args.args[4] == "oncall"
     ctx = run.await_args.kwargs["context"]
@@ -482,7 +482,7 @@ async def test_escalation_task_auto_presses_default_button():
     with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post:
-        await hutbot.buttons._escalation_task(app, "token", key, 0)
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
     # auto-pressed "Yes" (message) ⇒ posts the help text in the thread
     post.assert_awaited_once_with(app, "C12345", "Here is the help", None, "10.1")
 
@@ -501,9 +501,9 @@ async def test_delay_press_does_not_clobber_rescheduled_escalation():
     key = ("C12345", "10.1")
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
         await hutbot.buttons.register_escalation(
-            app, "token", "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
+            app, OPSGENIE_TOKENS, "C12345", "10.1", "C12345", "src", config, {"text": "x", "ts": "9.1"})
         first = hutbot.state.pending_buttons[key]["task"]
-        assert await hutbot.buttons.reschedule_escalation(app, "token", "C12345", "10.1", 5)
+        assert await hutbot.buttons.reschedule_escalation(app, OPSGENIE_TOKENS, "C12345", "10.1", 5)
         try:
             await first  # wait for the cancelled timer to run its finally
         except asyncio.CancelledError:
@@ -535,7 +535,7 @@ async def test_config_button_attributes_to_original_author_not_presser():
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=lambda app, uid, *a, **k: users[uid])), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     ctx = run.await_args.kwargs["context"]
     assert ctx["user"].id == "U5"   # original author, not presser U9
     assert ctx["text"] == "help"
@@ -562,7 +562,7 @@ async def test_button_resolves_from_snapshot_and_strips_after_press():
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post, \
          patch('hutbot.actions.run_action', new=AsyncMock()) as run:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     run.assert_not_awaited()                                   # snapshot ack, not the edited config action
     post.assert_awaited_once_with(app, "C12345", "ok", None, "10.1")
     app.client.chat_update.assert_awaited_once()               # buttons stripped
@@ -829,7 +829,7 @@ async def test_a_press_leaves_a_note_in_place_of_the_buttons(button, expected):
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})), \
          patch('hutbot.actions.run_action', new=AsyncMock()):
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{expected}"
 
@@ -857,7 +857,7 @@ async def test_an_escalation_leaves_a_note_in_place_of_the_buttons(escalation, e
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})), \
          patch('hutbot.actions.run_action', new=AsyncMock()):
-        await hutbot.buttons._escalation_task(app, "token", key, 0)
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
 
     assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{expected}"
 
@@ -887,7 +887,7 @@ async def test_a_press_note_says_skipped_when_the_target_declines():
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=dave)), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})):
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     note = "_Dave Grieser: [Page] ▶︎ alarm (skipped)_"
     assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{note}"
@@ -914,7 +914,7 @@ async def test_an_escalation_note_says_skipped_when_the_target_declines():
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U1", "dave", "Dave", "T"))), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})):
-        await hutbot.buttons._escalation_task(app, "token", key, 0)
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
 
     assert app.client.chat_update.await_args.kwargs["text"] == "Incident — on it?\n\n---\n_⌛︎ 5m ▶︎ alarm (skipped)_"
 
@@ -946,7 +946,7 @@ async def test_an_ack_button_still_posts_when_the_source_config_is_gated():
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})) as post:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     assert post.await_count == 1 and post.await_args.args[2] == "On it"
     assert app.client.chat_update.await_args.kwargs["text"] == "Incident — on it?\n\n---\n_Dave Grieser: [I've got it]_"
@@ -982,7 +982,7 @@ async def _post_and_press(alarm_conditions, edit_alarm=None, escalate=False):
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R1"})) as post:
         await hutbot.buttons.register_escalation(
-            app, "token", "C12345", "R1", "C12345", "src", src,
+            app, OPSGENIE_TOKENS, "C12345", "R1", "C12345", "src", src,
             {"user": dave, "text": "please look as-posted", "ts": "1.1"}, posted_text="Incident?")
         task = hutbot.state.pending_buttons[("C12345", "R1")].get("task")
         if task:
@@ -991,11 +991,11 @@ async def _post_and_press(alarm_conditions, edit_alarm=None, escalate=False):
             edit_alarm(alarm)
         post.reset_mock()
         if escalate:
-            await hutbot.buttons._escalation_task(app, "token", ("C12345", "R1"), 0)
+            await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, ("C12345", "R1"), 0)
         else:
             body = {"channel": {"id": "C12345"}, "container": {"message_ts": "R1"}, "user": {"id": "U1"}}
             action = {"value": json.dumps({"channel": "C12345", "config": "src", "index": 0})}
-            await hutbot.buttons.handle_button_press(app, "token", body, action)
+            await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
         note = app.client.chat_update.await_args.kwargs["text"].split("---\n")[-1]
         return post.await_count, note
 
@@ -1005,7 +1005,7 @@ async def test_register_escalation_snapshots_its_targets_conditions():
     app = AsyncMock()
     channel, src, _ = _buttoned_channel(_AS_POSTED)
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
-        await hutbot.buttons.register_escalation(app, "token", "C12345", "R1", "C12345", "src", src, {}, posted_text="Incident?")
+        await hutbot.buttons.register_escalation(app, OPSGENIE_TOKENS, "C12345", "R1", "C12345", "src", src, {}, posted_text="Incident?")
     entry = hutbot.state._button_states_cache[("C12345", "R1")]
     assert entry["target_conditions"] == {"alarm": {"conditions": _AS_POSTED, "conditions_mode": "all"}}
 
@@ -1044,7 +1044,7 @@ async def test_the_target_snapshot_survives_a_restart():
     try:
         with patch('hutbot.constants.BUTTON_CACHE_FILE', cache_file):
             await hutbot.buttons.register_escalation(
-                app, "token", "C12345", "R1", "C12345", "src", src,
+                app, OPSGENIE_TOKENS, "C12345", "R1", "C12345", "src", src,
                 {"user": dave, "text": "please look as-posted", "ts": "1.1"}, posted_text="Incident?")
             hutbot.state.pending_buttons[("C12345", "R1")]["task"].cancel()
             # The escalation came due while the process was down.
@@ -1078,9 +1078,9 @@ async def test_a_delay_keeps_the_target_snapshot():
     app = AsyncMock()
     channel, src, _ = _buttoned_channel(_AS_POSTED)
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
-        await hutbot.buttons.register_escalation(app, "token", "C12345", "R1", "C12345", "src", src, {}, posted_text="Incident?")
+        await hutbot.buttons.register_escalation(app, OPSGENIE_TOKENS, "C12345", "R1", "C12345", "src", src, {}, posted_text="Incident?")
         hutbot.state.pending_buttons[("C12345", "R1")]["task"].cancel()
-        await hutbot.buttons.reschedule_escalation(app, "token", "C12345", "R1", 10)
+        await hutbot.buttons.reschedule_escalation(app, OPSGENIE_TOKENS, "C12345", "R1", 10)
         hutbot.state.pending_buttons[("C12345", "R1")]["task"].cancel()
     assert hutbot.state._button_states_cache[("C12345", "R1")]["target_conditions"] == {
         "alarm": {"conditions": _AS_POSTED, "conditions_mode": "all"}}
@@ -1123,7 +1123,7 @@ async def _post_the_buttoned_message(app, channel, context, config_name="src"):
     # and leaves a coroutine nobody awaits.
     app.client.chat_getPermalink.return_value = {"permalink": "https://slack.test/p/9.1"}
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
-        await hutbot.actions.run_action(app, "token", channel, channel.configs[config_name], config_name, context)
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, channel.configs[config_name], config_name, context)
 
 
 async def _press(app, channel, posted_ts, config_name="src", index=0):
@@ -1134,7 +1134,7 @@ async def _press(app, channel, posted_ts, config_name="src", index=0):
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("UAUTH", "ada", "Ada Author", "T"))):
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
 
 @pytest.mark.asyncio
@@ -1223,7 +1223,7 @@ async def test_an_escalation_timeout_reads_the_parent_the_same_way_a_press_does(
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("UAUTH", "ada", "Ada Author", "T"))):
-        await hutbot.buttons._run_escalation(app, "token", entry)
+        await hutbot.buttons._run_escalation(app, OPSGENIE_TOKENS, entry)
 
     assert app.client.chat_postMessage.call_args.kwargs["text"] == "escalating src: Ping <@UAUTH> about DB down"
 
@@ -1391,7 +1391,7 @@ async def test_an_ack_text_can_name_who_pressed_which_button_and_when():
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=lambda app, uid, *a, **k: users[uid])):
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     assert app.client.chat_postMessage.call_args.kwargs["text"] == (
@@ -1421,7 +1421,7 @@ async def test_the_press_variables_say_when_a_timeout_pressed_instead_of_a_perso
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=author)):
-        await hutbot.buttons._run_escalation(app, "token", entry)
+        await hutbot.buttons._run_escalation(app, OPSGENIE_TOKENS, entry)
 
     # Nobody pressed, so there is no presser to name — but the button and the time are real.
     assert app.client.chat_postMessage.call_args.kwargs["text"] == (
@@ -1448,7 +1448,7 @@ async def test_a_config_a_button_runs_reads_the_press_too_without_losing_the_aut
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=lambda app, uid, *a, **k: users[uid])):
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     # `{{user}}` stays the original author; the presser arrives beside it, not instead of it.
     assert app.client.chat_postMessage.call_args.kwargs["text"] == "Bob Ops pressed for Ada Author: DB down"
@@ -1472,7 +1472,7 @@ async def test_an_escalation_straight_to_a_config_is_no_press_at_all():
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=author)):
-        await hutbot.buttons._run_escalation(app, "token", entry)
+        await hutbot.buttons._run_escalation(app, OPSGENIE_TOKENS, entry)
 
     # A timeout with no button to press is not a press: the family says so rather than
     # reporting a `timeout` press that never happened.

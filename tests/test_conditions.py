@@ -520,7 +520,7 @@ async def test_a_reply_is_only_queued_when_the_conditions_could_still_pass(condi
     user = User("U1", "dave", "Dave Grieser", "Platform")
     with patch('hutbot.scheduling.schedule_reply', new=AsyncMock()) as sched, \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
-        await hutbot.routing.handle_channel_message(app, "token", channel, user, "please look at this", "1.1")
+        await hutbot.routing.handle_channel_message(app, OPSGENIE_TOKENS, channel, user, "please look at this", "1.1")
     assert (sched.call_count == 1) is scheduled
 
 
@@ -537,7 +537,7 @@ async def test_deciding_early_never_touches_the_network():
          patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})) as opsgenie, \
          patch('hutbot.calendarfeed.get_calendar_template_variables', new=AsyncMock(return_value={})) as calendar:
         await hutbot.routing.handle_channel_message(
-            app, "token", channel, User("U1", "dave", "Dave", "Platform"), "please look", "1.1")
+            app, OPSGENIE_TOKENS, channel, User("U1", "dave", "Dave", "Platform"), "please look", "1.1")
     permalink.assert_not_awaited()
     opsgenie.assert_not_awaited()
     calendar.assert_not_awaited()
@@ -901,7 +901,7 @@ async def test_a_parent_condition_is_settled_so_it_is_judged_the_same_at_arrival
 
     assert "parent_config" in hutbot.conditionutil.settled_condition_variables(config)
     ruled_out, reason = await hutbot.actions.conditions_ruled_out_at_arrival(
-        app, "token", channel, config, "default", {"text": "DB down"})
+        app, OPSGENIE_TOKENS, channel, config, "default", {"text": "DB down"})
 
     assert ruled_out is True
     assert "parent_config" in reason

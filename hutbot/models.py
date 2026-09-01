@@ -9,6 +9,12 @@ ScheduledReply = collections.namedtuple('ScheduledReply', ['task', 'user_id'])
 User = collections.namedtuple('User', ['id', 'name', 'real_name', 'team', 'is_bot'], defaults=(False,))
 Usergroup = collections.namedtuple('Usergroup', ['id', 'handle', 'name'])
 Channel = collections.namedtuple('Channel', ['id', 'name', 'configs'])
+# The two Opsgenie credentials, which are not interchangeable: alerts and the heartbeat ping go
+# through an *integration* API key (Teams -> Integrations -> API), while reading a schedule or its
+# timeline needs an *account* API key (Settings -> API key management) — an integration key is not
+# authorized for those, and a read-only account key is not authorized to create alerts. Both travel
+# together because one rule run renders on-call variables and then posts the alert.
+OpsGenieTokens = collections.namedtuple('OpsGenieTokens', ['alert', 'api'], defaults=("", ""))
 OpsGeniePeriod = collections.namedtuple('OpsGeniePeriod', ['recipient_email', 'slack_user', 'start', 'end'])
 OpsGenieContext = collections.namedtuple('OpsGenieContext', ['schedule_name', 'current', 'next'])
 # A single calendar entry read from an ICS feed. `start`/`end` are ISO-8601 strings

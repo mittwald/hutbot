@@ -12,6 +12,7 @@ from .. import messaging
 from .. import opsgenie
 from .. import calendarfeed
 from ..constants import CONFIG_NAME_PATTERN, DEFAULT_CONFIG_NAME, RESERVED_CONFIG_NAMES
+from ..models import OpsGenieTokens
 from ..textutil import log_debug, strip_quotes
 
 from . import patterns
@@ -20,7 +21,7 @@ from . import setters
 from . import info
 
 
-async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, config_name: str, user, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> bool:
+async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, config_name: str, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), allow_test_message: bool = False, command_ts: str = "") -> bool:
     """Parses and executes a command, returns True if a command was matched."""
     # A bare `/hutbot` — or a lone @mention, whose text is stripped to nothing before it
     # gets here — is someone looking for the command list, not a typo to scold.
@@ -28,7 +29,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await messaging.send_help_message(app, channel, user, thread_ts)
     elif (match := (patterns.TEST_WITH_MESSAGE_PATTERN if allow_test_message else patterns.TEST_PATTERN).match(command_text)):
         test_message = match.group("message") if allow_test_message and match.groupdict().get("message") is not None else ""
-        await preview.test_reply_message(app, opsgenie_token, channel, config_name, user, test_message, command_ts, thread_ts)
+        await preview.test_reply_message(app, opsgenie_tokens, channel, config_name, user, test_message, command_ts, thread_ts)
     elif (match := patterns.SET_WAIT_TIME_PATTERN.match(command_text)):
         await setters.set_wait_time(app, channel, config_name, match.group("wait_time"), user, thread_ts)
     elif (match := patterns.SET_REPLY_MESSAGE_PATTERN.match(command_text)):
@@ -84,7 +85,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await info.list_calendars(app, channel, user, thread_ts)
     elif (match := patterns.ON_CALL_PATTERN.match(command_text)):
         schedule_name = strip_quotes(match.group("schedule") or "")
-        await opsgenie.send_current_on_call(app, opsgenie_token, channel, config_name, schedule_name, user, thread_ts)
+        await opsgenie.send_current_on_call(app, opsgenie_tokens.api, channel, config_name, schedule_name, user, thread_ts)
     elif (match := patterns.EMPLOYEE_TEAM_PATTERN.match(command_text)):
         username = strip_quotes(match.group("user"))
         await info.get_team_of(app, channel, username, user, thread_ts)
@@ -117,7 +118,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     elif (match := patterns.SET_ESCALATION_PATTERN.match(command_text)):
         await setters.set_escalation(app, channel, config_name, match.group("minutes"), match.group("kind"), match.group("target"), user, thread_ts)
     elif patterns.RUN_PATTERN.match(command_text):
-        await setters.run_config_now(app, opsgenie_token, channel, config_name, user, thread_ts)
+        await setters.run_config_now(app, opsgenie_tokens, channel, config_name, user, thread_ts)
     elif patterns.ENABLE_REPLIES_PATTERN.match(command_text):
         await setters.set_replies_enabled(app, channel, config_name, True, user, thread_ts)
     elif patterns.DISABLE_REPLIES_PATTERN.match(command_text):
@@ -157,9 +158,9 @@ def matches_a_command(command_text: str, allow_test_message: bool = False) -> bo
     return False
 
 
-async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> None:
+async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), allow_test_message: bool = False, command_ts: str = "") -> None:
     try:
-        await _process_command(app, text, channel, user, thread_ts, opsgenie_token, allow_test_message, command_ts)
+        await _process_command(app, text, channel, user, thread_ts, opsgenie_tokens, allow_test_message, command_ts)
     except Exception as e:
         # Never let a bad command take down the listener: log it and tell the user.
         log_error(f"Failed to process command in #{getattr(channel, 'name', '?')}: {text}", e)
@@ -170,7 +171,7 @@ async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: st
             log_error("Failed to report command error to the user:", send_error)
 
 
-async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_token: str = "", allow_test_message: bool = False, command_ts: str = "") -> None:
+async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), allow_test_message: bool = False, command_ts: str = "") -> None:
     text = text.replace(f"<@{state.bot_user_id}>", "").strip()
     log_debug(channel, f"Received command for channel #{channel.name}: {text}")
     # Replies quote this back, so a mention and a slash command read the same way.
@@ -178,7 +179,7 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
     command_ts = command_ts or thread_ts
 
     async def run(command_text: str, config_name: str) -> bool:
-        return await parse_and_execute_command(app, command_text, channel, config_name, user, thread_ts, opsgenie_token, allow_test_message, command_ts)
+        return await parse_and_execute_command(app, command_text, channel, config_name, user, thread_ts, opsgenie_tokens, allow_test_message, command_ts)
 
     parts = text.split(None, 1)
     leading_word, remainder = (parts[0], parts[1]) if len(parts) > 1 else ("", "")

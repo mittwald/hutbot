@@ -69,14 +69,14 @@ async def test_handle_channel_message_multi_config_and_pattern():
          patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
 
         hutbot.state.scheduled_messages.clear()
-        await handle_channel_message(app, "token", channel, user, "This is an alarm and a report", "1234.1")
+        await handle_channel_message(app, OPSGENIE_TOKENS, channel, user, "This is an alarm and a report", "1234.1")
 
         assert mock_schedule_reply.call_count == 2
 
         snapshot = {"conditions": [], "conditions_mode": "all"}
         calls = [
-            call(app, "token", channel, configs["config1"], "config1", user, "This is an alarm and a report", "1234.1", conditions_snapshot=snapshot),
-            call(app, "token", channel, configs["config2"], "config2", user, "This is an alarm and a report", "1234.1", conditions_snapshot=snapshot)
+            call(app, OPSGENIE_TOKENS, channel, configs["config1"], "config1", user, "This is an alarm and a report", "1234.1", conditions_snapshot=snapshot),
+            call(app, OPSGENIE_TOKENS, channel, configs["config2"], "config2", user, "This is an alarm and a report", "1234.1", conditions_snapshot=snapshot)
         ]
         mock_schedule_reply.assert_has_calls(calls, any_order=True)
 
@@ -125,9 +125,9 @@ async def test_handle_channel_message_ignores_bot_for_configs_without_include_bo
     with patch('hutbot.datetimefmt.is_work_day', return_value=True), \
          patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
         hutbot.state.scheduled_messages.clear()
-        await handle_channel_message(app, "token", channel, bot_user, "Alarm", "1234.1", actor_is_bot=True)
+        await handle_channel_message(app, OPSGENIE_TOKENS, channel, bot_user, "Alarm", "1234.1", actor_is_bot=True)
 
-    mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["bots"], "bots", bot_user, "Alarm", "1234.1",
+    mock_schedule_reply.assert_called_once_with(app, OPSGENIE_TOKENS, channel, configs["bots"], "bots", bot_user, "Alarm", "1234.1",
                                                 conditions_snapshot={"conditions": [], "conditions_mode": "all"})
 
 
@@ -172,9 +172,9 @@ async def test_route_message_schedules_bot_attachment_text_when_bots_included():
          patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
         hutbot.state.scheduled_messages.clear()
         hutbot.state._scheduled_replies_cache.clear()
-        await route_message(app, "token", event)
+        await route_message(app, OPSGENIE_TOKENS, event)
 
-    mock_schedule_reply.assert_called_once_with(app, "token", channel, configs["alerts"], "alerts", bot_user, extracted_text, "1234.1",
+    mock_schedule_reply.assert_called_once_with(app, OPSGENIE_TOKENS, channel, configs["alerts"], "alerts", bot_user, extracted_text, "1234.1",
                                                 conditions_snapshot={"conditions": [], "conditions_mode": "all"})
     assert hutbot.state._scheduled_replies_cache[(channel.id, "1234.1", "alerts")]["text"] == extracted_text
 
@@ -219,7 +219,7 @@ async def test_handle_channel_message_skips_disabled_config():
     user = User("U12345", "test", "Test User", "Testers")
 
     with patch('hutbot.scheduling.schedule_reply') as mock_schedule, patch('hutbot.persistence.flush_replies_cache'):
-        await handle_channel_message(app, "", channel, user, "hello", "1234.1")
+        await handle_channel_message(app, OpsGenieTokens(), channel, user, "hello", "1234.1")
 
     called_config_names = [call[0][4] for call in mock_schedule.call_args_list]
     assert "active" in called_config_names
@@ -236,7 +236,7 @@ async def test_handle_channel_message_enabled_by_default():
     user = User("U12345", "test", "Test User", "Testers")
 
     with patch('hutbot.scheduling.schedule_reply') as mock_schedule, patch('hutbot.persistence.flush_replies_cache'):
-        await handle_channel_message(app, "", channel, user, "hello", "1234.1")
+        await handle_channel_message(app, OpsGenieTokens(), channel, user, "hello", "1234.1")
 
     assert mock_schedule.called
 
@@ -256,7 +256,7 @@ async def test_handle_channel_message_skips_non_message_trigger():
          patch('hutbot.persistence.flush_replies_cache'), \
          patch('hutbot.scheduling.schedule_reply') as mock_schedule:
         hutbot.state.scheduled_messages.clear()
-        await handle_channel_message(app, "token", channel, user, "hello", "1.1")
+        await handle_channel_message(app, OPSGENIE_TOKENS, channel, user, "hello", "1.1")
         assert mock_schedule.call_count == 1  # only the message-trigger config
 
 
@@ -430,7 +430,7 @@ async def test_route_message_treats_an_app_bot_user_as_a_bot():
          patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
         hutbot.state.scheduled_messages.clear()
         hutbot.state._scheduled_replies_cache.clear()
-        await route_message(app, "token", event)
+        await route_message(app, OPSGENIE_TOKENS, event)
 
     mock_schedule_reply.assert_not_called()
 
@@ -441,7 +441,7 @@ async def test_route_message_treats_an_app_bot_user_as_a_bot():
          patch('hutbot.datetimefmt.is_work_day', return_value=True), \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
          patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
-        await route_message(app, "token", event)
+        await route_message(app, OPSGENIE_TOKENS, event)
 
     mock_schedule_reply.assert_called_once()
     for scheduled in list(hutbot.state.scheduled_messages.values()):
@@ -463,7 +463,7 @@ async def test_route_message_treats_a_bot_user_without_bot_id_as_a_bot():
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
          patch('hutbot.scheduling.schedule_reply') as mock_schedule_reply:
         hutbot.state.scheduled_messages.clear()
-        await route_message(app, "token", event)
+        await route_message(app, OPSGENIE_TOKENS, event)
 
     mock_schedule_reply.assert_not_called()
 

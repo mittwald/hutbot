@@ -5,7 +5,6 @@ import re
 import aiohttp
 from slack_bolt.async_app import AsyncApp
 
-from employee_list import get_env_var
 from logutil import log_error
 
 from .. import state
@@ -49,14 +48,14 @@ async def list_teams(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
 
 
 async def list_opsgenie_schedules(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
-    opsgenie_token = get_env_var("OPSGENIE_TOKEN")
-    if not opsgenie_token:
-        await messaging.send_message(app, channel, user, "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.", thread_ts)
+    opsgenie_api_token = opsgenie.load_opsgenie_tokens().api
+    if not opsgenie_api_token:
+        await messaging.send_message(app, channel, user, "OpsGenie on-call lookups are not configured. Missing `OPSGENIE_API_TOKEN`.", thread_ts)
         return
 
     url = "https://api.opsgenie.com/v2/schedules"
     headers = {
-        "Authorization": f"GenieKey {opsgenie_token}",
+        "Authorization": f"GenieKey {opsgenie_api_token}",
     }
 
     try:

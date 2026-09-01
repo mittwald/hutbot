@@ -87,7 +87,7 @@ async def test_process_command_list_opsgenie_schedules():
     session_context.__aenter__.return_value = session
     session_context.__aexit__.return_value = None
 
-    with patch('hutbot.commands.info.get_env_var', return_value="token"), \
+    with patch('hutbot.opsgenie.get_env_var', return_value="token"), \
          patch('hutbot.opsgenie.aiohttp.ClientSession', return_value=session_context), \
          patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, "list opsgenie-schedules", channel, user, thread_ts)
@@ -109,14 +109,14 @@ async def test_process_command_list_opsgenie_schedules_without_token():
     user = User("U12345", "test", "Test User", "Testers")
     thread_ts = "1234567890.123456"
 
-    with patch('hutbot.commands.info.get_env_var', return_value=""), patch('hutbot.messaging.send_message') as mock_send_message:
+    with patch('hutbot.opsgenie.get_env_var', return_value=""), patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, "list opsgenie-schedules", channel, user, thread_ts)
 
         mock_send_message.assert_called_with(
             app,
             channel,
             user,
-            "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.",
+            "OpsGenie on-call lookups are not configured. Missing `OPSGENIE_API_TOKEN`.",
             thread_ts
         )
 
@@ -137,10 +137,10 @@ async def test_process_command_on_call_uses_configured_schedule():
     with patch('hutbot.opsgenie.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
          patch('hutbot.opsgenie.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=(start, end))) as mock_period, \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_tokens=OPSGENIE_TOKENS)
 
-    mock_resolve.assert_awaited_once_with(app, "token", "Team Primary")
-    mock_period.assert_awaited_once_with("token", "Team Primary", "oncall@example.com")
+    mock_resolve.assert_awaited_once_with(app, OPSGENIE_TOKENS.api, "Team Primary")
+    mock_period.assert_awaited_once_with(OPSGENIE_TOKENS.api, "Team Primary", "oncall@example.com")
     mock_send_message.assert_called_with(
         app,
         channel,
@@ -166,10 +166,10 @@ async def test_process_command_on_call_uses_explicit_schedule():
     with patch('hutbot.opsgenie.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
          patch('hutbot.opsgenie.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=("2026-04-26T08:00:00Z", "2026-04-27T08:00:00Z"))) as mock_period, \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "on-call Team Secondary", channel, user, thread_ts, opsgenie_token="token")
+        await process_command(app, "on-call Team Secondary", channel, user, thread_ts, opsgenie_tokens=OPSGENIE_TOKENS)
 
-    mock_resolve.assert_awaited_once_with(app, "token", "Team Secondary")
-    mock_period.assert_awaited_once_with("token", "Team Secondary", "oncall@example.com")
+    mock_resolve.assert_awaited_once_with(app, OPSGENIE_TOKENS.api, "Team Secondary")
+    mock_period.assert_awaited_once_with(OPSGENIE_TOKENS.api, "Team Secondary", "oncall@example.com")
     sent_message = mock_send_message.call_args.args[3]
     assert "*Schedule*: `Team Secondary`" in sent_message
     assert "*On-call*: <@U999>" in sent_message
@@ -192,10 +192,10 @@ async def test_process_command_on_call_uses_selected_config():
     with patch('hutbot.opsgenie.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))) as mock_resolve, \
          patch('hutbot.opsgenie.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=("2026-04-26T08:00:00Z", "2026-04-27T08:00:00Z"))) as mock_period, \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "alerts on-call", channel, user, thread_ts, opsgenie_token="token")
+        await process_command(app, "alerts on-call", channel, user, thread_ts, opsgenie_tokens=OPSGENIE_TOKENS)
 
-    mock_resolve.assert_awaited_once_with(app, "token", "Alerts Schedule")
-    mock_period.assert_awaited_once_with("token", "Alerts Schedule", "oncall@example.com")
+    mock_resolve.assert_awaited_once_with(app, OPSGENIE_TOKENS.api, "Alerts Schedule")
+    mock_period.assert_awaited_once_with(OPSGENIE_TOKENS.api, "Alerts Schedule", "oncall@example.com")
     sent_message = mock_send_message.call_args.args[3]
     assert "*Schedule*: `Alerts Schedule`" in sent_message
     assert "*On-call*: <@U999>" in sent_message
@@ -216,7 +216,7 @@ async def test_process_command_on_call_falls_back_to_email_when_unmapped():
     with patch('hutbot.opsgenie.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", None))), \
          patch('hutbot.opsgenie.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=(start, end))), \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_tokens=OPSGENIE_TOKENS)
 
     sent_message = mock_send_message.call_args.args[3]
     assert "*On-call*: oncall@example.com" in sent_message
@@ -241,10 +241,10 @@ async def test_process_command_on_call_uses_upcoming_period_when_no_current_on_c
          patch('hutbot.opsgenie.resolve_opsgenie_upcoming_on_call_period', new=AsyncMock(return_value=("next@example.com", start, end))) as mock_upcoming, \
          patch('hutbot.opsgenie.resolve_slack_user_for_opsgenie_recipient', new=AsyncMock(return_value=upcoming_user)) as mock_slack_user, \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_tokens=OPSGENIE_TOKENS)
 
-    mock_resolve.assert_awaited_once_with(app, "token", "Cloud Hosting_schedule")
-    mock_upcoming.assert_awaited_once_with("token", "Cloud Hosting_schedule")
+    mock_resolve.assert_awaited_once_with(app, OPSGENIE_TOKENS.api, "Cloud Hosting_schedule")
+    mock_upcoming.assert_awaited_once_with(OPSGENIE_TOKENS.api, "Cloud Hosting_schedule")
     mock_slack_user.assert_awaited_once_with(app, "next@example.com")
     mock_send_message.assert_called_with(
         app,
@@ -274,7 +274,7 @@ async def test_process_command_on_call_uses_configured_datetime_defaults():
     with patch('hutbot.opsgenie.resolve_opsgenie_on_call', new=AsyncMock(return_value=("oncall@example.com", on_call_user))), \
          patch('hutbot.opsgenie.resolve_opsgenie_on_call_period', new=AsyncMock(return_value=("2026-04-26T08:00:00Z", "2026-04-26T16:00:00Z"))), \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_tokens=OPSGENIE_TOKENS)
 
     sent_message = mock_send_message.call_args.args[3]
     assert "*Start*: `26.04.2026 10:00`" in sent_message
@@ -293,7 +293,7 @@ async def test_process_command_on_call_errors_when_no_current_or_upcoming_on_cal
     with patch('hutbot.opsgenie.resolve_opsgenie_on_call', new=AsyncMock(return_value=("", None))), \
          patch('hutbot.opsgenie.resolve_opsgenie_upcoming_on_call_period', new=AsyncMock(return_value=("", "", ""))), \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_tokens=OPSGENIE_TOKENS)
 
     mock_send_message.assert_called_with(app, channel, user, "Failed to resolve on-call user for OpsGenie schedule `Cloud Hosting_schedule`.", thread_ts)
 
@@ -309,7 +309,7 @@ async def test_process_command_on_call_without_schedule():
     with patch('hutbot.opsgenie.resolve_opsgenie_on_call', new=AsyncMock()) as mock_resolve, \
          patch('hutbot.opsgenie.resolve_opsgenie_on_call_period', new=AsyncMock()) as mock_period, \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_token="token")
+        await process_command(app, "on-call", channel, user, thread_ts, opsgenie_tokens=OPSGENIE_TOKENS)
 
     mock_resolve.assert_not_awaited()
     mock_period.assert_not_awaited()
@@ -338,7 +338,7 @@ async def test_process_command_on_call_without_token():
 
     mock_resolve.assert_not_awaited()
     mock_period.assert_not_awaited()
-    mock_send_message.assert_called_with(app, channel, user, "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.", thread_ts)
+    mock_send_message.assert_called_with(app, channel, user, "OpsGenie on-call lookups are not configured. Missing `OPSGENIE_API_TOKEN`.", thread_ts)
 
 
 
@@ -527,7 +527,7 @@ async def test_schedule_reply_renders_opsgenie_template_variables():
         "opsgenie_current_email": "oncall@example.com",
         "opsgenie_current_name": "On Call User",
     })), patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
-        await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
+        await schedule_reply(app, OPSGENIE_TOKENS, channel, config, "alerts", user, "Original text", "1234.1")
 
     app.client.chat_postMessage.assert_awaited_once_with(
         channel="C12345",
@@ -616,7 +616,7 @@ async def test_schedule_reply_uses_placeholder_for_unmapped_opsgenie_user():
         "opsgenie_current_email": "oncall@example.com",
         "opsgenie_current_name": "oncall@example.com",
     })), patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
-        await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
+        await schedule_reply(app, OPSGENIE_TOKENS, channel, config, "alerts", user, "Original text", "1234.1")
 
     app.client.chat_postMessage.assert_awaited_once_with(
         channel="C12345",
@@ -624,6 +624,34 @@ async def test_schedule_reply_uses_placeholder_for_unmapped_opsgenie_user():
         mrkdwn=True,
         thread_ts="1234.1",
     )
+
+
+
+def test_load_opsgenie_tokens_keeps_the_two_keys_apart(monkeypatch):
+    import hutbot
+    monkeypatch.setenv("OPSGENIE_TOKEN", "integration-key")
+    monkeypatch.setenv("OPSGENIE_API_TOKEN", "account-key")
+
+    assert hutbot.opsgenie.load_opsgenie_tokens() == OpsGenieTokens("integration-key", "account-key")
+
+
+
+def test_load_opsgenie_tokens_falls_back_to_the_single_key(monkeypatch):
+    """A secret written before the split carries only OPSGENIE_TOKEN, and keeps working."""
+    import hutbot
+    monkeypatch.setenv("OPSGENIE_TOKEN", "integration-key")
+    monkeypatch.delenv("OPSGENIE_API_TOKEN", raising=False)
+
+    assert hutbot.opsgenie.load_opsgenie_tokens() == OpsGenieTokens("integration-key", "integration-key")
+
+
+
+def test_load_opsgenie_tokens_without_any_key(monkeypatch):
+    import hutbot
+    monkeypatch.delenv("OPSGENIE_TOKEN", raising=False)
+    monkeypatch.delenv("OPSGENIE_API_TOKEN", raising=False)
+
+    assert hutbot.opsgenie.load_opsgenie_tokens() == OpsGenieTokens("", "")
 
 
 
@@ -694,9 +722,9 @@ async def test_process_command_test_uses_opsgenie_placeholders_when_unavailable(
 
     with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value=hutbot.opsgenie.get_opsgenie_placeholder_variables())) as mock_get_opsgenie_template_variables, \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "test", channel, user, opsgenie_token="token")
+        await process_command(app, "test", channel, user, opsgenie_tokens=OPSGENIE_TOKENS)
 
-    mock_get_opsgenie_template_variables.assert_awaited_once_with(app, "token", channel.configs["default"])
+    mock_get_opsgenie_template_variables.assert_awaited_once_with(app, OPSGENIE_TOKENS.api, channel.configs["default"])
     sent_message = mock_send_message.call_args.args[3]
     assert "`{{opsgenie_current_user}}`: <no-user-set>" in sent_message
     assert "`{{opsgenie_current_email}}`: <no-email-set>" in sent_message
@@ -718,7 +746,7 @@ async def test_schedule_reply_fires_opsgenie_inline_without_buttons():
     with patch('hutbot.state.opsgenie_configured', True), \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
          patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert:
-        await hutbot.scheduling.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
+        await hutbot.scheduling.schedule_reply(app, OPSGENIE_TOKENS, channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
     alert.assert_awaited_once()
 
 
@@ -735,11 +763,13 @@ async def test_run_action_fires_opsgenie_for_opsgenie_config():
     ctx = {"channel_id": "C12345", "user": User("U5", "carol", "Carol", "T"), "text": "DB down", "ts": "9.9", "permalink": "link"}
     with patch('hutbot.state.opsgenie_configured', True), \
          patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert:
-        await hutbot.actions.run_action(app, "tok", channel, cfg, "src", context=ctx)
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, cfg, "src", context=ctx)
     alert.assert_awaited_once()
     args = alert.await_args.args
     # default alert text = original message; ts/permalink from context
     assert args[5] == "DB down" and args[6] == "9.9" and args[7] == "link"
+    # Alert creation takes the integration key, never the read-only account key.
+    assert args[1] == OPSGENIE_TOKENS.alert
 
 
 
@@ -755,7 +785,7 @@ async def test_run_action_opsgenie_message_template_overrides():
     ctx = {"channel_id": "C12345", "user": User("U5", "carol", "Carol", "T"), "text": "DB down", "ts": "9.9", "permalink": "link"}
     with patch('hutbot.state.opsgenie_configured', True), \
          patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert:
-        await hutbot.actions.run_action(app, "tok", channel, cfg, "src", context=ctx)
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, cfg, "src", context=ctx)
     alert.assert_awaited_once()
     assert alert.await_args.args[5] == "Unanswered in #general: DB down"
 
@@ -769,7 +799,7 @@ async def test_run_action_no_opsgenie_when_disabled():
     channel = _mk_channel({"src": cfg})
     with patch('hutbot.state.opsgenie_configured', True), \
          patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert:
-        await hutbot.actions.run_action(app, "tok", channel, cfg, "src", context={"channel_id": "C12345"})
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, cfg, "src", context={"channel_id": "C12345"})
     alert.assert_not_awaited()
 
 
@@ -786,7 +816,7 @@ async def test_scheduled_opsgenie_alert_uses_posted_ts_for_unique_alias():
     ctx = {"channel_id": "C12345"}  # scheduled trigger: no original message ts
     with patch('hutbot.state.opsgenie_configured', True), \
          patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert:
-        await hutbot.actions.run_action(app, "tok", channel, cfg, "sched", context=ctx)
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, cfg, "sched", context=ctx)
     alert.assert_awaited_once()
     assert alert.await_args.args[6] == "111.222"  # ts arg for the alias = posted ts, not empty
 

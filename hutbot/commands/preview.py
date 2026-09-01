@@ -53,7 +53,7 @@ from ..constants import (
     TRIGGER_MESSAGE,
     normalize_selector,
 )
-from ..models import TemplateExpression
+from ..models import OpsGenieTokens, TemplateExpression
 from ..textutil import escape_newlines
 
 try:
@@ -544,12 +544,12 @@ def _all_variables_sections(config: dict, variables: dict) -> list[str]:
     return sections
 
 
-async def test_reply_message(app: AsyncApp, opsgenie_token: str, channel, config_name: str, user, text: str = "", ts: str = "", thread_ts: str = "") -> None:
+async def test_reply_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, config_name: str, user, text: str = "", ts: str = "", thread_ts: str = "") -> None:
     config = channel.configs.get(config_name) or copy.deepcopy(DEFAULT_CONFIG)
     permalink = await slackcache.get_message_permalink(app, channel, ts) if ts else ""
     variables = await templating.build_reply_template_variables(
         app,
-        opsgenie_token,
+        opsgenie_tokens,
         channel,
         config,
         config_name,
