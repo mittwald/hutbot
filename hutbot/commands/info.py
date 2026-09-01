@@ -1,7 +1,5 @@
 """Read-only slash-command handlers: lists, team lookup, and config display."""
 
-import copy
-import json
 import re
 
 from slack_bolt.async_app import AsyncApp
@@ -19,6 +17,7 @@ from .. import templating
 from .. import calendarfeed
 from .. import conditionutil
 from ..buttonutil import normalize_button, parse_config_list
+from .. import configexport
 from .. import targets
 # `views` only, never `handlers`: that one reaches back into `webui_backend` and would tie
 # the whole config-write stack into the `commands` import graph for one button.
@@ -28,7 +27,6 @@ from ..constants import (
     ACK_DESTINATIONS,
     BUTTON_ACTION_ACK,
     CONDITION_MODE_ALL,
-    CONFIG_EXPORT_FORMAT,
     DEFAULT_CONFIG,
     ACTION_DM_USER,
     DATETIME_TEMPLATE_VARIABLES,
@@ -140,34 +138,18 @@ async def get_team_of(app: AsyncApp, channel, username: str, user, thread_ts: st
         await messaging.send_message(app, channel, user, f"Unknown user: `{username}`.", thread_ts)
 
 
-# Left out of an export on purpose: the calendar URL is a bearer secret that must never be
-# printed to the channel (`export config` says so when one is set), and `disabled_reason` is
-# the bot's own bookkeeping, not a setting the exporter made.
-EXPORT_SKIPPED_FIELDS = {'calendar_url', 'disabled_reason'}
-
-
 async def export_config(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
     """`export config [<name>]` — one config as JSON, ready for `import config`.
 
-    Only the fields that differ from the defaults are exported, so the JSON stays readable
-    and importing it changes only what the exporter actually set.
+    The payload itself lives in `configexport`, shared with `import config` and with the App
+    Home's export modal so all three cannot disagree about the format.
     """
     config = channel.configs.get(config_name)
     if config is None:
         await messaging.send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
         return
 
-    settings = {
-        key: copy.deepcopy(value)
-        for key, value in config.items()
-        if key in DEFAULT_CONFIG and key not in EXPORT_SKIPPED_FIELDS and value != DEFAULT_CONFIG[key]
-    }
-    payload = {"format": CONFIG_EXPORT_FORMAT, "name": config_name, "settings": settings}
-    dumped = json.dumps(payload, indent=2, ensure_ascii=False)
-    # A backtick can only occur inside a JSON string, so escaping every one of them keeps the
-    # JSON valid (and round-tripping) while a message containing ``` cannot close the code
-    # fence early the way `show config` has to guard against.
-    dumped = dumped.replace("`", "\\u0060")
+    dumped = configexport.dump_payload(configexport.build_payload(config_name, config))
 
     notes = [f"_Import it with `{state.slash_command} import config [<name>] <json>`; a name given there wins over the exported one._"]
     if config.get('calendar_url'):
