@@ -53,7 +53,7 @@ def _every_view(config, config_name="default"):
     """Every view this module can build, for one config. Named, so a failure says which."""
     meta = _meta()
     built = [
-        ("home", views.home_view(meta, "C12345", [("C12345", "general")], {config_name: config})),
+        ("home", views.home_view(meta, "C12345", [{"id": "C12345", "name": "general"}], {config_name: config})),
         ("hub", views.hub_view(meta, "C12345", config_name, config)),
         ("picker", views.picker_view(meta, "C12345", [config_name])),
         ("new_rule", views.name_view(meta, "C12345")),
@@ -155,7 +155,7 @@ def test_no_select_offers_more_than_a_hundred_options(label, config, name):
 def test_a_channel_with_more_rules_than_the_home_tab_shows_says_so():
     meta = _meta()
     configs = {f"rule{i}": dict(DEFAULT_CONFIG) for i in range(views.HOME_RULE_LIMIT + 5)}
-    view = views.home_view(meta, "C12345", [("C12345", "general")], configs)
+    view = views.home_view(meta, "C12345", [{"id": "C12345", "name": "general"}], configs)
     assert len(view["blocks"]) <= views.SLACK_VIEW_BLOCK_LIMIT
     assert "and 5 more" in json.dumps(view)
 
@@ -368,7 +368,7 @@ def test_a_condition_row_is_described_by_conditionutil():
 def test_the_home_tab_names_the_channel_by_reference_rather_than_by_a_looked_up_name():
     # `<#C…>` renders as the live name, which is why no view needs a Slack call to build.
     meta = _meta()
-    view = views.home_view(meta, "C12345", [("C12345", "general")], {"default": DEFAULT_CONFIG})
+    view = views.home_view(meta, "C12345", [{"id": "C12345", "name": "general"}], {"default": DEFAULT_CONFIG})
     assert "<#C12345>" in json.dumps(view)
 
 
