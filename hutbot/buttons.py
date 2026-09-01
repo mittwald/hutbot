@@ -400,8 +400,19 @@ async def _escalation_task(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, key: 
             log(f"No button pressed on message {key[1]} within timeout; escalating.")
             for attempt in range(1, ESCALATION_ATTEMPTS + 1):
                 final = attempt == ESCALATION_ATTEMPTS
-                if await _run_escalation(app, opsgenie_tokens, entry, final=final):
-                    break
+                try:
+                    if await _run_escalation(app, opsgenie_tokens, entry, final=final):
+                        break
+                except Exception as e:
+                    # A failed attempt, not the end of the escalation. The action helpers catch
+                    # `SlackApiError` and nothing else, so a dropped connection on
+                    # `conversations.open` arrives here — and letting it out of the loop would
+                    # leave the record consumed in memory but still on disk, for the next flush
+                    # by anything else to erase. Every exception is treated as one failed
+                    # attempt, including one no retry can fix: three of those cost three log
+                    # lines and end in the same written-off state, which beats both a silent
+                    # loss and an escalation that comes back on every restart forever.
+                    log_error(f"Escalation attempt {attempt} for message {key[1]} failed:", e)
                 if final:
                     log_error(f"Giving up on the escalation of message {key[1]} after {ESCALATION_ATTEMPTS} attempts.")
                     break

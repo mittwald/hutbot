@@ -430,6 +430,44 @@ async def test_a_shutdown_mid_escalation_leaves_the_record_on_disk():
 
 
 @pytest.mark.asyncio
+async def test_an_escalation_whose_action_raises_is_retried_not_abandoned():
+    """`action_dm_user` catches `SlackApiError` only, so a dropped connection reaches the task."""
+    app = AsyncMock()
+    channel = _mk_channel({"src": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy()})
+    key = ("C12345", "R1")
+    _pending_escalation(key)
+    run = AsyncMock(side_effect=[
+        aiohttp.ClientConnectionError("reset"),
+        ({"channel": "C12345", "ts": "R2"}, ""),
+    ])
+    flush = AsyncMock()
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.persistence.flush_button_cache', new=flush), \
+         patch('hutbot.actions.run_action_with_reason', new=run):
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
+    assert run.await_count == 2
+    # It reached the end of the escalation, so the consumed record is written off deliberately
+    # rather than left for an unrelated flush to erase.
+    flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_escalation_whose_action_keeps_raising_is_written_off():
+    app = AsyncMock()
+    channel = _mk_channel({"src": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy()})
+    key = ("C12345", "R1")
+    _pending_escalation(key)
+    run = AsyncMock(side_effect=RuntimeError("a bug, not a blip"))
+    flush = AsyncMock()
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.persistence.flush_button_cache', new=flush), \
+         patch('hutbot.actions.run_action_with_reason', new=run):
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
+    assert run.await_count == hutbot.buttons.ESCALATION_ATTEMPTS
+    flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_stripping_the_buttons_is_retried():
     app = AsyncMock()
     app.client.chat_update = AsyncMock(side_effect=[_slack_error("ratelimited"), {"ok": True}])
@@ -507,3 +545,79 @@ async def test_a_write_is_retried(tmp_path):
         await hutbot.persistence.flush_replies_cache()
     assert json.loads(path.read_text()) == []
     assert len(opened) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o644])
+async def test_a_state_file_keeps_the_mode_it_had(tmp_path, mode):
+    """`os.replace` installs the *temp* file's mode, so the write has to carry the old one over —
+    both ways: a 0600 file from a state import must not widen, and a 0644 one must not narrow."""
+    path = tmp_path / "bot.json"
+    path.write_text("{}")
+    os.chmod(path, mode)
+    hutbot.state.channel_config = {"C1": {"default": {"wait_time": 60}}}
+    with patch.object(hutbot.constants, 'CONFIG_FILE_NAME', str(path)):
+        await hutbot.persistence.save_configuration()
+    assert os.stat(path).st_mode & 0o777 == mode
+
+
+@pytest.mark.asyncio
+async def test_a_new_state_file_is_private(tmp_path):
+    """These files carry bearer calendar URLs and Slack ids; the umask has no say in it."""
+    path = tmp_path / "bot.json"
+    hutbot.state.channel_config = {"C1": {"default": {"wait_time": 60}}}
+    with patch.object(hutbot.constants, 'CONFIG_FILE_NAME', str(path)):
+        await hutbot.persistence.save_configuration()
+    assert os.stat(path).st_mode & 0o777 == fileutil.DEFAULT_FILE_MODE
+
+
+@pytest.mark.asyncio
+async def test_the_employee_cache_keeps_its_mode(tmp_path):
+    path = tmp_path / "employees.json"
+    path.write_text("[]")
+    os.chmod(path, 0o600)
+    with patch('employee_list.get_employee_cache_file_name', return_value=str(path)):
+        await employee_list.save_employees_to_disk([{"ad_name": "dave"}])
+    assert json.loads(path.read_text()) == [{"ad_name": "dave"}]
+    assert os.stat(path).st_mode & 0o777 == 0o600
+
+
+# ----- the employee directory falls back to disk for anything it cannot read -----
+
+
+@contextlib.contextmanager
+def _employee_endpoint(payload):
+    """A directory that authenticates and answers 200 with `payload`."""
+    class _Response:
+        def __init__(self, body):
+            self.status = 200
+            self.headers = {}
+            self._body = body
+        async def text(self): return "a-token"
+        async def json(self): return self._body
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        def post(self, url, json=None): return _Response(None)
+        def get(self, url, headers=None): return _Response(payload)
+
+    with patch('employee_list.get_env_var', side_effect=lambda name: "set"), \
+         patch('employee_list.aiohttp.ClientSession', lambda *a, **k: _Session()):
+        yield
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [
+    {"users": []},          # an object where a list was expected
+    [None],                 # a list with a hole in it
+    ["not-a-record"],
+])
+async def test_a_malformed_employee_payload_falls_back_to_disk(payload):
+    """This runs at startup: an exception here aborts the bot instead of using the cache."""
+    from_disk = {"dave": {"ad_name": "dave"}}
+    with _employee_endpoint(payload), \
+         patch('employee_list.load_employees_from_disk', new=AsyncMock(return_value=from_disk)):
+        assert await employee_list.load_employees() == from_disk

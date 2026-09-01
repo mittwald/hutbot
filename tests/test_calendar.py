@@ -736,6 +736,28 @@ async def test_a_feed_that_comes_back_is_fetched_again():
 
 
 @pytest.mark.asyncio
+async def test_the_stale_grace_is_counted_past_the_ttl():
+    """`staleGraceSeconds` is extra time on top of the TTL, not the whole life of the copy."""
+    url = "https://cal.example.com/feed.ics"
+    calls = []
+    with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
+        await fetch_calendar(url)
+    with patch('hutbot.calendarfeed._CALENDAR_TTL', 3600), \
+         patch('hutbot.calendarfeed._CALENDAR_STALE_GRACE', 300):
+        # An hour and a minute old: past the TTL, inside the grace.
+        _age_the_calendar_cache(url, 3660)
+        with _patch_http(_FakeResponse(status=503, text="busy"), calls):
+            calendar, _ = await fetch_calendar(url)
+        assert calendar is not None
+        # An hour and seven minutes: past both.
+        hutbot.state._calendar_failures.clear()
+        _age_the_calendar_cache(url, 360)
+        with _patch_http(_FakeResponse(status=503, text="busy"), calls):
+            assert await fetch_calendar(url) == (None, "")
+    assert hutbot.state._calendar_cache == {}
+
+
+@pytest.mark.asyncio
 async def test_a_calendar_nobody_has_reached_for_a_day_is_dropped():
     calls = []
     with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):

@@ -3,6 +3,7 @@
 *
 !requirements.txt
 !employee_list.py
+!fileutil.py
 !logutil.py
 !retryutil.py
 !webui.py

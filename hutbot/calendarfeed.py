@@ -1128,7 +1128,11 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
         """The last copy of this feed, while it is young enough to still be worth having."""
         if not cached:
             return None, ""
-        if (time.monotonic() - cached[0]) >= _CALENDAR_STALE_GRACE:
+        # The grace is time *past the TTL*, not total age: a feed cached for an hour and graced
+        # for five minutes is served for an hour and five minutes, not discarded the moment the
+        # hour is up. A zero grace therefore stops serving a stale copy at all, which is what
+        # this path is reached with.
+        if (time.monotonic() - cached[0]) >= _CALENDAR_TTL + _CALENDAR_STALE_GRACE:
             # Past the grace it is dropped, so a feed that has been gone for a day stops
             # answering conditions with what it said before it went.
             state._calendar_cache.pop(url, None)

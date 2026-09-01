@@ -15,7 +15,9 @@ import pytest
 from unittest.mock import ANY, AsyncMock, MagicMock, mock_open, patch, call
 
 from slack_sdk.errors import SlackApiError
+import employee_list
 from employee_list import get_env_var
+import fileutil
 
 from hutbot.models import BuiltinCalendar, Channel, OpsGenieTokens, User, Usergroup, ScheduledReply
 from hutbot.constants import (

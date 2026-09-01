@@ -289,8 +289,8 @@ back 90 days (`HUTBOT_CALENDAR_LOOKBACK_DAYS`) — widen that for a calendar who
 months apart. Both are chart values as well (`calendar.ttlSeconds`, `calendar.lookbackDays`), so a
 deployment can set them without touching the image.
 
-A feed that cannot be fetched keeps answering from its last copy for a day
-(`HUTBOT_CALENDAR_STALE_GRACE`, `calendar.staleGraceSeconds`), because a condition judged on a
+A feed that cannot be fetched keeps answering from its last copy for a day past that TTL
+(`HUTBOT_CALENDAR_STALE_GRACE`, `calendar.staleGraceSeconds`; `0` switches it off), because a condition judged on a
 day-old calendar is wrong far less often than one judged on no calendar — "on vacation" would
 otherwise quietly become "not on vacation" for as long as the host is down. Past that the copy is
 dropped. A feed that just failed is not asked again until its TTL is up, so a host that is down

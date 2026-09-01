@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import binascii
 import json
@@ -9,6 +8,7 @@ import aiohttp
 from unidecode import unidecode
 
 from logutil import log, log_error, log_warning
+import fileutil
 import retryutil
 
 
@@ -198,26 +198,10 @@ async def save_employees_to_disk(users: list) -> None:
 
     This file is what `load_employees_from_disk` falls back to when the directory is
     unreachable — a half-written one would take that fallback away exactly when it is needed.
+    It holds personal data, so it keeps whatever mode it already had (0600 after a state
+    import) rather than being recreated under the process umask.
     """
-    path = get_employee_cache_file_name()
-    temporary = f"{path}.tmp"
-    content = json.dumps(users, indent=2)
-
-    async def attempt() -> None:
-        async with aiofiles.open(temporary, "w") as f:
-            await f.write(content)
-            await f.flush()
-            await asyncio.to_thread(os.fsync, f.fileno())
-        await asyncio.to_thread(os.replace, temporary, path)
-
-    try:
-        await retryutil.retry_async(attempt, what="Writing the employee cache")
-    except Exception as e:
-        log_error("Failed to save employees to disk:", e)
-        try:
-            await asyncio.to_thread(os.unlink, temporary)
-        except OSError:
-            pass
+    await fileutil.write_json_file(get_employee_cache_file_name(), users, "Writing the employee cache")
 
 
 async def load_employees() -> dict:
@@ -274,7 +258,15 @@ async def load_employees() -> dict:
     if users is None:
         return await load_employees_from_disk()
 
-    employees = generate_employee_list(users)
+    # A 200 with JSON of the wrong shape — an object, or a list with a null in it — used to be
+    # covered by the same `except` as the request. It still has to be: this runs at startup, and
+    # an exception escaping here aborts the process instead of falling back to the disk cache.
+    try:
+        employees = generate_employee_list(users)
+    except Exception as e:
+        log_error(f"Failed to read the employees returned by {employee_url}:", e)
+        return await load_employees_from_disk()
+
     log(f"{len(employees)} employees retrieved from {employee_url}.")
     await save_employees_to_disk(users)
     return merge_employee_fallbacks(employees, await load_employee_fallbacks())

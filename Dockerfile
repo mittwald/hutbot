@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Keep build context and image free of local state. These are the only runtime files;
 # tests, deploy tooling, VCS data and ignored credentials never enter an image layer.
-COPY employee_list.py logutil.py retryutil.py webui.py ./
+COPY employee_list.py fileutil.py logutil.py retryutil.py webui.py ./
 COPY hutbot/ ./hutbot/
 COPY webui_static/ ./webui_static/
 
