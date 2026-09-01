@@ -20,6 +20,9 @@ from .. import calendarfeed
 from .. import conditionutil
 from ..buttonutil import normalize_button, parse_config_list
 from .. import targets
+# `views` only, never `handlers`: that one reaches back into `webui_backend` and would tie
+# the whole config-write stack into the `commands` import graph for one button.
+from ..apphome import views as apphome_views
 from ..constants import (
     ACK_DESTINATION_UNKNOWN,
     ACK_DESTINATIONS,
@@ -407,4 +410,12 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
     # fence in half, so a channel with several configs is sent as several messages.
     chunks = messaging.pack_message_chunks([message, *config_sections, footer])
     for index, chunk in enumerate(chunks):
-        await messaging.send_message(app, channel, user, chunk, thread_ts, footer=index == len(chunks) - 1)
+        last = index == len(chunks) - 1
+        # The Edit button rides on the final chunk only, before the footer, so "Response to
+        # command:" stays last. `send_message` appends the footer to whatever blocks it is
+        # given, the same way `export config` hands it a preformatted block.
+        blocks = messaging.section_blocks(chunk)
+        if last:
+            blocks = blocks + apphome_views.edit_config_blocks(channel.id)
+        await messaging.send_message(app, channel, user, chunk, thread_ts, footer=last,
+                                     blocks=blocks)
