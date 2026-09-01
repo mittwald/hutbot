@@ -22,6 +22,7 @@ from . import conditionutil
 from . import datetimefmt
 from . import persistence
 from . import renaming
+from .buttonutil import format_config_list, parse_config_list
 from .constants import (
     ACTION_DM_USER,
     ACTION_GROUP_DM,
@@ -146,6 +147,13 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
         elif not escalation_target:
             errors['escalation_target'] = "Pick a button label or a rule to escalate to."
         else:
+            if escalation_kind == ESCALATION_CONFIG:
+                # Several rules, comma-separated, run one after the other when the timeout
+                # comes; normalized to the one spelling the setters write.
+                names = parse_config_list(escalation_target)
+                if not names:
+                    errors['escalation_target'] = "Name a rule to run, or several separated by commas."
+                escalation_target = format_config_list(names)
             cfg['escalation_timeout'] = escalation_timeout
             cfg['escalation_kind'] = escalation_kind
             cfg['escalation_target'] = escalation_target
@@ -403,9 +411,13 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
             if button_action not in BUTTON_ACTIONS:
                 errors[f'buttons.{i}'] = "Button action must be one of " + ", ".join(sorted(BUTTON_ACTIONS)) + "."
                 continue
-            if button_action == BUTTON_ACTION_CONFIG and not value:
-                errors[f'buttons.{i}'] = "`config` button needs a configuration name."
-                continue
+            if button_action == BUTTON_ACTION_CONFIG:
+                # As for the escalation above: a comma-separated list runs each rule in turn.
+                names = parse_config_list(value)
+                if not names:
+                    errors[f'buttons.{i}'] = "`config` button needs a rule name, or several separated by commas."
+                    continue
+                value = format_config_list(names)
             if button_action == BUTTON_ACTION_ACK and value:
                 # Same treatment as reply_message: mentions resolved, variables checked.
                 ok, mention_error, value = await messaging.process_mentions(app, value)

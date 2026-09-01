@@ -29,7 +29,7 @@ from .. import slackcache
 from .. import state
 from .. import targets
 from .. import templating
-from ..buttonutil import normalize_button
+from ..buttonutil import button_config_names, normalize_button, parse_config_list
 from ..constants import (
     ACTION_DM_USER,
     ACTION_GROUP_DM,
@@ -147,7 +147,7 @@ def _button_summary(channel, button: dict) -> str:
     action, value = normalize_button(button)
     label = str(button.get('label') or '')
     if action == BUTTON_ACTION_CONFIG:
-        return f"`{label}` runs `{value}`{_missing_config_note(channel, value)}"
+        return f"`{label}` runs {_config_list(value)}{_missing_config_note(channel, value)}"
     if action == BUTTON_ACTION_DELAY:
         return f"`{label}` delays the escalation by {value} minutes"
     return f"`{label}` acknowledges" + (" and posts its text" if value else "")
@@ -289,23 +289,31 @@ def _invocation_paths(channel, config_name: str) -> list[str]:
     paths = []
     for name, other in sorted(channel.configs.items()):
         for button in other.get('buttons') or []:
-            action, value = normalize_button(button)
-            if action == BUTTON_ACTION_CONFIG and value == config_name:
+            if config_name in button_config_names(button):
                 paths.append(f"the button `{button.get('label')}` of `{name}`")
         kind, target = buttons._escalation_kind(other)
-        if kind == ESCALATION_CONFIG and target == config_name:
+        if kind == ESCALATION_CONFIG and config_name in parse_config_list(target):
             paths.append(f"the escalation of `{name}`")
     return paths
 
 
-def _missing_config_note(channel, name: str) -> str:
+def _config_list(value: str) -> str:
+    """The configs a button or an escalation runs, in the order it runs them."""
+    return ", ".join(f"`{name}`" for name in parse_config_list(value)) or f"`{value}`"
+
+
+def _missing_config_note(channel, value: str) -> str:
     """The warning for a button or escalation pointing at a config that is not there.
 
-    `dispatch_button_action` and `_run_escalation` both log a warning and report the press as
-    not run, so a preview that printed the name alone would promise something that cannot
-    happen.
+    `dispatch_button_action` and `_run_escalation` both log a warning and report that config as
+    not run, so a preview that printed the names alone would promise something that cannot
+    happen. One field may name several configs, so the note says which of them is missing.
     """
-    return "" if name in channel.configs else f" :warning: (no configuration `{name}` in this channel)"
+    missing = [name for name in parse_config_list(value) if name not in channel.configs]
+    if not missing:
+        return ""
+    names = ", ".join(f"`{name}`" for name in missing)
+    return f" :warning: (no configuration {names} in this channel)"
 
 
 def _opsgenie_line(config: dict, variables: dict) -> str:
@@ -352,7 +360,7 @@ async def _run_section(app: AsyncApp, channel, config: dict, config_name: str, v
     kind, escalation_target = buttons._escalation_kind(config)
     if escalation_minutes and kind != ESCALATION_NONE:
         escalates_to = (f"auto-presses `{escalation_target}`" if kind == ESCALATION_BUTTON
-                        else f"runs `{escalation_target}`{_missing_config_note(channel, escalation_target)}")
+                        else f"runs {_config_list(escalation_target)}{_missing_config_note(channel, escalation_target)}")
         line = f"*Escalation*: after {escalation_minutes} minutes, {escalates_to}"
         if not config_buttons:
             # `run_action_with_reason` only registers the timer for a message that carries

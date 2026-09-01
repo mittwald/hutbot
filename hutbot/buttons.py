@@ -14,7 +14,14 @@ from . import slackcache
 from . import messaging
 from . import persistence
 from . import actions
-from .buttonutil import normalize_button, _find_button_index
+from .buttonutil import (
+    button_config_names,
+    format_config_list,
+    normalize_button,
+    parse_config_list,
+    rename_in_config_list,
+    _find_button_index,
+)
 from .conditionutil import snapshot_conditions
 from .constants import (
     BUTTON_ACTION_ACK,
@@ -27,7 +34,7 @@ from .constants import (
     PRESS_KIND_TIMEOUT,
     PRESS_KIND_USER,
 )
-from .models import OpsGenieTokens, User
+from .models import OpsGenieTokens, PressOutcome, User
 
 
 # An escalation whose message Slack would not take is tried again this many times, this far
@@ -93,12 +100,11 @@ def _reachable_config_names(config: dict) -> set[str]:
     """Every config a buttoned message could run — from its buttons or its escalation."""
     names = set()
     for button in config.get('buttons') or []:
-        action, value = normalize_button(button)
-        if action == BUTTON_ACTION_CONFIG and value:
-            names.add(value)
+        # One button may run several configs, so every name in its list is reachable.
+        names.update(button_config_names(button))
     kind, target = _escalation_kind(config)
-    if kind == ESCALATION_CONFIG and target:
-        names.add(target)
+    if kind == ESCALATION_CONFIG:
+        names.update(parse_config_list(target))
     return names
 
 
@@ -112,13 +118,19 @@ def rename_config_references(config: dict, old_name: str, new_name: str) -> bool
     changed = False
     for button in config.get('buttons') or []:
         action, value = normalize_button(button)
-        if action == BUTTON_ACTION_CONFIG and value == old_name:
-            button['value'] = new_name
+        if action != BUTTON_ACTION_CONFIG:
+            continue
+        # The value may name several configs, so one entry of the list is rewritten in place.
+        value, touched = rename_in_config_list(value, old_name, new_name)
+        if touched:
+            button['value'] = value
             changed = True
     kind, target = _escalation_kind(config)
-    if kind == ESCALATION_CONFIG and target == old_name:
-        config['escalation_target'] = new_name
-        changed = True
+    if kind == ESCALATION_CONFIG:
+        target, touched = rename_in_config_list(target, old_name, new_name)
+        if touched:
+            config['escalation_target'] = target
+            changed = True
     return changed
 
 
@@ -176,6 +188,30 @@ def _with_snapshotted_conditions(config: dict, target_conditions: dict | None, n
     """A target config judged by the conditions captured when the message was posted."""
     snapshot = (target_conditions or {}).get(name)
     return {**config, **snapshot} if snapshot else config
+
+
+async def _run_fanout_target(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, name: str, target_config: dict, run_context: dict) -> tuple[bool, bool]:
+    """Run one config of a fan-out; returns `(posted, worth another attempt)`.
+
+    Guarded per target, because a button or an escalation may name several and one of them
+    must not be able to take the rest down with it. `run_action_with_reason` catches
+    `SlackApiError` and nothing else, so a dropped connection on `conversations.open` comes out
+    here — and letting it out of the loop would abandon every later name: a press consumes its
+    pending record and would simply never run them, and a timeout would begin its next attempt
+    at the top of the list, sending the ones that already went out a second time.
+
+    A raise counts as retryable, the way `_escalation_task` counts one: a transient fault and a
+    permanent one end in the same written-off state after the attempts run out, and that beats
+    losing an escalation nobody is told about.
+    """
+    try:
+        # `run_action_with_reason` already logs why it declined; the reason is read here only
+        # to tell a decline (settled) from Slack refusing the post (worth another attempt).
+        posted, reason = await actions.run_action_with_reason(app, opsgenie_tokens, channel, target_config, name, context=run_context)
+    except Exception as e:
+        log_error(f"Running config '{name}' in #{channel.name} failed:", e)
+        return False, True
+    return bool(posted), reason == actions.DELIVERY_FAILED_REASON
 
 
 async def register_escalation(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, posted_channel_id: str, message_ts: str, def_channel_id: str, config_name: str, config: dict, context: dict | None = None, posted_text: str = '', parent: dict | None = None) -> None:
@@ -290,14 +326,16 @@ def _press_facts(button: dict, presser: User | None, kind: str) -> dict:
     }
 
 
-async def dispatch_button_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '', target_conditions: dict | None = None, presser: User | None = None, press_kind: str = PRESS_KIND_USER) -> tuple[bool, bool]:
+async def dispatch_button_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '', target_conditions: dict | None = None, presser: User | None = None, press_kind: str = PRESS_KIND_USER) -> PressOutcome:
     """Run a button's action. Shared by a real press and an auto-press on timeout.
 
-    Returns `(happened, delivery_failed)`. The caller has already consumed the pending record
-    by this point and goes on to strip the buttons and post a note, so it needs the first:
-    a target config whose own conditions declined must not be reported as having run. The
-    second separates that decline from Slack refusing the post, which is the only one of the
-    two the timeout escalation tries again.
+    Returns a `PressOutcome`. The caller has already consumed the pending record by this point
+    and goes on to strip the buttons and post a note, so it needs `happened`: a target config
+    whose own conditions declined must not be reported as having run. `delivery_failed`
+    separates that decline from Slack refusing the post, which is the only one of the two the
+    timeout escalation tries again — and `retry` narrows that next attempt to the configs it
+    was refused for, since a `config` button may run several and the ones that went out must
+    not go out twice.
 
     `delay` is handled by the caller (it is only meaningful for a live press).
 
@@ -313,15 +351,21 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens,
     action, value = normalize_button(button)
     run_context = {**run_context, 'press': _press_facts(button, presser, press_kind)}
     if action == BUTTON_ACTION_CONFIG:
-        target_config = channel.configs.get(value)
-        if not target_config:
-            log_warning(f"Button target config '{value}' not found in #{channel.name}.")
-            return False, False
-        target_config = _with_snapshotted_conditions(target_config, target_conditions, value)
-        # `run_action_with_reason` already logs why it declined; the reason is read here only
-        # to tell a decline (settled) from Slack refusing the post (worth another attempt).
-        posted, reason = await actions.run_action_with_reason(app, opsgenie_tokens, channel, target_config, value, context=run_context)
-        return bool(posted), reason == actions.DELIVERY_FAILED_REASON
+        # In the order they are written, and every one of them: a press means "do all of this",
+        # so one target declining or failing does not stop the next.
+        ran, retry = [], []
+        for name in parse_config_list(value):
+            target_config = channel.configs.get(name)
+            if not target_config:
+                log_warning(f"Button target config '{name}' not found in #{channel.name}.")
+                ran.append((name, False))
+                continue
+            target_config = _with_snapshotted_conditions(target_config, target_conditions, name)
+            posted, retryable = await _run_fanout_target(app, opsgenie_tokens, channel, name, target_config, run_context)
+            ran.append((name, posted))
+            if retryable:
+                retry.append(name)
+        return PressOutcome(any(ok for _, ok in ran), bool(retry), ran, retry)
     elif action == BUTTON_ACTION_ACK:
         # Dismissing posts the ack text when there is one, as a thread reply under the
         # buttoned message — so it lands in whichever conversation that message went to
@@ -332,12 +376,36 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens,
             text = await actions.render_template_text(app, opsgenie_tokens, channel, src_config or {}, src_config_name, run_context, value)
             posted = await messaging._post_message(app, posted_channel_id, text, None, message_ts)
             if not posted:
-                return False, True
+                return PressOutcome(False, True)
         # Nothing to post is still a successful "handled".
-        return True, False
+        return PressOutcome(True, False)
     else:
         log_warning(f"Unsupported button action '{action}' in #{channel.name}.")
-        return False, False
+        return PressOutcome(False, False)
+
+
+def _record_ran(entry: dict, ran: list) -> list:
+    """Merge one attempt's per-config results into the record; returns all of them so far.
+
+    A retry only runs the configs Slack refused, so the note written at the end of the last
+    attempt has to remember the ones that went out on an earlier one. Keyed by name and kept
+    in first-seen order, which is the order the targets were written in.
+    """
+    merged = dict(entry.get('ran') or [])
+    merged.update(ran)
+    entry['ran'] = list(merged.items())
+    return entry['ran']
+
+
+def _narrow_button_targets(entry: dict, buttons: list, idx: int, retry: list) -> None:
+    """Leave only the refused configs on the button the next attempt auto-presses again.
+
+    Without this a button running `a,b` whose `b` Slack refused would post `a` once per
+    attempt. Written back as the record's button snapshot (a copy, so a config's own list is
+    never touched), which is also what a record predating the snapshot gains from it.
+    """
+    narrowed = {**buttons[idx], 'value': format_config_list(retry)}
+    entry['buttons'] = [*buttons[:idx], narrowed, *buttons[idx + 1:]]
 
 
 async def _run_escalation(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, entry: dict, final: bool = True) -> bool:
@@ -347,6 +415,10 @@ async def _run_escalation(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, entry:
     buttons are then left on the message until `final`, because stripping them writes the
     "it ran" note — and a message that says an escalation ran, under an escalation that did
     not, is worse than a message that still shows its buttons for another minute.
+
+    An escalation may run several configs. Each attempt narrows `entry` to the ones Slack
+    refused, so the next one repeats those and only those, while the note at the end still
+    names every config the whole escalation ran.
     """
     kind = entry.get('escalation_kind', ESCALATION_NONE)
     channel = await slackcache.get_channel_by_id(app, entry['def_channel_id'])
@@ -368,27 +440,36 @@ async def _run_escalation(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, entry:
             return True
         buttons = snapshot if snapshot is not None else (src_config or {}).get('buttons') or []
         log(f"No button pressed on message {message_ts}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
-        ok, delivery_failed = await dispatch_button_action(app, opsgenie_tokens, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''), entry.get('target_conditions'), press_kind=PRESS_KIND_TIMEOUT)
-        if delivery_failed and not final:
+        outcome = await dispatch_button_action(app, opsgenie_tokens, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''), entry.get('target_conditions'), press_kind=PRESS_KIND_TIMEOUT)
+        ran = _record_ran(entry, list(outcome.ran))
+        if outcome.delivery_failed and not final:
+            if outcome.retry:
+                _narrow_button_targets(entry, buttons, idx, list(outcome.retry))
             return False
-        await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), _ran_config(buttons[idx]), ok))
-        return not delivery_failed
+        await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), ran))
+        return not outcome.delivery_failed
     elif kind == ESCALATION_CONFIG:
-        target = entry.get('escalation_target', '')
-        target_config = channel.configs.get(target)
-        if target_config:
+        # Every named config, in the order it was written: one declining or failing does not
+        # stop the next, exactly as for a `config` button.
+        results, retry = [], []
+        for target in parse_config_list(entry.get('escalation_target', '')):
+            target_config = channel.configs.get(target)
+            if not target_config:
+                log_warning(f"Escalation target '{target}' not found in #{channel.name}.")
+                results.append((target, False))
+                continue
             log(f"Escalating message {message_ts}: running '{target}' in #{channel.name}.")
             target_config = _with_snapshotted_conditions(target_config, entry.get('target_conditions'), target)
-            posted, reason = await actions.run_action_with_reason(app, opsgenie_tokens, channel, target_config, target, context=run_context)
-            delivery_failed = reason == actions.DELIVERY_FAILED_REASON
-            if delivery_failed and not final:
-                return False
-            await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), target, bool(posted)))
-            return not delivery_failed
-        else:
-            log_warning(f"Escalation target '{target}' not found in #{channel.name}.")
-            await _strip_buttons(app, posted_channel_id, message_ts, entry,
-                                 _timeout_note(entry.get('timeout', 0), target, ok=False))
+            posted, retryable = await _run_fanout_target(app, opsgenie_tokens, channel, target, target_config, run_context)
+            results.append((target, posted))
+            if retryable:
+                retry.append(target)
+        ran = _record_ran(entry, results)
+        if retry and not final:
+            entry['escalation_target'] = format_config_list(retry)
+            return False
+        await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), ran))
+        return not retry
     return True
 
 
@@ -533,31 +614,29 @@ async def restore_pending_buttons(app: AsyncApp, opsgenie_tokens: OpsGenieTokens
     log(f"Restored {restored} pending button escalations.")
 
 
-def _ran_config(button: dict) -> str:
-    """The config a button runs, if it runs one."""
-    action, value = normalize_button(button)
-    return value if action == BUTTON_ACTION_CONFIG and value else ""
+def _ran_suffix(ran, ok: bool = True) -> str:
+    """The configs a press or a timeout ran, if any.
 
+    `ran` is either the `(name, ok)` results of a run — a button or an escalation may name
+    several configs, and each is listed in the order it was written — or a single name with
+    its own `ok`, which is what the "no such button" case has to report.
 
-def _ran_suffix(ran: str, ok: bool = True) -> str:
-    """The config a press or a timeout ran, if any.
-
-    Marked `(skipped)` when that config declined to run — its conditions were not met, or
-    its action had nowhere to send. The message is consumed either way, so the note has to
-    say which of the two happened.
+    A name is marked `(skipped)` when that config declined to run — its conditions were not
+    met, its action had nowhere to send, or it is not there at all. The message is consumed
+    either way, so the note has to say which of the two happened, per config.
     """
-    if not ran:
-        return ""
-    return f" ▶︎ {ran}" if ok else f" ▶︎ {ran} (skipped)"
+    results = [(ran, ok)] if isinstance(ran, str) else list(ran or ())
+    said = [name if name_ok else f"{name} (skipped)" for name, name_ok in results if name]
+    return f" ▶︎ {', '.join(said)}" if said else ""
 
 
-def _press_note(button: dict, presser: User | None, ok: bool = True) -> str:
+def _press_note(button: dict, presser: User | None, ran=()) -> str:
     """What the message says in place of its buttons after somebody pressed one."""
     who = (presser.real_name or presser.name or '?') if presser else 'Someone'
-    return f"_{who}: [{button.get('label') or '?'}]{_ran_suffix(_ran_config(button), ok)}_"
+    return f"_{who}: [{button.get('label') or '?'}]{_ran_suffix(ran)}_"
 
 
-def _timeout_note(timeout: float, ran: str = "", ok: bool = True) -> str:
+def _timeout_note(timeout: float, ran=(), ok: bool = True) -> str:
     """…and what it says when the escalation acted instead of a person."""
     return f"_⌛︎ {int((timeout or 0) // 60)}m{_ran_suffix(ran, ok)}_"
 
@@ -650,5 +729,5 @@ async def handle_button_press(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, bo
     run_context = await _escalation_context(app, entry, posted_channel_id, message_ts)
     # A press is not retried the way a timeout escalation is: somebody is standing in front
     # of the message, and the note telling them it failed is more use than a silent minute.
-    ok, _ = await dispatch_button_action(app, opsgenie_tokens, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name, entry.get('target_conditions'), presser=presser)
-    await _strip_buttons(app, posted_channel_id, message_ts, entry, _press_note(buttons[index], presser, ok))
+    outcome = await dispatch_button_action(app, opsgenie_tokens, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name, entry.get('target_conditions'), presser=presser)
+    await _strip_buttons(app, posted_channel_id, message_ts, entry, _press_note(buttons[index], presser, outcome.ran))

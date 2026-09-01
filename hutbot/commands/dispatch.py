@@ -89,11 +89,17 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     elif (match := patterns.EMPLOYEE_TEAM_PATTERN.match(command_text)):
         username = strip_quotes(match.group("user"))
         await info.get_team_of(app, channel, username, user, thread_ts)
+    elif (match := patterns.SET_EXCLUDED_TEAMS_PATTERN.match(command_text)):
+        teams = strip_quotes(match.group("teams"))
+        await setters.set_excluded_teams(app, channel, config_name, teams, user, thread_ts)
     elif (match := patterns.ADD_EXCLUDED_TEAM_PATTERN.match(command_text)):
         team = strip_quotes(match.group("team"))
         await setters.add_excluded_team(app, channel, config_name, team, user, thread_ts)
     elif (match := patterns.CLEAR_EXCLUDED_TEAM_PATTERN.match(command_text)):
         await setters.clear_excluded_team(app, channel, config_name, user, thread_ts)
+    elif (match := patterns.SET_INCLUDED_TEAMS_PATTERN.match(command_text)):
+        teams = strip_quotes(match.group("teams"))
+        await setters.set_included_teams(app, channel, config_name, teams, user, thread_ts)
     elif (match := patterns.ADD_INCLUDED_TEAM_PATTERN.match(command_text)):
         team = strip_quotes(match.group("team"))
         await setters.add_included_team(app, channel, config_name, team, user, thread_ts)

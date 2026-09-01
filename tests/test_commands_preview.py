@@ -473,6 +473,26 @@ async def test_the_preview_flags_a_button_and_an_escalation_pointing_at_nothing(
 
 
 @pytest.mark.asyncio
+async def test_the_preview_lists_every_config_a_button_or_escalation_runs():
+    app = AsyncMock()
+    config = {**DEFAULT_CONFIG.copy(),
+              "buttons": [{"label": "Page", "action": "config", "value": "alarm, gone"}],
+              "escalation_timeout": 600, "escalation_kind": "config", "escalation_target": "alarm, gone"}
+    channel = Channel(id="C12345", name="general",
+                      configs={"default": config, "alarm": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    text = await _preview(app, "test", channel, user)
+
+    # Named in the order they run, with only the missing one flagged.
+    assert "`Page` runs `alarm`, `gone` :warning: (no configuration `gone` in this channel)" in text
+    assert "runs `alarm`, `gone` :warning: (no configuration `gone` in this channel)" in text
+    # A rule named inside a list is still found by the "who runs me" listing.
+    alarm_text = await _preview(app, "alarm test", channel, user)
+    assert "*Also run by*: the button `Page` of `default`, the escalation of `default`" in alarm_text
+
+
+@pytest.mark.asyncio
 async def test_an_escalation_without_buttons_is_reported_as_inactive():
     """`run_action` only starts the timer for a message that carries buttons."""
     app = AsyncMock()

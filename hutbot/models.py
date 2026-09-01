@@ -1,6 +1,7 @@
 """Data types shared across the package: namedtuples + template expression."""
 
 import collections
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -59,6 +60,27 @@ class BuiltinCalendar(NamedTuple):
 # per-config URL); `url` is "" when there is nothing to fetch, and `missing` tells the two
 # reasons for that apart: nothing configured, or a built-in this instance no longer offers.
 CalendarFeed = collections.namedtuple('CalendarFeed', ['url', 'title', 'builtin', 'missing'])
+
+
+class PressOutcome(NamedTuple):
+    """What running a button's action came to — a real press or a timeout auto-press.
+
+    `happened` is whether anything was actually sent, which is what the note replacing the
+    buttons may claim; `delivery_failed` separates Slack refusing the post (worth another
+    attempt) from a target config declining (settled).
+
+    The two lists exist because one button may run several configs: `ran` names each of them
+    with whether it sent, in the order the button lists them, and `retry` names only the ones
+    Slack refused — the ones a timeout escalation's next attempt runs again, so a list that
+    half went out does not go out twice.
+    """
+
+    happened: bool
+    delivery_failed: bool
+    # Empty tuples rather than empty lists: a NamedTuple default is one object shared by every
+    # instance that leaves it out, so a mutable one would be a trap.
+    ran: Sequence[tuple[str, bool]] = ()
+    retry: Sequence[str] = ()
 
 
 @dataclass(frozen=True)

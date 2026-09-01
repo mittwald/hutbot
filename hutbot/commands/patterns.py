@@ -34,9 +34,15 @@ LIST_CALENDARS_PATTERN = re.compile(r'^list\s+calendars?$', re.IGNORECASE)
 SET_DATETIME_FORMAT_PATTERN = create_command_pattern(r'(set\s+)?(datetime[_ -]?format|date[_ -]?format|datefmt)\s+(?P<values>.+)')
 CLEAR_PATTERN_PATTERN = create_command_pattern(r'(clear|unset|remove)\s+pattern')
 SET_PATTERN_PATTERN = create_command_pattern(r'(set\s+)?pattern\s+(?P<pattern>"[^"]*"|\'[^\']*\'|`[^`]*`|[^\r\n\t\f\v\s"\'`]+)(?:\s+(?P<case_sensitive>true|false|1|0))?')
+# `add` takes one team and appends it; `set` takes the whole list, comma-separated, and
+# replaces it. `set` is spelled out rather than optional here, unlike every other setter: the
+# bare `excluded-team <team>` form already means "add this one", and one spelling cannot mean
+# both an append and a replacement.
 ADD_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?excluded?([_ -]?teams?)?\s+(?P<team>.+)')
+SET_EXCLUDED_TEAMS_PATTERN = create_command_pattern(r'set\s+excluded?([_ -]?teams?)?\s+(?P<teams>.+)')
 CLEAR_EXCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+excluded?([_ -]?teams?)?')
 ADD_INCLUDED_TEAM_PATTERN = create_command_pattern(r'(add\s+)?included?([_ -]?teams?)?\s+(?P<team>.+)')
+SET_INCLUDED_TEAMS_PATTERN = create_command_pattern(r'set\s+included?([_ -]?teams?)?\s+(?P<teams>.+)')
 CLEAR_INCLUDED_TEAM_PATTERN = create_command_pattern(r'clear\s+included?([_ -]?teams?)?')
 LIST_TEAMS_PATTERN = re.compile(r'^(list\s+)?teams?$', re.IGNORECASE)
 EMPLOYEE_TEAM_PATTERN = re.compile(r'^team(\s+of)?\s+(?P<user>.+)$', re.IGNORECASE)

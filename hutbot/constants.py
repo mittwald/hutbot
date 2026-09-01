@@ -160,7 +160,10 @@ BUTTON_ACTION_PREFIX = "hutbot_btn"
 DISABLED_REASON_REMOVED = "removed_from_channel"
 
 # What a button does when pressed.
-BUTTON_ACTION_CONFIG = "config"    # run another named config (an OpsGenie alert is just such a config)
+# Run other named configs (an OpsGenie alert is just such a config). The value names one or
+# several, comma-separated, and a press runs them in that order — a comma cannot occur inside a
+# name (`CONFIG_NAME_PATTERN`), so the list needs no escaping.
+BUTTON_ACTION_CONFIG = "config"
 # Acknowledge/dismiss: cancels a pending escalation, and posts its text if it has
 # one. Posting and dismissing were two keywords for one behavior; this is it.
 BUTTON_ACTION_ACK = "ack"
@@ -189,7 +192,7 @@ ACK_DESTINATION_UNKNOWN = "in a thread under the buttoned message"
 
 # What a buttoned message escalates to if no button is pressed within the timeout.
 ESCALATION_NONE = "none"
-ESCALATION_CONFIG = "config"
+ESCALATION_CONFIG = "config"  # run one or more named configs, comma-separated, in that order
 ESCALATION_BUTTON = "button"  # auto-press a named button (the "default" button)
 
 DEFAULT_CONFIG = {
@@ -238,7 +241,7 @@ DEFAULT_CONFIG = {
     # its target are one setting, so a timer can never exist with nothing to fire.
     "escalation_timeout": 0,           # seconds; 0 = never escalate
     "escalation_kind": ESCALATION_NONE,  # "none" | "button" | "config"
-    "escalation_target": "",           # a button label, or a config name
+    "escalation_target": "",           # a button label, or one or more config names, comma-separated
 }
 
 CONFIG_FILE_NAME = os.environ.get('HUTBOT_CONFIG_FILE', 'bot.json')

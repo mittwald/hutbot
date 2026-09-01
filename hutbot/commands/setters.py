@@ -21,7 +21,7 @@ from .. import slackcache
 from .. import actions
 from .. import renaming
 from .. import targets
-from ..buttonutil import _find_button_index, normalize_button
+from ..buttonutil import _find_button_index, format_config_list, normalize_button, parse_config_list
 from ..constants import (
     ACK_DESTINATION_UNKNOWN,
     ACK_DESTINATIONS,
@@ -54,7 +54,7 @@ from ..constants import (
     parse_event_offset,
 )
 from ..models import OpsGenieTokens, TemplateExpressionError
-from ..textutil import decode_escaped_newlines, log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
+from ..textutil import decode_escaped_newlines, log_debug, parse_quoted_tokens, split_comma_list, strip_quotes, unwrap_slack_link
 
 try:
     from croniter import croniter
@@ -597,6 +597,21 @@ async def set_action(app: AsyncApp, channel, config_name: str, value: str, targe
         await messaging.send_message(app, channel, user, f"*Action* set to `{value}` in configuration `{config_name}`.", thread_ts)
 
 
+def _missing_configs_warning(channel, value: str) -> str:
+    """The warning for a button or an escalation naming configs that are not there (yet).
+
+    A target is often written before the config it names exists, so this is never an error —
+    but with a whole list in one field, saying *which* of the names is unknown is the
+    difference between a typo one can see and a button that quietly does less than it says.
+    """
+    missing = [name for name in parse_config_list(value) if name not in channel.configs]
+    if not missing:
+        return ""
+    names = ", ".join(f"`{name}`" for name in missing)
+    exist = "does" if len(missing) == 1 else "do"
+    return f" :warning: (configuration {names} {exist} not exist yet)"
+
+
 async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec: str, user, thread_ts: str = "") -> None:
     label = strip_quotes(label).strip()
     if not label:
@@ -613,9 +628,14 @@ async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec:
         return
     value = strip_quotes(parts[1]).strip() if len(parts) > 1 else ""
 
-    if action == BUTTON_ACTION_CONFIG and not value:
-        await messaging.send_message(app, channel, user, f"Invalid *button*. `{action}` needs a configuration name.", thread_ts)
-        return
+    if action == BUTTON_ACTION_CONFIG:
+        # Several names, comma-separated, run one after the other when the button is pressed.
+        # Normalized to the one spelling so `show config` and the web UI print what was meant.
+        names = parse_config_list(value)
+        if not names:
+            await messaging.send_message(app, channel, user, f"Invalid *button*. `{action}` needs a configuration name, or several separated by commas.", thread_ts)
+            return
+        value = format_config_list(names)
     if action == BUTTON_ACTION_ACK and value:
         # A button's text is a template too, so it gets the same treatment as
         # `set message`: @mentions resolved to ids, variables checked.
@@ -631,7 +651,7 @@ async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec:
         # A delay button postpones the escalation, so there has to be one to postpone.
         existing = channel.configs.get(config_name) or {}
         if not (existing.get('escalation_timeout') and (existing.get('escalation_kind') or ESCALATION_NONE) != ESCALATION_NONE):
-            await messaging.send_message(app, channel, user, f"A `delay` button needs an escalation to postpone. Set one first with `{state.slash_command} {config_name} set escalation <minutes> <button \"<label>\"|config <name>>`.", thread_ts)
+            await messaging.send_message(app, channel, user, f"A `delay` button needs an escalation to postpone. Set one first with `{state.slash_command} {config_name} set escalation <minutes> <button \"<label>\"|config <name>[,<name>…]>`.", thread_ts)
             return
         try:
             minutes = int(value)
@@ -648,9 +668,7 @@ async def add_button(app: AsyncApp, channel, config_name: str, label: str, spec:
     config['buttons'] = list(config.get('buttons') or []) + [{'label': label, 'action': action, 'value': value}]
     await persistence.save_configuration()
 
-    warning = ""
-    if action == BUTTON_ACTION_CONFIG and value not in channel.configs:
-        warning = f" :warning: (configuration `{value}` does not exist yet)"
+    warning = _missing_configs_warning(channel, value) if action == BUTTON_ACTION_CONFIG else ""
     descriptor = f"`{action}`" + (f" → `{value}`" if value else "")
     # Say where an ack text ends up, right when it is written: it is a thread reply under the
     # buttoned message and not a private confirmation for whoever pressed, which is the wrong
@@ -692,7 +710,7 @@ async def set_escalation(app: AsyncApp, channel, config_name: str, minutes_str: 
     minutes_str = strip_quotes(minutes_str or "").strip().lower()
     kind = strip_quotes(kind or "").strip().lower()
     target = strip_quotes(target or "").strip()
-    usage = f'`{state.slash_command} {config_name} set escalation <minutes> <button "<label>"|config <name>>`, or `set escalation none`'
+    usage = f'`{state.slash_command} {config_name} set escalation <minutes> <button "<label>"|config <name>[,<name>…]>`, or `set escalation none`'
 
     if minutes_str in ("none", "off", "no", "0"):
         await messaging.send_message(app, channel, user, f"To switch escalation off, use `{state.slash_command} {config_name} clear escalation`.", thread_ts)
@@ -711,7 +729,7 @@ async def set_escalation(app: AsyncApp, channel, config_name: str, minutes_str: 
         await messaging.send_message(app, channel, user, f"*Escalation* needs what to escalate to: {usage}.", thread_ts)
         return
     if not target:
-        what = "a button label" if kind == ESCALATION_BUTTON else "a configuration name"
+        what = "a button label" if kind == ESCALATION_BUTTON else "a configuration name, or several separated by commas"
         await messaging.send_message(app, channel, user, f"*Escalation* `{kind}` needs {what}: {usage}.", thread_ts)
         return
 
@@ -723,15 +741,23 @@ async def set_escalation(app: AsyncApp, channel, config_name: str, minutes_str: 
             labels = ", ".join(f"`{b.get('label')}`" for b in (config.get('buttons') or [])) or "none yet"
             await messaging.send_message(app, channel, user, f"No button labelled `{target}` in configuration `{config_name}` (buttons: {labels}).", thread_ts)
             return
-    elif target not in channel.configs:
+    else:
+        # Several names, comma-separated, run one after the other when the timeout comes.
+        names = parse_config_list(target)
+        if not names:
+            await messaging.send_message(app, channel, user, f"*Escalation* `{kind}` needs a configuration name, or several separated by commas: {usage}.", thread_ts)
+            return
+        target = format_config_list(names)
         # A target config is often created afterwards, so this is only a warning.
-        warning = f" :warning: (configuration `{target}` does not exist yet)"
+        warning = _missing_configs_warning(channel, target)
 
     config['escalation_timeout'] = minutes * 60
     config['escalation_kind'] = kind
     config['escalation_target'] = target
     await persistence.save_configuration()
-    does = f"auto-press `{target}`" if kind == ESCALATION_BUTTON else f"run `{target}`"
+    # Each config in its own backticks, the way `show config` and `test` print them.
+    does = (f"auto-press `{target}`" if kind == ESCALATION_BUTTON
+            else "run " + ", ".join(f"`{name}`" for name in parse_config_list(target)))
     await messaging.send_message(app, channel, user, f"*Escalation* set: after `{minutes}` minutes without a press, {does} in configuration `{config_name}`{warning}.", thread_ts)
 
 
@@ -754,24 +780,100 @@ async def run_config_now(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel
         await messaging.send_message(app, channel, user, message, thread_ts)
 
 
-async def add_excluded_team(app: AsyncApp, channel, config_name: str, team: str, user, thread_ts: str = "") -> None:
-    _ensure_config(channel, config_name)
-    config = channel.configs[config_name]
+def _team_names(spec: str, known) -> list[str]:
+    """The teams a `set …-teams` command names: several, comma-separated, or a single one.
+
+    A team name comes from the employee directory rather than from a pattern of ours, so the
+    whole argument is tried against the directory first — a team actually called `Ops, EU` then
+    still resolves as itself instead of being split into two halves that exist nowhere.
+    """
+    whole = (spec or '').strip()
+    if whole in known:
+        return [whole]
+    return split_comma_list(whole)
+
+
+def _named(teams) -> str:
+    """Teams as a reply names them: each in backticks, in the order they were written."""
+    return ", ".join(f"`{team}`" for team in teams)
+
+
+def _both_team_lists_error(config_name: str) -> str:
+    """Included and excluded teams are alternatives, so one of the two has to stay empty."""
+    return f"Either set *included teams* or *excluded teams*, not both, in configuration `{config_name}`."
+
+
+async def _add_team(app: AsyncApp, channel, config_name: str, team: str, user, thread_ts: str,
+                    *, field: str, other_field: str, list_name: str, verb: str) -> None:
+    """`add included-team` / `add excluded-team`: one team, appended to what is there already.
+
+    One body for both lists so the two cannot drift apart. Deliberately one team per command,
+    commas and all — the whole argument is a team name, because a directory name may contain a
+    comma. Several at once is `set …-teams`, which replaces the list instead of appending.
+    """
+    config = _ensure_config(channel, config_name)
     await slackcache.update_user_cache(app)
     if team not in state.team_cache:
         await messaging.send_message(app, channel, user, f"Unknown team: `{team}`.", thread_ts)
         return
-    if team in config['excluded_teams']:
-        await messaging.send_message(app, channel, user, f"`{team}` is already excluded in configuration `{config_name}`.", thread_ts)
+    if team in config[field]:
+        await messaging.send_message(app, channel, user, f"`{team}` is already {verb} in configuration `{config_name}`.", thread_ts)
         return
 
-    if len(config['included_teams']) > 0:
-        await messaging.send_message(app, channel, user, f"Either set *included teams* or *excluded teams*, not both, in configuration `{config_name}`.", thread_ts)
+    if len(config[other_field]) > 0:
+        await messaging.send_message(app, channel, user, _both_team_lists_error(config_name), thread_ts)
         return
 
-    config['excluded_teams'].append(team)
+    config[field].append(team)
     await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"Added `{team}` to *excluded teams* in configuration `{config_name}`.", thread_ts)
+    await messaging.send_message(app, channel, user, f"Added `{team}` to *{list_name}* in configuration `{config_name}`.", thread_ts)
+
+
+async def _set_teams(app: AsyncApp, channel, config_name: str, spec: str, user, thread_ts: str,
+                     *, field: str, other_field: str, list_name: str) -> None:
+    """`set included-teams` / `set excluded-teams`: the whole list at once, comma-separated.
+
+    A replacement rather than an append, so it is also how a list is narrowed without clearing
+    it first. All-or-nothing on an unknown name: a team either is in the directory or it is a
+    typo, and storing only the half that resolved would leave a rule gating on less than it was
+    told to, with nothing on the config to show it.
+    """
+    config = _ensure_config(channel, config_name)
+    await slackcache.update_user_cache(app)
+    teams = _team_names(spec, state.team_cache)
+    if not teams:
+        await messaging.send_message(app, channel, user, f"Invalid *{list_name}*. Name a team, or several separated by commas.", thread_ts)
+        return
+
+    unknown = [team for team in teams if team not in state.team_cache]
+    if unknown:
+        # Named individually: with a whole list in one argument, *which* name is wrong is the
+        # useful half of the answer.
+        nothing = " Nothing was changed." if len(teams) > len(unknown) else ""
+        await messaging.send_message(app, channel, user, f"Unknown team{'s' if len(unknown) > 1 else ''}: {_named(unknown)}.{nothing}", thread_ts)
+        return
+
+    if len(config[other_field]) > 0:
+        await messaging.send_message(app, channel, user, _both_team_lists_error(config_name), thread_ts)
+        return
+
+    # Rebound rather than written into: a replacement is exactly that, and `clear …-teams`
+    # already empties the field the same way.
+    config[field] = teams
+    await persistence.save_configuration()
+    await messaging.send_message(app, channel, user, f"*{list_name.capitalize()}* set to {_named(teams)} in configuration `{config_name}`.", thread_ts)
+
+
+async def add_excluded_team(app: AsyncApp, channel, config_name: str, team: str, user, thread_ts: str = "") -> None:
+    await _add_team(app, channel, config_name, team, user, thread_ts,
+                    field='excluded_teams', other_field='included_teams',
+                    list_name="excluded teams", verb="excluded")
+
+
+async def set_excluded_teams(app: AsyncApp, channel, config_name: str, teams: str, user, thread_ts: str = "") -> None:
+    await _set_teams(app, channel, config_name, teams, user, thread_ts,
+                     field='excluded_teams', other_field='included_teams',
+                     list_name="excluded teams")
 
 
 async def clear_excluded_team(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
@@ -782,23 +884,15 @@ async def clear_excluded_team(app: AsyncApp, channel, config_name: str, user, th
 
 
 async def add_included_team(app: AsyncApp, channel, config_name: str, team: str, user, thread_ts: str = "") -> None:
-    _ensure_config(channel, config_name)
-    config = channel.configs[config_name]
-    await slackcache.update_user_cache(app)
-    if team not in state.team_cache:
-        await messaging.send_message(app, channel, user, f"Unknown team: `{team}`.", thread_ts)
-        return
-    if team in config['included_teams']:
-        await messaging.send_message(app, channel, user, f"`{team}` is already included in configuration `{config_name}`.", thread_ts)
-        return
+    await _add_team(app, channel, config_name, team, user, thread_ts,
+                    field='included_teams', other_field='excluded_teams',
+                    list_name="included teams", verb="included")
 
-    if len(config['excluded_teams']) > 0:
-        await messaging.send_message(app, channel, user, f"Either set *included teams* or *excluded teams*, not both, in configuration `{config_name}`.", thread_ts)
-        return
 
-    config['included_teams'].append(team)
-    await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"Added `{team}` to *included teams* in configuration `{config_name}`.", thread_ts)
+async def set_included_teams(app: AsyncApp, channel, config_name: str, teams: str, user, thread_ts: str = "") -> None:
+    await _set_teams(app, channel, config_name, teams, user, thread_ts,
+                     field='included_teams', other_field='excluded_teams',
+                     list_name="included teams")
 
 
 async def clear_included_team(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:

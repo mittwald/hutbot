@@ -475,6 +475,82 @@ async def test_stripping_the_buttons_is_retried():
     assert app.client.chat_update.await_count == 2
 
 
+@pytest.mark.asyncio
+async def test_a_retried_escalation_only_repeats_the_configs_slack_refused():
+    """An escalation naming several configs must not re-post the ones that already went out."""
+    app = AsyncMock()
+    channel = _mk_channel({"src": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy(),
+                           "lead": DEFAULT_CONFIG.copy()})
+    key = ("C12345", "R1")
+    _pending_escalation(key)
+    hutbot.state.pending_buttons[key]["escalation_target"] = "alarm, lead"
+    run = AsyncMock(side_effect=[
+        ({"channel": "C12345", "ts": "R2"}, ""),                    # alarm went out
+        (None, hutbot.actions.DELIVERY_FAILED_REASON),              # lead was refused
+        ({"channel": "C12345", "ts": "R3"}, ""),                    # …and got through on the retry
+    ])
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action_with_reason', new=run):
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
+    assert [call.args[4] for call in run.await_args_list] == ["alarm", "lead", "lead"]
+    # One note, at the end, naming both — including the one that ran an attempt earlier.
+    assert app.client.chat_update.await_count == 1
+    assert app.client.chat_update.await_args.kwargs["text"].endswith("_⌛︎ 5m ▶︎ alarm, lead_")
+
+
+@pytest.mark.asyncio
+async def test_a_target_that_raises_does_not_make_the_others_run_twice():
+    """A raise inside the fan-out is pinned to its own target, not to the whole attempt.
+
+    Escaping the loop would lose the record of what already went out, so the next attempt would
+    start at the top of the list and send `alarm` a second time.
+    """
+    app = AsyncMock()
+    channel = _mk_channel({"src": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy(),
+                           "lead": DEFAULT_CONFIG.copy()})
+    key = ("C12345", "R1")
+    _pending_escalation(key)
+    hutbot.state.pending_buttons[key]["escalation_target"] = "alarm, lead"
+    run = AsyncMock(side_effect=[
+        ({"channel": "C12345", "ts": "R2"}, ""),                    # alarm went out
+        aiohttp.ClientConnectionError("reset"),                     # lead never reached Slack
+        ({"channel": "C12345", "ts": "R3"}, ""),                    # …and got through on the retry
+    ])
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action_with_reason', new=run):
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
+    assert [call.args[4] for call in run.await_args_list] == ["alarm", "lead", "lead"]
+    assert app.client.chat_update.await_count == 1
+    assert app.client.chat_update.await_args.kwargs["text"].endswith("_⌛︎ 5m ▶︎ alarm, lead_")
+
+
+@pytest.mark.asyncio
+async def test_a_retried_auto_press_only_repeats_the_configs_slack_refused():
+    app = AsyncMock()
+    src = DEFAULT_CONFIG.copy()
+    src["buttons"] = [{"label": "Page", "action": "config", "value": "alarm, lead"}]
+    channel = _mk_channel({"src": src, "alarm": DEFAULT_CONFIG.copy(), "lead": DEFAULT_CONFIG.copy()})
+    key = ("C12345", "R1")
+    _pending_escalation(key)
+    hutbot.state.pending_buttons[key].update(
+        {"buttons": src["buttons"], "escalation_kind": "button", "escalation_target": "Page", "timeout": 60})
+    run = AsyncMock(side_effect=[
+        (None, hutbot.actions.DELIVERY_FAILED_REASON),              # alarm was refused
+        ({"channel": "C12345", "ts": "R2"}, ""),                    # lead went out
+        ({"channel": "C12345", "ts": "R3"}, ""),                    # the retry repeats alarm alone
+    ])
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action_with_reason', new=run):
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
+    assert [call.args[4] for call in run.await_args_list] == ["alarm", "lead", "alarm"]
+    assert app.client.chat_update.await_args.kwargs["text"].endswith("_⌛︎ 1m ▶︎ alarm, lead_")
+    # The config's own button list is untouched: only the record was narrowed for the retry.
+    assert src["buttons"] == [{"label": "Page", "action": "config", "value": "alarm, lead"}]
+
+
 # ----- state files survive a failed write -----
 
 

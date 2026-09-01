@@ -422,7 +422,10 @@ existing configs keep working unchanged.
 - **Buttons** attach interactive buttons to the message a rule sends (including the classic
   unanswered-message reply). Each button is added incrementally with a typed action (the leading
   `add`, like `set` elsewhere, is optional):
-  - `/hutbot [config] add button "<label>" config <config>` — run another config (a `manual` rule).
+  - `/hutbot [config] add button "<label>" config <config>[,<config>…]` — run another config (a
+    `manual` rule), or several: comma-separate them and one press runs each in turn, in the order
+    written. A name cannot contain a comma, so the list needs no quoting; blanks are dropped and
+    a name written twice runs once.
   - `/hutbot [config] add button "<label>" ack [text]` — mark the message handled: stop any
     escalation, remove the buttons, and post `[text]` in the thread when given. Like a reply message,
     the text may use `{{variables}}` and `@mentions`, both resolved against the *original* message
@@ -437,7 +440,8 @@ existing configs keep working unchanged.
   - `/hutbot [config] clear buttons`
   - `/hutbot [config] set escalation <minutes> button "<label>"` — if nobody presses within
     `<minutes>`, auto-press that button (exactly as a human click would).
-  - `/hutbot [config] set escalation <minutes> config <config>` — …or run that config instead.
+  - `/hutbot [config] set escalation <minutes> config <config>[,<config>…]` — …or run that config
+    instead, or several of them, comma-separated like a button's.
   - `/hutbot [config] clear escalation` — never escalate; the buttons stay open until pressed.
     The timeout and its target are one setting, so a timer can never exist with nothing to fire.
     Pending escalations survive restarts.
@@ -445,17 +449,25 @@ existing configs keep working unchanged.
     templates and any OpsGenie alert reference the original message. The config it runs can also read
     what triggered it — its name, its text, when it posted and who it reached — through the
     [`{{parent_*}}` variables](#the-config-that-triggered-this-one).
+  - Where a button or an escalation names several configs, each gets that same context and each is
+    judged on its own conditions: one declining does not stop the next, and the note left on the
+    message says per config which ran and which was skipped. They all sit at the same depth in the
+    chain, so a list is a fan-out and not a longer chain.
   - A chain of configs is cut off after 10 hops, so a config that escalates to itself (directly or
     around a loop) stops instead of posting once per timeout forever. The count travels with the
     pending message, so a restart does not reset it. `add condition parent_config empty` is the way
     to say "only run when nothing triggered me".
   - Once a message is handled, its buttons are removed and replaced by a one-line note of what
     happened: *Dave Grieser: [I've got it]* or *Dave Grieser: [Page] ▶︎ alarm* for a press, and
-    *⌛︎ 1m* or *⌛︎ 5m ▶︎ alarm* when the escalation acted instead.
+    *⌛︎ 1m* or *⌛︎ 5m ▶︎ alarm* when the escalation acted instead. A button that runs several
+    configs names each of them — *Dave Grieser: [Page] ▶︎ alarm, ticket (skipped)* — so the note
+    says which of the list actually went out.
   - An escalation Slack refuses to take is tried again — three times, a minute apart — and the
-    buttons stay on the message until one of them gets through or the attempts run out. A restart
-    in the middle of that restores the escalation rather than losing it, so a Slack outage can
-    duplicate an escalation but not swallow one. A reminder whose send fails is retried the same
+    buttons stay on the message until one of them gets through or the attempts run out. Where it
+    runs several configs, only the ones that did not get through are tried again, so the ones
+    that went out do not go out once per attempt. A target that fails outright rather than
+    being refused counts as one of those, and does not stop the configs named after it. A restart in the middle of that restores the escalation rather
+    than losing it, so a Slack outage can duplicate an escalation but not swallow one. A reminder whose send fails is retried the same
     way. A config that *declines* — a condition says no — is not retried: it would decide the same
     thing a minute later.
 
@@ -487,6 +499,10 @@ existing configs keep working unchanged.
   ```
   *I've got it* cancels the escalation (no page); otherwise after 5 minutes `page-oncall` runs and pages
   on-call, referencing the original message. A `delay` button pushes the 5-minute timer out.
+
+  One escalation can do more than one thing: `set escalation 5 config page-oncall,notify-lead` pages
+  on-call **and** posts to the lead, each on its own conditions and each with the original message
+  behind it.
 
 Use `/hutbot [config] run` to fire a configuration's action immediately (handy for testing).
 

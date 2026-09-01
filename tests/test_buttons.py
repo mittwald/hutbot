@@ -737,7 +737,7 @@ async def test_add_delay_button_requires_an_escalation():
         await process_command(app, 'add button "Later" delay 10', channel, user)
         assert send.call_args.args[3] == (
             'A `delay` button needs an escalation to postpone. Set one first with '
-            '`/hutbot default set escalation <minutes> <button "<label>"|config <name>>`.'
+            '`/hutbot default set escalation <minutes> <button "<label>"|config <name>[,<name>…]>`.'
         )
         assert config["buttons"] == []
 
@@ -1477,3 +1477,210 @@ async def test_an_escalation_straight_to_a_config_is_no_press_at_all():
     # A timeout with no button to press is not a press: the family says so rather than
     # reporting a `timeout` press that never happened.
     assert app.client.chat_postMessage.call_args.kwargs["text"] == "<no-press>/<no-press>"
+
+
+# ----- one button or one escalation, several configs -----
+
+
+def test_a_config_list_is_split_trimmed_and_deduped():
+    parse = hutbot.buttonutil.parse_config_list
+    assert parse("alarm, ticket ,,alarm") == ["alarm", "ticket"]
+    assert parse("") == [] and parse(None) == []
+    assert hutbot.buttonutil.format_config_list(["alarm", "ticket"]) == "alarm, ticket"
+    assert hutbot.buttonutil.button_config_names({"label": "Page", "action": "config", "value": "alarm,ticket"}) == ["alarm", "ticket"]
+    # An `ack` or a `delay` button names no configs at all, whatever is in its value.
+    assert hutbot.buttonutil.button_config_names({"label": "Ok", "action": "ack", "value": "done, thanks"}) == []
+
+
+def test_renaming_one_name_in_a_config_list_keeps_the_others_and_the_order():
+    rename = hutbot.buttonutil.rename_in_config_list
+    assert rename("alarm, ticket", "ticket", "issue") == ("alarm, issue", True)
+    assert rename("alarm", "other", "issue") == ("alarm", False)
+    # Renamed onto a name already in the list, so one entry is left rather than two.
+    assert rename("alarm, ticket", "ticket", "alarm") == ("alarm", True)
+
+
+@pytest.mark.asyncio
+async def test_add_button_takes_several_configs_and_names_the_missing_ones():
+    app = AsyncMock()
+    channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'add button "Page" config alarm, ticket ,alarm', channel, user)
+    assert channel.configs["default"]["buttons"] == [
+        {"label": "Page", "action": "config", "value": "alarm, ticket"}]
+    assert "configuration `ticket` does not exist yet" in send.call_args.args[3]
+
+
+@pytest.mark.asyncio
+async def test_set_escalation_takes_several_configs_and_names_the_missing_ones():
+    app = AsyncMock()
+    channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy()})
+    user = User("U1", "test", "Test User", "Testers")
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set escalation 5 config alarm, ticket, lead", channel, user)
+    config = channel.configs["default"]
+    assert (config["escalation_timeout"], config["escalation_kind"], config["escalation_target"]) == (300, "config", "alarm, ticket, lead")
+    assert "configuration `ticket`, `lead` do not exist yet" in send.call_args.args[3]
+
+
+def test_reachable_config_names_covers_every_name_in_a_list():
+    config = {
+        "buttons": [{"label": "Page", "action": "config", "value": "alarm, ticket"}],
+        "escalation_timeout": 300, "escalation_kind": "config", "escalation_target": "lead,alarm",
+    }
+    assert hutbot.buttons._reachable_config_names(config) == {"alarm", "ticket", "lead"}
+
+
+@pytest.mark.asyncio
+async def test_a_press_runs_every_config_in_the_order_written():
+    app = AsyncMock()
+    channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy(),
+                           "ticket": DEFAULT_CONFIG.copy()})
+    dave = User("U1", "dave", "Dave Grieser", "T")
+    key = ("C12345", "R1")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "orig": {}, "posted_text": "Incident — on it?",
+        "posted_channel_id": "C12345", "message_ts": "R1", "def_channel_id": "C12345",
+        "config_name": "default", "buttons": [{"label": "Page", "action": "config", "value": "alarm, ticket"}],
+    }
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "R1"}, "user": {"id": "U1"}}
+    action = {"value": json.dumps({"channel": "C12345", "config": "default", "index": 0})}
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=dave)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
+
+    assert [call.args[4] for call in run.await_args_list] == ["alarm", "ticket"]
+    # The note names each of them, in the same order.
+    assert app.client.chat_update.await_args.kwargs["text"].endswith("_Dave Grieser: [Page] ▶︎ alarm, ticket_")
+
+
+@pytest.mark.asyncio
+async def test_a_press_note_says_which_of_several_configs_was_skipped():
+    """One target declining must not stop the next, nor be reported as having run."""
+    app = AsyncMock()
+    ticket = copy.deepcopy(DEFAULT_CONFIG)
+    ticket["trigger"] = "manual"
+    # A manual run has no message behind it, so `{{message}} not_empty` cannot hold.
+    ticket["conditions"] = [{"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False}]
+    channel = _mk_channel({"default": copy.deepcopy(DEFAULT_CONFIG), "alarm": copy.deepcopy(DEFAULT_CONFIG),
+                           "ticket": ticket})
+    dave = User("U1", "dave", "Dave Grieser", "T")
+    key = ("C12345", "R1")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "orig": {}, "posted_text": "Incident — on it?",
+        "posted_channel_id": "C12345", "message_ts": "R1", "def_channel_id": "C12345",
+        "config_name": "default",
+        "buttons": [{"label": "Page", "action": "config", "value": "ticket, alarm, gone"}],
+    }
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "R1"}, "user": {"id": "U1"}}
+    action = {"value": json.dumps({"channel": "C12345", "config": "default", "index": 0})}
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=dave)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})):
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
+
+    note = "_Dave Grieser: [Page] ▶︎ ticket (skipped), alarm, gone (skipped)_"
+    assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{note}"
+
+
+@pytest.mark.asyncio
+async def test_an_escalation_runs_every_config_in_the_order_written():
+    app = AsyncMock()
+    channel = _mk_channel({"src": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy(),
+                           "lead": DEFAULT_CONFIG.copy()})
+    key = ("C12345", "10.1")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "posted_channel_id": "C12345", "message_ts": "10.1", "posted_text": "Incident?",
+        "def_channel_id": "C12345", "config_name": "src", "timeout": 300,
+        "escalation_kind": "config", "escalation_target": "alarm, lead", "orig": {},
+    }
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
+    assert [call.args[4] for call in run.await_args_list] == ["alarm", "lead"]
+    assert app.client.chat_update.await_args.kwargs["text"].endswith("_⌛︎ 5m ▶︎ alarm, lead_")
+
+
+@pytest.mark.asyncio
+async def test_an_auto_pressed_button_runs_every_config_it_names():
+    app = AsyncMock()
+    src = DEFAULT_CONFIG.copy()
+    src["buttons"] = [{"label": "Page", "action": "config", "value": "alarm, lead"}]
+    channel = _mk_channel({"src": src, "alarm": DEFAULT_CONFIG.copy(), "lead": DEFAULT_CONFIG.copy()})
+    key = ("C12345", "10.1")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "posted_channel_id": "C12345", "message_ts": "10.1", "posted_text": "Incident?",
+        "def_channel_id": "C12345", "config_name": "src", "timeout": 60,
+        "buttons": src["buttons"], "escalation_kind": "button", "escalation_target": "Page", "orig": {},
+    }
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
+        await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
+    assert [call.args[4] for call in run.await_args_list] == ["alarm", "lead"]
+    assert app.client.chat_update.await_args.kwargs["text"].endswith("_⌛︎ 1m ▶︎ alarm, lead_")
+
+
+@pytest.mark.asyncio
+async def test_register_escalation_snapshots_the_conditions_of_every_name_in_a_list():
+    app = AsyncMock()
+    alarm = copy.deepcopy(DEFAULT_CONFIG)
+    alarm["conditions"] = [{"variable": "message", "operator": "contains", "value": "db", "case_sensitive": False}]
+    lead = copy.deepcopy(DEFAULT_CONFIG)
+    lead["conditions"] = [{"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False}]
+    src = copy.deepcopy(DEFAULT_CONFIG)
+    src["buttons"] = [{"label": "Page", "action": "config", "value": "alarm, lead"}]
+    channel = _mk_channel({"src": src, "alarm": alarm, "lead": lead})
+    hutbot.state.channel_config["C12345"] = channel.configs
+    hutbot.state.pending_buttons.clear()
+    hutbot.state._button_states_cache.clear()
+    with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
+        await hutbot.buttons.register_escalation(app, OPSGENIE_TOKENS, "C12345", "R1", "C12345", "src", src)
+    entry = hutbot.state._button_states_cache[("C12345", "R1")]
+    assert set(entry["target_conditions"]) == {"alarm", "lead"}
+
+
+@pytest.mark.asyncio
+async def test_one_target_raising_does_not_take_the_rest_of_the_fan_out_down():
+    """`run_action_with_reason` catches `SlackApiError` only, so anything else reaches the loop.
+
+    The press has already consumed the pending record by then, so a raise that escaped the loop
+    would mean the later names simply never ran — and nothing on the message to say so.
+    """
+    app = AsyncMock()
+    channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy(),
+                           "ticket": DEFAULT_CONFIG.copy()})
+    dave = User("U1", "dave", "Dave Grieser", "T")
+    key = ("C12345", "R1")
+    hutbot.state.pending_buttons.clear()
+    hutbot.state.pending_buttons[key] = {
+        "task": None, "orig": {}, "posted_text": "Incident — on it?",
+        "posted_channel_id": "C12345", "message_ts": "R1", "def_channel_id": "C12345",
+        "config_name": "default", "buttons": [{"label": "Page", "action": "config", "value": "alarm, ticket"}],
+    }
+    body = {"channel": {"id": "C12345"}, "container": {"message_ts": "R1"}, "user": {"id": "U1"}}
+    action = {"value": json.dumps({"channel": "C12345", "config": "default", "index": 0})}
+    run = AsyncMock(side_effect=[RuntimeError("a bug, not a blip"),
+                                 ({"channel": "C12345", "ts": "R2"}, "")])
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=dave)), \
+         patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action_with_reason', new=run):
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
+
+    # The second target still ran, and the note pins the failure to the one it belongs to.
+    assert [call.args[4] for call in run.await_args_list] == ["alarm", "ticket"]
+    assert app.client.chat_update.await_args.kwargs["text"].endswith(
+        "_Dave Grieser: [Page] ▶︎ alarm (skipped), ticket_")

@@ -914,3 +914,128 @@ def test_there_is_no_footer_outside_a_command():
     hutbot.state.current_command.set("")
     assert hutbot.messaging.command_footer_blocks() == []
     assert hutbot.messaging.command_footer() == ""
+
+# ----- teams: `add` one, `set` the whole list -----
+
+
+def test_split_comma_list_trims_drops_blanks_and_repeats():
+    split = hutbot.textutil.split_comma_list
+    assert split("Platform, Support ,,Platform") == ["Platform", "Support"]
+    assert split("") == [] and split(None) == [] and split(" , ") == []
+    # A single entry with no comma in it comes back as itself, spaces and all.
+    assert split("Cloud Hosting") == ["Cloud Hosting"]
+
+
+@pytest.mark.asyncio
+async def test_add_team_still_takes_exactly_one_and_appends_it():
+    app = AsyncMock()
+    channel = _mk_channel({})
+    user = User("U1", "test", "Test User", "Testers")
+    _seed_user_caches()
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "add included-team Platform", channel, user)
+        assert send.call_args.args[3] == "Added `Platform` to *included teams* in configuration `default`."
+        await process_command(app, "add included-team Support", channel, user)
+        assert channel.configs["default"]["included_teams"] == ["Platform", "Support"]
+        await process_command(app, "add included-team Platform", channel, user)
+        assert send.call_args.args[3] == "`Platform` is already included in configuration `default`."
+        await process_command(app, "add included-team Nope", channel, user)
+        assert send.call_args.args[3] == "Unknown team: `Nope`."
+        # …and `clear` still empties the whole list.
+        await process_command(app, "clear included-teams", channel, user)
+    assert channel.configs["default"]["included_teams"] == []
+
+
+@pytest.mark.asyncio
+async def test_add_team_does_not_split_on_commas():
+    """`add` takes one team, so the whole argument is the name — a list is what `set` is for."""
+    app = AsyncMock()
+    channel = _mk_channel({})
+    user = User("U1", "test", "Test User", "Testers")
+    _seed_user_caches()
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "add excluded-team Platform, Support", channel, user)
+    assert channel.configs["default"]["excluded_teams"] == []
+    assert send.call_args.args[3] == "Unknown team: `Platform, Support`."
+
+
+@pytest.mark.asyncio
+async def test_set_teams_takes_the_whole_list_at_once():
+    app = AsyncMock()
+    channel = _mk_channel({})
+    user = User("U1", "test", "Test User", "Testers")
+    _seed_user_caches()
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set excluded-teams Platform, Support ,,Platform", channel, user)
+    assert channel.configs["default"]["excluded_teams"] == ["Platform", "Support"]
+    assert send.call_args.args[3] == (
+        "*Excluded teams* set to `Platform`, `Support` in configuration `default`.")
+
+
+@pytest.mark.asyncio
+async def test_set_teams_replaces_rather_than_appends():
+    """Which is what makes it the way to narrow a list without clearing it first."""
+    app = AsyncMock()
+    channel = _mk_channel({})
+    user = User("U1", "test", "Test User", "Testers")
+    _seed_user_caches()
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
+        await process_command(app, "add excluded-team Platform", channel, user)
+        await process_command(app, "set excluded-teams Support", channel, user)
+    assert channel.configs["default"]["excluded_teams"] == ["Support"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_team_in_a_set_list_changes_nothing():
+    """All-or-nothing, so a rule never quietly gates on less than it was told to."""
+    app = AsyncMock()
+    channel = _mk_channel({})
+    user = User("U1", "test", "Test User", "Testers")
+    _seed_user_caches()
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set excluded-teams Platform", channel, user)
+        await process_command(app, "set excluded-teams Support, Nope, Also-Nope", channel, user)
+        assert send.call_args.args[3] == "Unknown teams: `Nope`, `Also-Nope`. Nothing was changed."
+    assert channel.configs["default"]["excluded_teams"] == ["Platform"]
+
+
+@pytest.mark.asyncio
+async def test_set_teams_cannot_set_both_included_and_excluded():
+    app = AsyncMock()
+    channel = _mk_channel({})
+    user = User("U1", "test", "Test User", "Testers")
+    _seed_user_caches()
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "add included-team Platform", channel, user)
+        await process_command(app, "set excluded-teams Support", channel, user)
+        assert send.call_args.args[3] == (
+            "Either set *included teams* or *excluded teams*, not both, in configuration `default`.")
+    # Judged before anything is written, so no half-set config is left behind.
+    assert channel.configs["default"]["excluded_teams"] == []
+    assert channel.configs["default"]["included_teams"] == ["Platform"]
+
+
+@pytest.mark.asyncio
+async def test_a_team_whose_own_name_holds_a_comma_is_not_split():
+    """The directory is the authority on names, so the whole argument is tried against it first."""
+    app = AsyncMock()
+    channel = _mk_channel({})
+    user = User("U1", "test", "Test User", "Testers")
+    _seed_user_caches()
+    hutbot.state.team_cache = {"Ops, EU", "Platform"}
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message'):
+        await process_command(app, "set excluded-teams Ops, EU", channel, user)
+    assert channel.configs["default"]["excluded_teams"] == ["Ops, EU"]
+
+
+@pytest.mark.asyncio
+async def test_commas_alone_name_no_team():
+    app = AsyncMock()
+    channel = _mk_channel({})
+    user = User("U1", "test", "Test User", "Testers")
+    _seed_user_caches()
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "set excluded-teams ,", channel, user)
+    assert channel.configs["default"]["excluded_teams"] == []
+    assert send.call_args.args[3] == (
+        "Invalid *excluded teams*. Name a team, or several separated by commas.")

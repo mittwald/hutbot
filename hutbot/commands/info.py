@@ -16,7 +16,7 @@ from .. import datetimefmt
 from .. import templating
 from .. import calendarfeed
 from .. import conditionutil
-from ..buttonutil import normalize_button
+from ..buttonutil import normalize_button, parse_config_list
 from .. import targets
 from ..constants import (
     ACK_DESTINATION_UNKNOWN,
@@ -279,7 +279,9 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
             escalation_minutes = (config.get('escalation_timeout') or 0) // 60
             kind, target = buttons._escalation_kind(config)
             if escalation_minutes and kind != ESCALATION_NONE:
-                escalates_to = f"auto-press `{target}`" if kind == ESCALATION_BUTTON else f"run `{target}`"
+                # An escalation may name several configs, printed the way they run: in order.
+                escalates_to = (f"auto-press `{target}`" if kind == ESCALATION_BUTTON
+                                else "run " + ", ".join(f"`{name}`" for name in parse_config_list(target)))
                 button_rows.append(("Escalation", f"after {escalation_minutes} minutes, {escalates_to}"))
             else:
                 button_rows.append(("Escalation", "none, buttons stay open until pressed"))

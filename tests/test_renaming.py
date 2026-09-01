@@ -94,6 +94,25 @@ async def test_rename_follows_a_config_that_points_at_itself():
 
 
 @pytest.mark.asyncio
+async def test_rename_rewrites_one_name_of_a_list_and_leaves_the_rest():
+    """A button or an escalation may name several configs, so a rename edits one entry."""
+    configs = {
+        "default": _config(),
+        "nag": _config(),
+        "watcher": _config(buttons=[{"label": "Page", "action": "config", "value": "alarm, nag, lead"}],
+                           escalation_kind="config", escalation_target="nag,alarm", escalation_timeout=60),
+    }
+    _seed(configs)
+
+    ok, _, changed = await _rename("nag", "standup-nag")
+
+    assert ok
+    assert configs["watcher"]["buttons"][0]["value"] == "alarm, standup-nag, lead"
+    assert configs["watcher"]["escalation_target"] == "standup-nag, alarm"
+    assert changed['configs'] == 1
+
+
+@pytest.mark.asyncio
 async def test_a_button_escalation_target_is_a_label_and_is_left_alone():
     """`escalation_kind: button` names a button label, which no rename should touch."""
     configs = {"default": _config(),

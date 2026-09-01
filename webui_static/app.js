@@ -62,8 +62,8 @@ const COND_OP_LABEL = {
   regex: "matches regex", not_regex: "does not match regex",
 };
 const COND_MODE_LABEL = { all: "All conditions must apply", any: "Any one condition is enough" };
-const BTN_ACTION_LABEL = { config: "Run rule", ack: "Acknowledge / post text", delay: "Delay timer" };
-const ESCALATION_LABEL = { none: "Never escalate; buttons stay open", button: "Auto-press a button", config: "Run another rule" };
+const BTN_ACTION_LABEL = { config: "Run rules", ack: "Acknowledge / post text", delay: "Delay timer" };
+const ESCALATION_LABEL = { none: "Never escalate; buttons stay open", button: "Auto-press a button", config: "Run other rules" };
 const TARGET_HINT = { dm_user: "A @user (id, name, or email)", group_dm: "A @usergroup handle", post_channel: "A channel ID like C0123ABCD" };
 // Where an ack button's text ends up, phrased per action: it is a thread reply under the
 // message the buttons are on, so it follows that message into whichever conversation the
@@ -559,9 +559,9 @@ function buttonsSection() {
   );
   if (cfg.escalation_kind === "button" || cfg.escalation_kind === "config") {
     meta.append(field("After (minutes)", minutesInput("escalation_timeout"), { error: fieldErr("escalation_timeout") }));
-    meta.append(field(cfg.escalation_kind === "button" ? "Button to press" : "Rule to run",
+    meta.append(field(cfg.escalation_kind === "button" ? "Button to press" : "Rules to run",
       textInput("escalation_target", { mono: cfg.escalation_kind === "config" }),
-      { hint: cfg.escalation_kind === "button" ? "A button label above." : "Another rule's name.", error: fieldErr("escalation_target") }));
+      { hint: cfg.escalation_kind === "button" ? "A button label above." : "Another rule's name; several, comma-separated, run in that order.", error: fieldErr("escalation_target") }));
   }
 
   return section("Buttons", null, rows, add, ...(ackHint ? [ackHint] : []), meta);
@@ -574,7 +574,7 @@ function buttonRow(btn, i) {
   const onValue = (e) => { btn.value = e.target.value; liveRefresh(); };
   let valueControl;
   if (btn.action === "delay") valueControl = h("input", { type: "number", min: "1", max: "1440", value: btn.value || "", placeholder: "Minutes", oninput: onValue });
-  else if (btn.action === "config") valueControl = h("input", { type: "text", class: "mono", value: btn.value || "", placeholder: "Rule name", oninput: onValue });
+  else if (btn.action === "config") valueControl = h("input", { type: "text", class: "mono", value: btn.value || "", placeholder: "Rule name, or several comma-separated", oninput: onValue });
   else valueControl = h("input", { type: "text", value: btn.value || "", placeholder: "Optional message to post", oninput: onValue });
   const remove = h("div", { class: "drop" }, h("button", { class: "icon-btn", type: "button", title: "Remove button", "aria-label": "Remove button", onclick: () => { draft().buttons.splice(i, 1); structuralRefresh(); } }, "×"));
   const row = h("div", { class: "btn-row" }, labelI, actionSel, valueControl, remove);

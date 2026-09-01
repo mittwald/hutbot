@@ -298,6 +298,26 @@ async def test_validate_config_payload_stores_escalation_as_one_setting():
 
 
 @pytest.mark.asyncio
+async def test_validate_config_payload_normalizes_a_list_of_target_rules():
+    """One button or one escalation may name several rules, comma-separated."""
+    _seed_user_caches()
+    app = _ui_app()
+    payload = {
+        "reply_message": "Hi", "wait_time": 600, "trigger": "message", "action": "reply",
+        "buttons": [{"label": "Page", "action": "config", "value": " alarm,ticket ,alarm"}],
+        "escalation_timeout": 300, "escalation_kind": "config", "escalation_target": "alarm , lead",
+    }
+    cfg, errors = await validate_config_payload(payload, app)
+    assert errors == {}
+    assert cfg["buttons"] == [{"label": "Page", "action": "config", "value": "alarm, ticket"}]
+    assert cfg["escalation_target"] == "alarm, lead"
+
+    # Commas alone name no rule at all.
+    cfg, errors = await validate_config_payload({**payload, "escalation_target": " , "}, app)
+    assert errors == {"escalation_target": "Name a rule to run, or several separated by commas."}
+
+
+@pytest.mark.asyncio
 async def test_validate_config_payload_accepts_and_canonicalizes_conditions():
     _seed_user_caches()
     app = _ui_app()

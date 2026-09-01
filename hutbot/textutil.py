@@ -25,6 +25,25 @@ def strip_quotes(text: str) -> str:
     return text
 
 
+def split_comma_list(value: str) -> list[str]:
+    """The entries of a comma-separated argument, in the order written and without repeats.
+
+    Shared by every command that takes several of one kind of thing in one field: the config
+    names a button or an escalation runs, the teams `set included-teams` allows. Entries are
+    trimmed, blanks from `a,,b` are dropped, and a repeat is kept once — the fields this feeds
+    are sets or run-once sequences, where a doubled entry only ever means a slip.
+
+    Only safe where an entry itself cannot contain a comma. A condition value can, which is why
+    conditions do not take a list this way.
+    """
+    entries = []
+    for entry in (value or '').split(','):
+        entry = entry.strip()
+        if entry and entry not in entries:
+            entries.append(entry)
+    return entries
+
+
 # A slash command arrives as a single line, and the argument regexes stop at the first
 # newline anyway, so a line break has to be typed as `\n`. Only `\n` and `\\` mean
 # anything; every other backslash is passed through untouched, so a datetime format like
