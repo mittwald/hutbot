@@ -86,6 +86,7 @@ import hutbot.commands.preview
 import hutbot.commands.setters
 import hutbot.commands.info
 import hutbot.apphome.fields
+import hutbot.apphome.views
 
 # The two Opsgenie keys a run carries. The halves differ on purpose, so a test can tell which
 # endpoint a call reached: alerts and the heartbeat take `.alert`, on-call lookups take `.api`.

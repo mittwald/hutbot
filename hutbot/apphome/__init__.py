@@ -12,5 +12,6 @@ below it, and ``commands.info`` imports ``views`` alone for the Edit button on
 """
 
 from . import fields
+from . import views
 
-__all__ = ["fields"]
+__all__ = ["fields", "views"]

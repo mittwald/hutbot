@@ -185,8 +185,21 @@ def test_a_select_target_reads_back_as_the_id_the_backend_accepts():
 
 
 def test_a_section_reader_returns_exactly_its_own_fields():
-    submitted = fields.read_section_values(_values(), "calendar")
+    submitted = fields.read_section_values(
+        _values(calendar_builtin=_option("rota"), calendar_url=_plain("")), "calendar")
     assert set(submitted) == set(fields.SECTIONS["calendar"])
+
+
+def test_a_field_the_form_did_not_show_is_left_out_so_its_stored_value_survives():
+    # The trigger form hides the reminder delay under a cron trigger. Reading it as empty
+    # would blank it on every save, because the submit overlays this onto the stored config.
+    submitted = fields.read_section_values(
+        _values(trigger=_option("cron"), cron=_plain("0 9 * * 1-5")), "trigger")
+    assert submitted == {"trigger": "cron", "cron": "0 9 * * 1-5"}
+
+
+def test_the_filters_readers_are_silent_when_their_controls_are_absent():
+    assert fields.read_section_values({}, "filters") == {}
 
 
 # --- row readers ----------------------------------------------------------------------
