@@ -248,6 +248,8 @@ def _minutes(values: dict, field: str):
 
 
 def _read_hours(values: dict) -> dict:
+    if block_id("hours") not in (values or {}):
+        return {}
     start = _text(values, block_id("hours"))
     end = _text(values, block_id(BLOCK_HOURS_END))
     # Both empty is how the UI says "all day"; one empty is a half-filled setting and has to
@@ -256,6 +258,8 @@ def _read_hours(values: dict) -> dict:
 
 
 def _read_teams(values: dict) -> dict:
+    if block_id(BLOCK_TEAM_MODE) not in (values or {}):
+        return {}
     mode = _text(values, block_id(BLOCK_TEAM_MODE)) or TEAM_MODE_ALL
     chosen = read_block(values, block_id("included_teams")) or []
     chosen = [str(team) for team in chosen] if isinstance(chosen, list) else []
@@ -267,6 +271,8 @@ def _read_teams(values: dict) -> dict:
 
 
 def _read_pattern(values: dict) -> dict:
+    if block_id("pattern") not in (values or {}):
+        return {}
     text = _text(values, block_id("pattern"))
     # `None`, not `""`: the stored shape for "no pattern" (`validate_config_payload`).
     return {"pattern": text or None}
@@ -281,13 +287,22 @@ _FIELD_READERS = {
 
 
 def read_section_values(values: dict, section: str) -> dict:
-    """The fields of one section, in the shape `validate_config_payload` expects."""
+    """The fields of one section, in the shape `validate_config_payload` expects.
+
+    A field whose input the form did not render is left out rather than read as empty: the
+    forms hide what does not apply (no reminder delay under a cron trigger, no schedule under
+    a message one), and the submit overlays this onto the stored config, so leaving a field
+    out is what keeps its stored value. Reading it as empty would blank it on every save.
+    """
     submitted: dict = {}
     for field in SECTIONS[section]:
         reader = _FIELD_READERS.get(field)
         if reader is not None:
             submitted.update(reader(values))
-        elif field in MINUTE_FIELDS:
+            continue
+        if block_id(field) not in (values or {}):
+            continue
+        if field in MINUTE_FIELDS:
             submitted[field] = _minutes(values, field)
         elif field in BOOLEAN_FIELDS:
             submitted[field] = _flag(values, block_id(field))
