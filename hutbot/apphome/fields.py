@@ -64,8 +64,9 @@ BLOCK_NAME = "name"
 # or user select. Either element carries `block_id("action_target")`, so the value reads back
 # the same way and an error about it always has a block to sit on.
 BLOCK_TARGET_TEMPLATE = "action_target_template"
+BLOCK_IMPORT = "import_json"
 NON_FIELD_BLOCKS: tuple[str, ...] = (BLOCK_HOURS_END, BLOCK_TEAM_MODE, BLOCK_NAME,
-                                     BLOCK_TARGET_TEMPLATE)
+                                     BLOCK_TARGET_TEMPLATE, BLOCK_IMPORT)
 
 TEAM_MODE_ALL = "all"
 TEAM_MODE_ONLY = "only"
@@ -124,6 +125,7 @@ FIELD_LABELS: dict[str, str] = {
     BLOCK_TEAM_MODE: "Team filter",
     BLOCK_NAME: "Name",
     BLOCK_TARGET_TEMPLATE: "Action target is a template",
+    BLOCK_IMPORT: "Exported JSON",
 }
 
 # An error attached to a block Slack no longer shows is an error the user never reads, so

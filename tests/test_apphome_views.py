@@ -61,6 +61,8 @@ def _every_view(config, config_name="default"):
         ("notice", views.notice_view("Gone", "That rule no longer exists.")),
         ("conditions", views.conditions_view(meta, "C12345", config_name, config)),
         ("buttons", views.buttons_view(meta, "C12345", config_name, config)),
+        ("export", views.export_view(meta, "C12345", config_name, config)),
+        ("import", views.import_view(meta, "C12345", config_name)),
         ("condition_row", views.condition_row_view(meta, "C12345", config_name, 0,
                                                    (config.get('conditions') or [{}])[0])),
         ("button_row", views.button_row_view(meta, "C12345", config_name, 0,
@@ -410,3 +412,56 @@ def test_the_edit_button_carries_the_channel_it_was_pressed_in():
 
 def test_no_edit_button_without_a_channel():
     assert views.edit_config_blocks("") == []
+
+
+# --- export and import ----------------------------------------------------------------
+
+def test_the_export_modal_shows_the_same_payload_the_command_prints():
+    meta = _meta()
+    config = {**DEFAULT_CONFIG, "wait_time": 600, "cron": "0 9 * * 1-5"}
+    view = views.export_view(meta, "C12345", "nightly", config)
+    preformatted = [block for block in view["blocks"] if block["type"] == "rich_text"][0]
+    dumped = preformatted["elements"][0]["elements"][0]["text"]
+    assert dumped == hutbot.configexport.dump_payload(
+        hutbot.configexport.build_payload("nightly", config))
+    assert json.loads(dumped)["settings"] == {"wait_time": 600, "cron": "0 9 * * 1-5"}
+
+
+def test_the_export_modal_has_nothing_to_submit():
+    view = views.export_view(_meta(), "C12345", "default", DEFAULT_CONFIG)
+    assert "submit" not in view
+
+
+def test_the_export_modal_warns_that_a_calendar_url_was_left_out():
+    secret = "https://cal.example.com/SECRETTOKEN/rota.ics"
+    view = views.export_view(_meta(), "C12345", "default",
+                             {**DEFAULT_CONFIG, "calendar_url": secret})
+    assert "SECRETTOKEN" not in json.dumps(view)
+    assert "not* included" in json.dumps(view)
+
+
+def test_the_export_modal_says_nothing_about_a_calendar_when_there_is_none():
+    view = views.export_view(_meta(), "C12345", "default", DEFAULT_CONFIG)
+    assert "not* included" not in json.dumps(view)
+
+
+def test_the_import_modal_asks_for_a_name_and_the_json():
+    view = views.import_view(_meta(), "C12345", "nightly")
+    block_ids = views.view_block_ids(view)
+    assert block_id(fields.BLOCK_NAME) in block_ids
+    assert block_id(fields.BLOCK_IMPORT) in block_ids
+    # Prefilled with the rule it was opened from, so a paste lands where the person is.
+    name_input = [block["element"] for block in view["blocks"]
+                  if block.get("block_id") == block_id(fields.BLOCK_NAME)][0]
+    assert name_input["initial_value"] == "nightly"
+
+
+def test_the_import_modal_warns_that_omitted_settings_go_back_to_their_defaults():
+    view = views.import_view(_meta(), "C12345", "default")
+    assert "default" in json.dumps(view)
+
+
+def test_the_hub_offers_export_and_import():
+    view = views.hub_view(_meta(), "C12345", "nightly", DEFAULT_CONFIG)
+    dumped = json.dumps(view)
+    assert "hutbot_cfg:export" in dumped and "hutbot_cfg:import" in dumped

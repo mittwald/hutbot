@@ -27,6 +27,7 @@ from logutil import log, log_error, log_warning
 
 from . import fields
 from . import views
+from .. import configexport
 from .. import slackcache
 from .. import state
 from .. import webui_backend
@@ -292,6 +293,15 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
         await _delete_rule(app, body, channel_id, config_name, user_id)
     elif kind == 'run':
         await _run_now(app, channel_id, config_name, user_id, opsgenie_tokens)
+    elif kind == 'export':
+        configs = _configs(channel_id)
+        config = configs.get(config_name)
+        await _push(app, body, views.export_view(_meta(configs), channel_id, config_name, config)
+                    if config is not None
+                    else views.notice_view("Gone", f"`{config_name}` no longer exists."))
+    elif kind == 'import':
+        await _push(app, body, views.import_view(_meta(_configs(channel_id)), channel_id,
+                                                 config_name))
     elif kind == 'row':
         await _row_action(app, body, target, parts, action, user_id)
     elif kind == 'field':
@@ -468,6 +478,8 @@ async def handle_view_submission(app: AsyncApp, ack, body: dict) -> None:
         await _submit_row(app, ack, view, values, target, kind)
     elif kind in (views.VIEW_NEW_RULE, views.VIEW_RENAME_RULE):
         await _submit_name(app, ack, view, values, target, kind)
+    elif kind == views.VIEW_IMPORT:
+        await _submit_import(app, ack, view, values, target)
     else:
         await ack()
         return
@@ -524,6 +536,52 @@ async def _submit_name(app: AsyncApp, ack, view: dict, values: dict, target: dic
         await ack(response_action="errors",
                   errors={fields.block_id(fields.BLOCK_NAME): message})
         return
+    await ack(response_action="update", view=_hub(channel_id, name))
+
+
+async def _submit_import(app: AsyncApp, ack, view: dict, values: dict, target: dict) -> None:
+    """Create or replace a rule from a pasted export.
+
+    Unlike a section save this does *not* overlay onto the stored rule: an export carries only
+    the settings that differ from the defaults, so the payload goes to
+    `validate_config_payload` as it is and everything it leaves out goes back to its default.
+    That is the same semantics `import config` has, and it is what makes an export a complete
+    description of a rule rather than a patch on whatever was there before.
+    """
+    channel_id = target['channel_id']
+    name_block = fields.block_id(fields.BLOCK_NAME)
+    json_block = fields.block_id(fields.BLOCK_IMPORT)
+    name = str(fields.read_block(values, name_block) or "").strip()
+    pasted = str(fields.read_block(values, json_block) or "")
+
+    settings, envelope_name, error = configexport.read_payload(
+        pasted, webui_backend.ui_meta()['slash_command'])
+    if error:
+        await ack(response_action="errors", errors={json_block: error[:fields.LEFTOVER_LIMIT]})
+        return
+    unknown = configexport.unknown_settings(settings)
+    if unknown:
+        await ack(response_action="errors", errors={
+            json_block: "Unknown setting(s) in the import: " + ", ".join(unknown) + "."})
+        return
+    settings = configexport.normalized_settings(settings)
+
+    name = name or envelope_name
+    if name not in _configs(channel_id):
+        ok, message = await webui_backend.ui_create_config(app, channel_id, name)
+        if not ok:
+            await ack(response_action="errors", errors={name_block: message})
+            return
+    # The payload itself, not the snapshot: `ui_apply_config` validates from a full
+    # `DEFAULT_CONFIG`, so a setting the export omits is reset rather than kept.
+    ok, errors = await webui_backend.ui_apply_config(app, channel_id, name, settings)
+    if not ok:
+        # Every error here is about a setting no block of this form shows, so they all fold
+        # onto the paste field — which is where the offending text actually is.
+        await ack(response_action="errors",
+                  errors=fields.map_errors(errors, [name_block, json_block], json_block))
+        return
+    log(f"Config UI: imported rule `{name}` in channel {channel_id}.")
     await ack(response_action="update", view=_hub(channel_id, name))
 
 

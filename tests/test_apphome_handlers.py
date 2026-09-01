@@ -692,3 +692,192 @@ async def test_run_now_uses_the_same_handler_as_the_run_command():
         await handlers.handle_action(app, _body(), _action(
             "hutbot_cfg:run", value=fields.encode_meta(CHANNEL, "default")))
     assert run.await_args.args[3] == "default"
+
+
+# --- export and import ----------------------------------------------------------------
+
+def _export_of(config_name, config):
+    return hutbot.configexport.dump_payload(
+        hutbot.configexport.build_payload(config_name, config))
+
+
+@pytest.mark.asyncio
+async def test_the_export_button_opens_the_payload_without_writing():
+    app = _app()
+    configs = _seed({"default": {**copy.deepcopy(DEFAULT_CONFIG), "wait_time": 600}})
+    with _slack():
+        await handlers.handle_action(app, _body(), _action(
+            "hutbot_cfg:export", value=fields.encode_meta(CHANNEL, "default")))
+    view = app.client.views_push.await_args.kwargs["view"]
+    assert view["title"]["text"] == "Export rule"
+    assert configs["default"]["wait_time"] == 600
+
+
+@pytest.mark.asyncio
+async def test_exporting_a_rule_that_vanished_says_so():
+    app = _app()
+    _seed({})
+    with _slack():
+        await handlers.handle_action(app, _body(), _action(
+            "hutbot_cfg:export", value=fields.encode_meta(CHANNEL, "gone")))
+    assert app.client.views_push.await_args.kwargs["view"]["title"]["text"] == "Gone"
+
+
+@pytest.mark.asyncio
+async def test_the_import_button_opens_the_paste_form():
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(app, _body(), _action(
+            "hutbot_cfg:import", value=fields.encode_meta(CHANNEL, "default")))
+    assert app.client.views_push.await_args.kwargs["view"]["title"]["text"] == "Import rule"
+
+
+def _import_values(name, pasted):
+    return {**_element(fields.BLOCK_NAME, _plain(name)),
+            **_element(fields.BLOCK_IMPORT, _plain(pasted))}
+
+
+@pytest.mark.asyncio
+async def test_an_import_creates_a_rule_that_does_not_exist_yet():
+    app = _app()
+    configs = _seed()
+    ack = AsyncMock()
+    pasted = _export_of("nightly", {**copy.deepcopy(DEFAULT_CONFIG), "wait_time": 600,
+                                    "trigger": TRIGGER_CRON, "cron": "0 9 * * 1-5"})
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("nightly", pasted)))
+    assert configs["nightly"]["wait_time"] == 600
+    assert configs["nightly"]["cron"] == "0 9 * * 1-5"
+    assert ack.await_args.kwargs["view"]["title"]["text"] == "Rule"
+
+
+@pytest.mark.asyncio
+async def test_an_import_replaces_a_rule_and_resets_what_the_export_left_out():
+    # An export carries only what differs from the defaults, so it describes a whole rule
+    # rather than patching whatever was there — the same semantics `import config` has.
+    app = _app()
+    configs = _seed({"default": {**copy.deepcopy(DEFAULT_CONFIG), "wait_time": 600,
+                                 "pattern": "leftover", "only_work_days": True}})
+    ack = AsyncMock()
+    pasted = _export_of("src", {**copy.deepcopy(DEFAULT_CONFIG), "wait_time": 900})
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("default", pasted)))
+    assert configs["default"]["wait_time"] == 900
+    assert configs["default"]["pattern"] is None
+    assert configs["default"]["only_work_days"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_import_keeps_the_config_object_the_scheduler_holds():
+    app = _app()
+    configs = _seed()
+    original = configs["default"]
+    ack = AsyncMock()
+    pasted = _export_of("src", {**copy.deepcopy(DEFAULT_CONFIG), "wait_time": 900})
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("default", pasted)))
+    assert hutbot.state.channel_config[CHANNEL]["default"] is original
+
+
+@pytest.mark.asyncio
+async def test_an_import_round_trips_a_rule_into_another_name():
+    app = _app()
+    source = {**copy.deepcopy(DEFAULT_CONFIG), "wait_time": 600, "trigger": TRIGGER_CRON,
+              "cron": "0 9 * * 1-5", "reply_message": "Anybody there?",
+              "conditions": [{"variable": "message", "operator": "contains",
+                              "value": "deploy", "case_sensitive": False}],
+              "conditions_mode": CONDITION_MODE_ANY, "only_work_days": True,
+              "hours": ["09:00", "17:00"]}
+    configs = _seed({"default": copy.deepcopy(source)})
+    ack = AsyncMock()
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("copy", _export_of("default", source))))
+    assert configs["copy"] == configs["default"]
+
+
+@pytest.mark.asyncio
+async def test_a_paste_that_is_not_json_is_refused_on_the_paste_field():
+    app = _app()
+    configs = _seed()
+    ack = AsyncMock()
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("default", "not json at all")))
+    assert list(ack.await_args.kwargs["errors"]) == [block_id(fields.BLOCK_IMPORT)]
+    assert configs["default"]["wait_time"] == DEFAULT_CONFIG["wait_time"]
+
+
+@pytest.mark.asyncio
+async def test_a_paste_naming_a_setting_that_does_not_exist_says_which():
+    app = _app()
+    _seed()
+    ack = AsyncMock()
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("default", '{"wait_tim": 600}')))
+    assert "wait_tim" in ack.await_args.kwargs["errors"][block_id(fields.BLOCK_IMPORT)]
+
+
+@pytest.mark.asyncio
+async def test_a_paste_a_setter_would_refuse_is_refused_here_too():
+    app = _app()
+    configs = _seed()
+    ack = AsyncMock()
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("default", '{"trigger": "cron", "cron": "nope"}')))
+    # Nothing in this form shows the cron field, so the message folds onto the paste field
+    # with the setting named.
+    folded = ack.await_args.kwargs["errors"][block_id(fields.BLOCK_IMPORT)]
+    assert "Schedule:" in folded
+    assert configs["default"]["trigger"] == TRIGGER_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_an_import_into_a_reserved_name_is_refused_on_the_name_field():
+    app = _app()
+    _seed()
+    ack = AsyncMock()
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("export", '{"wait_time": 600}')))
+    assert list(ack.await_args.kwargs["errors"]) == [block_id(fields.BLOCK_NAME)]
+
+
+@pytest.mark.asyncio
+async def test_an_import_with_no_name_given_falls_back_to_the_exported_one():
+    app = _app()
+    configs = _seed()
+    ack = AsyncMock()
+    pasted = _export_of("from-the-envelope",
+                        {**copy.deepcopy(DEFAULT_CONFIG), "wait_time": 600})
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("", pasted)))
+    assert configs["from-the-envelope"]["wait_time"] == 600
+
+
+@pytest.mark.asyncio
+async def test_a_non_member_cannot_import():
+    app = _app()
+    configs = _seed()
+    ack = AsyncMock()
+    with _slack(member=False):
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
+            values=_import_values("default", '{"wait_time": 900}')))
+    assert configs["default"]["wait_time"] == DEFAULT_CONFIG["wait_time"]
