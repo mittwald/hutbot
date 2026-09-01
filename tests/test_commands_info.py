@@ -945,3 +945,66 @@ async def test_an_oversized_export_is_one_preformatted_block():
         len(block["text"]["text"]) <= hutbot.messaging.SLACK_SECTION_TEXT_LIMIT
         for block in blocks if block["type"] == "section"
     )
+
+
+def _edit_buttons(mock):
+    """The config-UI actions block on each `send_message` call, or `None` where there is none."""
+    found = []
+    for call_args in mock.call_args_list:
+        blocks = call_args.kwargs.get('blocks') or []
+        actions = [block for block in blocks
+                   if block.get('type') == 'actions' and block.get('block_id') == 'hutbot_cfg_edit']
+        found.append(actions[0] if actions else None)
+    return found
+
+
+@pytest.mark.asyncio
+async def test_show_config_offers_an_edit_button_into_the_app_home_editor():
+    app = AsyncMock()
+    channel = _mk_channel()
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send:
+        await show_config(app, channel, user, "")
+
+    buttons_found = _edit_buttons(mock_send)
+    assert buttons_found and buttons_found[-1] is not None
+    button = buttons_found[-1]['elements'][0]
+    assert button['action_id'] == "hutbot_cfg:pick_rule"
+    # The channel travels in the button, because the press arrives with no view to name it.
+    assert hutbot.apphome.fields.decode_meta(button['value'])['channel_id'] == channel.id
+
+
+@pytest.mark.asyncio
+async def test_only_the_last_chunk_of_a_long_show_config_carries_the_edit_button():
+    app = AsyncMock()
+    configs = {}
+    for index in range(12):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config['reply_message'] = f"Message {index} " + "padding " * 40
+        configs[f"rule{index}"] = config
+    channel = Channel(id="C123", name="general", configs=configs)
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send:
+        await show_config(app, channel, user, "")
+
+    buttons_found = _edit_buttons(mock_send)
+    assert len(buttons_found) > 1, "expected the reply to be chunked"
+    assert buttons_found[-1] is not None
+    assert all(found is None for found in buttons_found[:-1])
+    # Last of the blocks handed over, so the footer `send_message` appends stays after it.
+    last_blocks = mock_send.call_args_list[-1].kwargs['blocks']
+    assert last_blocks[-1]['block_id'] == 'hutbot_cfg_edit'
+
+
+@pytest.mark.asyncio
+async def test_show_config_of_an_empty_channel_still_says_nothing_is_configured():
+    app = AsyncMock()
+    channel = Channel(id="C123", name="general", configs={})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send:
+        await show_config(app, channel, user, "")
+
+    assert _edit_buttons(mock_send) == [None]
