@@ -3,13 +3,16 @@
 File paths come from ``constants`` (read qualified so tests can patch them).
 """
 
+import asyncio
 import copy
 import json
+import os
 
 import aiofiles
 from slack_bolt.async_app import AsyncApp
 
 from logutil import log, log_error, log_warning
+import retryutil
 
 from . import state
 from . import constants
@@ -130,6 +133,42 @@ async def migrate_and_apply_defaults(app: AsyncApp, config: dict) -> dict:
     return config
 
 
+async def _write_json_file(path: str, payload: object, what: str) -> bool:
+    """Write `payload` to `path` as JSON, atomically, retrying a transient disk error.
+
+    Written to a sibling temp file and renamed into place, because these three files are the
+    bot's whole memory of what it still owes: a write that dies halfway through — the disk
+    full, the container killed mid-flush — used to leave a truncated file that the next start
+    could not parse, and every pending reply and unpressed button in it was gone. A rename is
+    atomic, so the file on disk is either the previous state or the new one.
+
+    Returns whether it was written; a failure is logged and left to the caller, which has
+    nowhere better to put it than the log either.
+    """
+    content = json.dumps(payload, indent=2)
+    temporary = f"{path}.tmp"
+
+    async def attempt() -> None:
+        async with aiofiles.open(temporary, 'w') as f:
+            await f.write(content)
+            await f.flush()
+            # The rename below is only atomic with respect to a crash if the bytes are on the
+            # device before it happens; otherwise the new name can point at an empty file.
+            await asyncio.to_thread(os.fsync, f.fileno())
+        await asyncio.to_thread(os.replace, temporary, path)
+
+    try:
+        await retryutil.retry_async(attempt, what=what)
+        return True
+    except Exception as e:
+        log_error(f"{what} failed:", e)
+        try:
+            await asyncio.to_thread(os.unlink, temporary)
+        except OSError:
+            pass
+        return False
+
+
 async def load_configuration(app: AsyncApp) -> None:
     try:
         async with aiofiles.open(constants.CONFIG_FILE_NAME, 'r') as f:
@@ -146,12 +185,7 @@ async def load_configuration(app: AsyncApp) -> None:
 
 
 async def save_configuration() -> None:
-    try:
-        async with aiofiles.open(constants.CONFIG_FILE_NAME, 'w') as f:
-            content = json.dumps(state.channel_config, indent=2)
-            await f.write(content)
-    except Exception as e:
-        log_error("Failed to save configuration:", e)
+    await _write_json_file(constants.CONFIG_FILE_NAME, state.channel_config, "Saving the configuration")
 
 
 async def load_replies_cache() -> None:
@@ -173,11 +207,9 @@ async def load_replies_cache() -> None:
 
 
 async def flush_replies_cache() -> None:
-    try:
-        async with aiofiles.open(constants.SCHEDULED_REPLIES_CACHE_FILE, 'w') as f:
-            await f.write(json.dumps(list(state._scheduled_replies_cache.values()), indent=2))
-    except Exception as e:
-        log_error("Failed to flush scheduled replies cache:", e)
+    await _write_json_file(constants.SCHEDULED_REPLIES_CACHE_FILE,
+                           list(state._scheduled_replies_cache.values()),
+                           "Writing the scheduled replies cache")
 
 
 async def load_button_cache() -> None:
@@ -197,8 +229,6 @@ async def load_button_cache() -> None:
 
 
 async def flush_button_cache() -> None:
-    try:
-        async with aiofiles.open(constants.BUTTON_CACHE_FILE, 'w') as f:
-            await f.write(json.dumps(list(state._button_states_cache.values()), indent=2))
-    except Exception as e:
-        log_error("Failed to flush button states cache:", e)
+    await _write_json_file(constants.BUTTON_CACHE_FILE,
+                           list(state._button_states_cache.values()),
+                           "Writing the button states cache")

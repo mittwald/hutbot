@@ -5,9 +5,9 @@ import asyncio
 import datetime
 
 from slack_bolt.async_app import AsyncApp
-from slack_sdk.errors import SlackApiError
 
 from logutil import log, log_error, log_warning
+import retryutil
 
 from . import state
 from . import slackcache
@@ -28,6 +28,14 @@ from .constants import (
     PRESS_KIND_USER,
 )
 from .models import OpsGenieTokens, User
+
+
+# An escalation whose message Slack would not take is tried again this many times, this far
+# apart — the same shape as a scheduled reply's delivery retries, and for the same reason:
+# an escalation exists precisely because nobody has reacted yet, so dropping it on a transient
+# failure is the one outcome the feature cannot afford.
+ESCALATION_ATTEMPTS = 3
+ESCALATION_RETRY_DELAY = 60.0
 
 
 SLACK_ACTIONS_ELEMENT_LIMIT = 25
@@ -282,13 +290,14 @@ def _press_facts(button: dict, presser: User | None, kind: str) -> dict:
     }
 
 
-async def dispatch_button_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '', target_conditions: dict | None = None, presser: User | None = None, press_kind: str = PRESS_KIND_USER) -> bool:
+async def dispatch_button_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, posted_channel_id: str, message_ts: str, button: dict, run_context: dict, src_config: dict | None = None, src_config_name: str = '', target_conditions: dict | None = None, presser: User | None = None, press_kind: str = PRESS_KIND_USER) -> tuple[bool, bool]:
     """Run a button's action. Shared by a real press and an auto-press on timeout.
 
-    Returns whether the action actually happened. The caller has already consumed the
-    pending record by this point and goes on to strip the buttons and post a note, so it
-    needs to know: a target config whose own conditions declined must not be reported as
-    having run.
+    Returns `(happened, delivery_failed)`. The caller has already consumed the pending record
+    by this point and goes on to strip the buttons and post a note, so it needs the first:
+    a target config whose own conditions declined must not be reported as having run. The
+    second separates that decline from Slack refusing the post, which is the only one of the
+    two the timeout escalation tries again.
 
     `delay` is handled by the caller (it is only meaningful for a live press).
 
@@ -307,11 +316,12 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens,
         target_config = channel.configs.get(value)
         if not target_config:
             log_warning(f"Button target config '{value}' not found in #{channel.name}.")
-            return False
-        # `run_action` already logs why it declined, and the note only needs to know that
-        # it did — so this stays on the plain entry point the rest of the code uses.
+            return False, False
         target_config = _with_snapshotted_conditions(target_config, target_conditions, value)
-        return bool(await actions.run_action(app, opsgenie_tokens, channel, target_config, value, context=run_context))
+        # `run_action_with_reason` already logs why it declined; the reason is read here only
+        # to tell a decline (settled) from Slack refusing the post (worth another attempt).
+        posted, reason = await actions.run_action_with_reason(app, opsgenie_tokens, channel, target_config, value, context=run_context)
+        return bool(posted), reason == actions.DELIVERY_FAILED_REASON
     elif action == BUTTON_ACTION_ACK:
         # Dismissing posts the ack text when there is one, as a thread reply under the
         # buttoned message — so it lands in whichever conversation that message went to
@@ -320,15 +330,24 @@ async def dispatch_button_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens,
         # message with the defining config's date/time settings.
         if value:
             text = await actions.render_template_text(app, opsgenie_tokens, channel, src_config or {}, src_config_name, run_context, value)
-            await messaging._post_message(app, posted_channel_id, text, None, message_ts)
+            posted = await messaging._post_message(app, posted_channel_id, text, None, message_ts)
+            if not posted:
+                return False, True
         # Nothing to post is still a successful "handled".
-        return True
+        return True, False
     else:
         log_warning(f"Unsupported button action '{action}' in #{channel.name}.")
-        return False
+        return False, False
 
 
-async def _run_escalation(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, entry: dict) -> None:
+async def _run_escalation(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, entry: dict, final: bool = True) -> bool:
+    """Run one escalation; returns whether it is settled.
+
+    False means Slack would not take the message and another attempt is worth making. The
+    buttons are then left on the message until `final`, because stripping them writes the
+    "it ran" note — and a message that says an escalation ran, under an escalation that did
+    not, is worse than a message that still shows its buttons for another minute.
+    """
     kind = entry.get('escalation_kind', ESCALATION_NONE)
     channel = await slackcache.get_channel_by_id(app, entry['def_channel_id'])
     posted_channel_id, message_ts = entry['posted_channel_id'], entry['message_ts']
@@ -346,23 +365,31 @@ async def _run_escalation(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, entry:
             # Take the buttons away rather than leave dead ones on the message.
             await _strip_buttons(app, posted_channel_id, message_ts, entry,
                                  _timeout_note(entry.get('timeout', 0), entry.get('escalation_target', ''), ok=False))
-            return
+            return True
         buttons = snapshot if snapshot is not None else (src_config or {}).get('buttons') or []
         log(f"No button pressed on message {message_ts}: auto-pressing '{entry.get('escalation_target')}' in #{channel.name}.")
-        ok = await dispatch_button_action(app, opsgenie_tokens, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''), entry.get('target_conditions'), press_kind=PRESS_KIND_TIMEOUT)
+        ok, delivery_failed = await dispatch_button_action(app, opsgenie_tokens, channel, posted_channel_id, message_ts, buttons[idx], run_context, src_config, entry.get('config_name', ''), entry.get('target_conditions'), press_kind=PRESS_KIND_TIMEOUT)
+        if delivery_failed and not final:
+            return False
         await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), _ran_config(buttons[idx]), ok))
+        return not delivery_failed
     elif kind == ESCALATION_CONFIG:
         target = entry.get('escalation_target', '')
         target_config = channel.configs.get(target)
         if target_config:
             log(f"Escalating message {message_ts}: running '{target}' in #{channel.name}.")
             target_config = _with_snapshotted_conditions(target_config, entry.get('target_conditions'), target)
-            posted = await actions.run_action(app, opsgenie_tokens, channel, target_config, target, context=run_context)
+            posted, reason = await actions.run_action_with_reason(app, opsgenie_tokens, channel, target_config, target, context=run_context)
+            delivery_failed = reason == actions.DELIVERY_FAILED_REASON
+            if delivery_failed and not final:
+                return False
             await _strip_buttons(app, posted_channel_id, message_ts, entry, _timeout_note(entry.get('timeout', 0), target, bool(posted)))
+            return not delivery_failed
         else:
             log_warning(f"Escalation target '{target}' not found in #{channel.name}.")
             await _strip_buttons(app, posted_channel_id, message_ts, entry,
                                  _timeout_note(entry.get('timeout', 0), target, ok=False))
+    return True
 
 
 async def _escalation_task(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, key: tuple, timeout: float) -> None:
@@ -370,9 +397,23 @@ async def _escalation_task(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, key: 
         await asyncio.sleep(timeout)
         entry = _claim_pending_button(key, owner=asyncio.current_task())
         if entry:
-            await persistence.flush_button_cache()
             log(f"No button pressed on message {key[1]} within timeout; escalating.")
-            await _run_escalation(app, opsgenie_tokens, entry)
+            for attempt in range(1, ESCALATION_ATTEMPTS + 1):
+                final = attempt == ESCALATION_ATTEMPTS
+                if await _run_escalation(app, opsgenie_tokens, entry, final=final):
+                    break
+                if final:
+                    log_error(f"Giving up on the escalation of message {key[1]} after {ESCALATION_ATTEMPTS} attempts.")
+                    break
+                log_warning(f"Retrying the escalation of message {key[1]} in {ESCALATION_RETRY_DELAY:.0f}s "
+                            f"({attempt}/{ESCALATION_ATTEMPTS}).")
+                await asyncio.sleep(ESCALATION_RETRY_DELAY)
+            # Persisted only now that the escalation is over. `_claim_pending_button` removed
+            # the record from memory, which is what keeps a concurrent press from running it
+            # twice; writing that removal to disk before the escalation had happened is what
+            # used to lose it outright when the process died in between. A restart may now
+            # escalate a second time instead — noise, against an incident nobody is told about.
+            await persistence.flush_button_cache()
     except asyncio.CancelledError:
         # Cancellation alone means shutdown or timer replacement. The caller that
         # explicitly consumed/replaced this record owns cache updates; shutdown must
@@ -521,13 +562,17 @@ async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str,
     # A plain rule separates the note from the message it belongs to.
     text = f"{posted_text}\n\n---\n{note}" if note else posted_text
     try:
-        await app.client.chat_update(
-            channel=posted_channel_id,
-            ts=message_ts,
-            text=text,
-            blocks=_section_blocks(text),
-        )
-    except SlackApiError as e:
+        await retryutil.retry_async(
+            lambda: app.client.chat_update(
+                channel=posted_channel_id,
+                ts=message_ts,
+                text=text,
+                blocks=_section_blocks(text),
+            ),
+            what=f"Removing the buttons from message {message_ts} in {posted_channel_id}")
+    except Exception as e:
+        # Best-effort, but worth the attempts: buttons left on a handled message stay
+        # clickable, which is the stale press against a since-edited config this guards against.
         log_warning(f"Failed to remove buttons from message {message_ts} in {posted_channel_id}:", e)
 
 
@@ -592,5 +637,7 @@ async def handle_button_press(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, bo
     # the timeout-escalation path; the presser reaches whatever runs as `{{press_user}}`, so
     # a text can name them without the run's `{{user}}` shifting from message to presser.
     run_context = await _escalation_context(app, entry, posted_channel_id, message_ts)
-    ok = await dispatch_button_action(app, opsgenie_tokens, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name, entry.get('target_conditions'), presser=presser)
+    # A press is not retried the way a timeout escalation is: somebody is standing in front
+    # of the message, and the note telling them it failed is more use than a silent minute.
+    ok, _ = await dispatch_button_action(app, opsgenie_tokens, channel, posted_channel_id, message_ts, buttons[index], run_context, src_config, src_config_name, entry.get('target_conditions'), presser=presser)
     await _strip_buttons(app, posted_channel_id, message_ts, entry, _press_note(buttons[index], presser, ok))

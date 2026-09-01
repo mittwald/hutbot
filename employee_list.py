@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import binascii
 import json
@@ -8,6 +9,7 @@ import aiohttp
 from unidecode import unidecode
 
 from logutil import log, log_error, log_warning
+import retryutil
 
 
 def load_env_file() -> None:
@@ -192,11 +194,30 @@ def merge_employee_fallbacks(employees: dict, fallbacks: dict) -> dict:
 
 
 async def save_employees_to_disk(users: list) -> None:
+    """Write the employee cache, atomically, so a failed write cannot destroy the last good one.
+
+    This file is what `load_employees_from_disk` falls back to when the directory is
+    unreachable — a half-written one would take that fallback away exactly when it is needed.
+    """
+    path = get_employee_cache_file_name()
+    temporary = f"{path}.tmp"
+    content = json.dumps(users, indent=2)
+
+    async def attempt() -> None:
+        async with aiofiles.open(temporary, "w") as f:
+            await f.write(content)
+            await f.flush()
+            await asyncio.to_thread(os.fsync, f.fileno())
+        await asyncio.to_thread(os.replace, temporary, path)
+
     try:
-        async with aiofiles.open(get_employee_cache_file_name(), "w") as f:
-            await f.write(json.dumps(users, indent=2))
+        await retryutil.retry_async(attempt, what="Writing the employee cache")
     except Exception as e:
         log_error("Failed to save employees to disk:", e)
+        try:
+            await asyncio.to_thread(os.unlink, temporary)
+        except OSError:
+            pass
 
 
 async def load_employees() -> dict:
@@ -208,7 +229,8 @@ async def load_employees() -> dict:
     employee_auth_url = "https://identity.prod.mittwald.systems/authenticate"
     employee_url = "https://lb.mittwald.it/api/users"
 
-    try:
+    async def attempt() -> list | None:
+        """One authenticate-and-fetch round trip. None means a permanent refusal."""
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             auth_payload = {
                 "username": username,
@@ -217,26 +239,42 @@ async def load_employees() -> dict:
             }
 
             async with session.post(employee_auth_url, json=auth_payload) as auth_response:
+                if retryutil.is_retryable_status(auth_response.status):
+                    raise retryutil.TransientHTTPError(
+                        "Authenticating against the employee directory", auth_response.status,
+                        retryutil.parse_retry_after(auth_response.headers.get("Retry-After")))
                 if auth_response.status != 200:
                     log_error(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
-                    return await load_employees_from_disk()
+                    return None
 
                 token = (await auth_response.text()).strip()
                 if not token:
                     log_error(f"Failed to authenticate to retrieve employees, no token received: {token!r}")
-                    return await load_employees_from_disk()
+                    return None
 
             headers = {"jwt": token}
             async with session.get(employee_url, headers=headers) as users_response:
+                if retryutil.is_retryable_status(users_response.status):
+                    raise retryutil.TransientHTTPError(
+                        "Reading the employee directory", users_response.status,
+                        retryutil.parse_retry_after(users_response.headers.get("Retry-After")))
                 if users_response.status != 200:
                     log_error(f"Failed to fetch employees: {await users_response.text()}")
-                    return await load_employees_from_disk()
+                    return None
+                return await users_response.json()
 
-                users = await users_response.json()
-                employees = generate_employee_list(users)
-                log(f"{len(employees)} employees retrieved from {employee_url}.")
-                await save_employees_to_disk(users)
-                return merge_employee_fallbacks(employees, await load_employee_fallbacks())
+    # The disk cache below is a real fallback, but it is a *stale* one: everybody hired since
+    # the last successful fetch is missing from it, and their team is what several conditions
+    # are judged on. Worth a few more attempts before settling for it.
+    try:
+        users = await retryutil.retry_async(attempt, what="Reading the employee directory")
     except Exception as e:
         log_error(f"Failed to retrieve employees from {employee_url}:", e)
         return await load_employees_from_disk()
+    if users is None:
+        return await load_employees_from_disk()
+
+    employees = generate_employee_list(users)
+    log(f"{len(employees)} employees retrieved from {employee_url}.")
+    await save_employees_to_disk(users)
+    return merge_employee_fallbacks(employees, await load_employee_fallbacks())

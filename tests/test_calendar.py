@@ -679,6 +679,75 @@ async def test_fetch_calendar_survives_a_transport_error():
 
 
 @pytest.mark.asyncio
+async def test_fetch_calendar_retries_a_server_error():
+    calls = []
+    with _patch_http([_FakeResponse(status=503, text="busy"), _FakeResponse(text=SAMPLE_ICS)], calls):
+        calendar, name = await fetch_calendar("https://cal.example.com/feed.ics")
+    assert calendar is not None and name == "Team Kalender"
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_calendar_falls_back_to_the_last_good_copy():
+    """A feed nobody can reach must not quietly turn "on vacation" into "not on vacation"."""
+    calls = []
+    with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
+        calendar, name = await fetch_calendar("https://cal.example.com/feed.ics")
+    with _patch_http(_FakeResponse(status=404, text="gone"), calls), \
+         patch('hutbot.calendarfeed._CALENDAR_TTL', 0):
+        again, again_name = await fetch_calendar("https://cal.example.com/feed.ics")
+    assert again is calendar and again_name == name
+
+
+def _age_the_calendar_cache(url, seconds):
+    """Push a cached feed past its TTL without shortening the TTL itself."""
+    fetched_at, calendar, name = hutbot.state._calendar_cache[url]
+    hutbot.state._calendar_cache[url] = (fetched_at - seconds, calendar, name)
+
+
+@pytest.mark.asyncio
+async def test_a_feed_that_just_failed_is_not_asked_again_by_the_next_message():
+    """Three attempts per TTL against a host that is down, not three per message."""
+    url = "https://cal.example.com/feed.ics"
+    calls = []
+    with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
+        await fetch_calendar(url)
+    _age_the_calendar_cache(url, 1000)
+    with _patch_http(_FakeResponse(status=503, text="busy"), calls):
+        await fetch_calendar(url)
+        attempted = len(calls)
+        # The very next evaluation answers from the last copy without touching the network.
+        calendar, _ = await fetch_calendar(url)
+    assert calendar is not None
+    assert len(calls) == attempted
+
+
+@pytest.mark.asyncio
+async def test_a_feed_that_comes_back_is_fetched_again():
+    calls = []
+    with _patch_http(_FakeResponse(status=503, text="busy"), calls):
+        assert await fetch_calendar("https://cal.example.com/feed.ics") == (None, "")
+    assert hutbot.state._calendar_failures
+    with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls), \
+         patch('hutbot.calendarfeed._CALENDAR_TTL', 0):
+        calendar, _ = await fetch_calendar("https://cal.example.com/feed.ics")
+    assert calendar is not None
+    assert hutbot.state._calendar_failures == {}
+
+
+@pytest.mark.asyncio
+async def test_a_calendar_nobody_has_reached_for_a_day_is_dropped():
+    calls = []
+    with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
+        await fetch_calendar("https://cal.example.com/feed.ics")
+    with _patch_http(_FakeResponse(status=404, text="gone"), calls), \
+         patch('hutbot.calendarfeed._CALENDAR_TTL', 0), \
+         patch('hutbot.calendarfeed._CALENDAR_STALE_GRACE', 0):
+        assert await fetch_calendar("https://cal.example.com/feed.ics") == (None, "")
+    assert hutbot.state._calendar_cache == {}
+
+
+@pytest.mark.asyncio
 async def test_fetch_calendar_without_a_url_does_nothing():
     assert await fetch_calendar("") == (None, "")
     assert await fetch_calendar("   ") == (None, "")

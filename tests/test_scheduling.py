@@ -231,7 +231,7 @@ async def test_schedule_reply_routes_to_action_for_non_reply_action():
     user = User("U2", "x", "X", "T")
     with patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value='')), \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
-         patch('hutbot.actions.run_action', new=AsyncMock(return_value={"channel": "C", "ts": "1", "text": "hi"})) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C", "ts": "1", "text": "hi"}, ""))) as run:
         await hutbot.scheduling.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
     assert run.await_count == 1
     assert run.await_args.args[4] == "src"
@@ -250,7 +250,7 @@ async def test_schedule_reply_always_routes_through_run_action():
     with patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value='')), \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
          patch('hutbot.messaging.send_message', new=AsyncMock()) as send, \
-         patch('hutbot.actions.run_action', new=AsyncMock(return_value={"channel": "C", "ts": "1", "text": "hi"})) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C", "ts": "1", "text": "hi"}, ""))) as run:
         await hutbot.scheduling.schedule_reply(app, "tok", channel, cfg, "src", user, "orig", "1.1", wait_time_override=0)
     assert run.await_count == 1
     assert send.await_count == 0

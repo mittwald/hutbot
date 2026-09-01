@@ -858,3 +858,97 @@ async def test_post_opsgenie_alert_uses_bot_name_for_tag_and_alias():
     assert posted['data']["tags"] == ["Hutbot (DEV)"]
     assert posted['data']["alias"] == "hutbot-dev: Test User in #general 1.1"
     assert posted['data']["details"]["bot"] == "hutbot-dev"
+
+
+@pytest.mark.asyncio
+async def test_an_opsgenie_alert_is_retried_after_a_server_error():
+    """The alert is the escalation of last resort; a 502 must not be the end of it."""
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    statuses = [502, 202]
+    posted = []
+
+    class _Response:
+        def __init__(self, status):
+            self.status = status
+            self.headers = {}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        def post(self, url, headers=None, data=None):
+            posted.append(json.loads(data))
+            return _Response(statuses[len(posted) - 1])
+
+    with patch('hutbot.opsgenie.aiohttp.ClientSession', lambda *a, **k: _Session()), \
+         patch('hutbot.messaging.clean_slack_text', new=AsyncMock(return_value="DB down")):
+        await hutbot.opsgenie.post_opsgenie_alert(app, "token", channel, None, user, "DB down", "1.1", "")
+
+    assert len(posted) == 2
+    # Same alias both times, so the attempt that lands folds into one alert rather than two.
+    assert posted[0]["alias"] == posted[1]["alias"]
+
+
+@pytest.mark.asyncio
+async def test_an_opsgenie_alert_is_not_retried_after_a_rejection():
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    user = User("U12345", "test", "Test User", "Testers")
+    posted = []
+
+    class _Response:
+        status = 422
+        headers = {}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        def post(self, url, headers=None, data=None):
+            posted.append(data)
+            return _Response()
+
+    with patch('hutbot.opsgenie.aiohttp.ClientSession', lambda *a, **k: _Session()), \
+         patch('hutbot.messaging.clean_slack_text', new=AsyncMock(return_value="DB down")):
+        await hutbot.opsgenie.post_opsgenie_alert(app, "token", channel, None, user, "DB down", "1.1", "")
+
+    assert len(posted) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_on_call_lookup_is_retried_after_a_rate_limit():
+    app = AsyncMock()
+    calls = []
+
+    class _Response:
+        def __init__(self, status, payload=None):
+            self.status = status
+            self.headers = {"Retry-After": "0"}
+            self._payload = payload or {}
+        async def json(self): return self._payload
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+
+    responses = [
+        _Response(429),
+        _Response(200, {"data": {"onCallRecipients": ["dave@example.com"]}}),
+    ]
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        def get(self, url, headers=None, params=None):
+            calls.append(url)
+            return responses[len(calls) - 1]
+
+    with patch('hutbot.opsgenie.aiohttp.ClientSession', lambda *a, **k: _Session()), \
+         patch('hutbot.opsgenie.resolve_slack_user_for_opsgenie_recipient', new=AsyncMock(return_value=None)):
+        email, _ = await hutbot.opsgenie.resolve_opsgenie_on_call(app, "api-token", "Platform")
+
+    assert email == "dave@example.com"
+    assert len(calls) == 2

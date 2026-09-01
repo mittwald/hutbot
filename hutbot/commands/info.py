@@ -2,10 +2,10 @@
 
 import re
 
-import aiohttp
 from slack_bolt.async_app import AsyncApp
 
 from logutil import log_error
+import retryutil
 
 from .. import state
 from .. import messaging
@@ -59,17 +59,17 @@ async def list_opsgenie_schedules(app: AsyncApp, channel, user, thread_ts: str =
     }
 
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    log_error(f"Failed to list OpsGenie schedules: {response.status}")
-                    await messaging.send_message(app, channel, user, f"Failed to list OpsGenie schedules: HTTP {response.status}.", thread_ts)
-                    return
-
-                payload = await response.json()
+        status, payload = await opsgenie._get_opsgenie_json(url, headers, None, "Listing the OpsGenie schedules")
     except Exception as e:
         log_error("Failed to list OpsGenie schedules:", e)
-        await messaging.send_message(app, channel, user, "Failed to list OpsGenie schedules.", thread_ts)
+        # A rate limit or a server error that survived its retries still has a status worth
+        # naming; a dropped connection has none, and the plain sentence is all there is to say.
+        detail = f": HTTP {e.status}" if isinstance(e, retryutil.TransientHTTPError) else ""
+        await messaging.send_message(app, channel, user, f"Failed to list OpsGenie schedules{detail}.", thread_ts)
+        return
+    if payload is None:
+        log_error(f"Failed to list OpsGenie schedules: {status}")
+        await messaging.send_message(app, channel, user, f"Failed to list OpsGenie schedules: HTTP {status}.", thread_ts)
         return
 
     schedules = payload.get("data", [])

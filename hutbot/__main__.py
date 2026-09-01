@@ -5,11 +5,34 @@ import logging
 
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
+from slack_sdk.http_retry.builtin_async_handlers import (
+    AsyncConnectionErrorRetryHandler,
+    AsyncRateLimitErrorRetryHandler,
+)
 
 from employee_list import get_env_var, load_env_file
 from logutil import configure_stdlib_logging, log_error
 
 from . import __version__
+
+
+def configure_slack_retries(app: AsyncApp) -> None:
+    """Retry a rate-limited or dropped Slack call inside the SDK, under every caller.
+
+    slack_sdk ships with a single connection-error handler and none for 429, so without this
+    every one of the ~20 call sites would have to carry its own rate-limit backoff. The
+    handlers sit in the client, so a `users.list` page, a `conversations.info` lookup and a
+    `chat.postMessage` all get the same treatment — and `AsyncRateLimitErrorRetryHandler`
+    reads Slack's `Retry-After` rather than guessing at it.
+
+    The per-call loops in `messaging` stay: they cover the attempts these handlers give up on
+    and the errors they never see.
+    """
+    handlers = app.client.retry_handlers
+    if not any(isinstance(handler, AsyncRateLimitErrorRetryHandler) for handler in handlers):
+        handlers.append(AsyncRateLimitErrorRetryHandler(max_retry_count=2))
+    if not any(isinstance(handler, AsyncConnectionErrorRetryHandler) for handler in handlers):
+        handlers.append(AsyncConnectionErrorRetryHandler(max_retry_count=2))
 
 
 async def main() -> None:
@@ -59,6 +82,7 @@ async def main() -> None:
     web_runner = None
     try:
         app = AsyncApp(token=slack_bot_token)
+        configure_slack_retries(app)
         # Bolt's socket-mode handler prints its boot line with a bare `print()` unless its logger
         # accepts INFO, which bypasses the formatter configured above. Only this logger is raised;
         # slack_sdk's per-connection chatter stays at the root logger's level.

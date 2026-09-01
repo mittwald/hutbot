@@ -4,7 +4,6 @@ import json
 import time
 
 from slack_bolt.async_app import AsyncApp
-from slack_sdk.errors import SlackApiError
 
 from employee_list import (
     EMPLOYEE_MAPPING_IGNORE,
@@ -16,6 +15,7 @@ from employee_list import (
     normalize_user_name,
 )
 from logutil import log, log_error, log_warning
+import retryutil
 
 from . import state
 from .constants import SLACK_SYSTEM_USER_IDS, TEAM_UNKNOWN
@@ -39,11 +39,13 @@ async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
 
 async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
     try:
-        response = await app.client.conversations_info(channel=channel_id)
+        response = await retryutil.retry_async(
+            lambda: app.client.conversations_info(channel=channel_id),
+            what=f"Reading the name of channel {channel_id}")
         channel_name = response.get('channel', {}).get('name', '')
         if channel_name:
             return channel_name
-    except SlackApiError as e:
+    except Exception as e:
         log_error(f"Failed to get channel name for {channel_id}", e)
 
     return channel_id
@@ -52,13 +54,12 @@ async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
 async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str:
     permalink = ""
     try:
-        response = await app.client.chat_getPermalink(
-            channel=channel.id,
-            message_ts=ts
-        )
+        response = await retryutil.retry_async(
+            lambda: app.client.chat_getPermalink(channel=channel.id, message_ts=ts),
+            what=f"Reading the permalink of message {ts} in #{channel.name}")
 
         permalink = response.get('permalink', '')
-    except SlackApiError as e:
+    except Exception as e:
         log_error(f"Failed to get permalink for message {ts} in channel #{channel.name}:", e)
 
     return permalink
@@ -67,7 +68,9 @@ async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str
 async def update_usergroup_cache(app: AsyncApp) -> None:
     if not state.usergroup_id_cache or not state.id_usergroup_cache:
         try:
-            response = await app.client.usergroups_list()
+            response = await retryutil.retry_async(
+                lambda: app.client.usergroups_list(),
+                what="Fetching the Slack usergroup list")
             usergroups = response['usergroups']
             for usergroup in usergroups:
                 if usergroup.get('date_deleted', 0) == 0:
@@ -76,7 +79,7 @@ async def update_usergroup_cache(app: AsyncApp) -> None:
                     usergroup_name = usergroup.get('name', '')
                     state.usergroup_id_cache[usergroup_handle] = Usergroup(id=usergroup_id, handle=usergroup_handle, name=usergroup_name)
                     state.id_usergroup_cache[usergroup_id] = Usergroup(id=usergroup_id, handle=usergroup_handle, name=usergroup_name)
-        except SlackApiError as e:
+        except Exception as e:
             log_error("Failed to fetch usergroup list:", e)
 
 
@@ -144,30 +147,48 @@ def cache_user(user_email: str, u: User) -> None:
 
 
 async def update_user_cache(app: AsyncApp) -> None:
+    """Fill the user caches from `users.list`, or leave them as they were.
+
+    `users.list` is paginated and rate limited, and the caches are only refilled while they
+    are empty — so a page that fails has to leave them empty too. Writing each page as it
+    arrives would leave a half-filled cache that looks filled, and the process would run out
+    its life resolving half the workspace to bare ids with no way to notice or repair it.
+    Everything is therefore collected first and committed in one go, once every page is in.
+    """
     if not state.user_id_cache or not state.user_email_cache or not state.id_user_cache:
         employees = await load_employees()
         mappings = load_employee_mappings()
+        fetched: list[tuple[str, User]] = []
         try:
             cursor = None
             while True:
-                response = await app.client.users_list(cursor=cursor, limit=200)
+                response = await retryutil.retry_async(
+                    lambda cursor=cursor: app.client.users_list(cursor=cursor, limit=200),
+                    what="Fetching the Slack user list")
                 for user in response['members']:
                     if not user.get('deleted') and \
                        not user.get('is_bot', False) and \
                        not user.get('is_restricted', False) and \
                        user.get('id', '') != 'USLACKBOT':
-                        cache_user(*build_user(user, employees, mappings))
+                        fetched.append(build_user(user, employees, mappings))
                 cursor = response.get('response_metadata', {}).get('next_cursor')
                 if not cursor:
                     break
-        except SlackApiError as e:
+        except Exception as e:
+            # Nothing has been written yet, so the caches stay empty and the next lookup
+            # runs this again rather than settling for what one page happened to carry.
             log_error("Failed to fetch user list:", e)
+            return
+        for user_email, user in fetched:
+            cache_user(user_email, user)
 
 
 async def fetch_user_by_id(app: AsyncApp, id: str, channel: Channel | None = None) -> User | None:
     try:
-        response = await app.client.users_info(user=id)
-    except SlackApiError as e:
+        response = await retryutil.retry_async(
+            lambda: app.client.users_info(user=id),
+            what=f"Fetching Slack user {id}")
+    except Exception as e:
         log_error(f"Failed to fetch user `{id}`:", e)
         return None
     slack_user = response.get('user')
@@ -191,8 +212,10 @@ async def fetch_bot_handle(app: AsyncApp, bot_user_id: str) -> str:
     if not bot_user_id:
         return ""
     try:
-        response = await app.client.users_info(user=bot_user_id)
-    except SlackApiError as e:
+        response = await retryutil.retry_async(
+            lambda: app.client.users_info(user=bot_user_id),
+            what=f"Fetching the bot user {bot_user_id}")
+    except Exception as e:
         log_error(f"Failed to fetch the bot user `{bot_user_id}`:", e)
         return ""
     slack_user = response.get('user') or {}
@@ -276,9 +299,11 @@ async def get_usergroup_by_handle(app: AsyncApp, handle: str) -> Usergroup:
 
 async def get_usergroup_members(app: AsyncApp, usergroup_id: str) -> list[str]:
     try:
-        response = await app.client.usergroups_users_list(usergroup=usergroup_id)
+        response = await retryutil.retry_async(
+            lambda: app.client.usergroups_users_list(usergroup=usergroup_id),
+            what=f"Fetching the members of usergroup {usergroup_id}")
         return response.get('users', [])
-    except SlackApiError as e:
+    except Exception as e:
         log_error(f"Failed to fetch members of usergroup {usergroup_id}:", e)
         return []
 
@@ -293,12 +318,14 @@ async def get_channel_members(app: AsyncApp, channel_id: str) -> set:
     cursor = None
     try:
         while True:
-            response = await app.client.conversations_members(channel=channel_id, cursor=cursor, limit=200)
+            response = await retryutil.retry_async(
+                lambda cursor=cursor: app.client.conversations_members(channel=channel_id, cursor=cursor, limit=200),
+                what=f"Fetching the members of channel {channel_id}")
             members.update(response.get('members', []) or [])
             cursor = response.get('response_metadata', {}).get('next_cursor')
             if not cursor:
                 break
-    except SlackApiError as e:
+    except Exception as e:
         log_error(f"Failed to fetch members for channel {channel_id}:", e)
         return cached[1] if cached else set()
     state._channel_members_cache[channel_id] = (now, members)

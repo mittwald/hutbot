@@ -11,6 +11,7 @@ from slack_bolt.async_app import AsyncApp
 
 from employee_list import get_env_var
 from logutil import log, log_error, log_warning
+import retryutil
 
 from . import datetimefmt
 from . import slackcache
@@ -30,6 +31,36 @@ from .constants import (
 )
 from .models import OpsGenieContext, OpsGeniePeriod, OpsGenieTokens, User
 from .textutil import log_debug
+
+
+# Every OpsGenie request gets a deadline of its own. Without one a hung connection holds the
+# call open for aiohttp's five-minute default — long enough for an alert to miss the incident
+# it was raised for, and for the heartbeat loop to skip the ping that says the bot is alive.
+OPSGENIE_HTTP_TIMEOUT = 10
+HEARTBEAT_INTERVAL = 60
+
+
+async def _get_opsgenie_json(url: str, headers: dict, params: dict | None, what: str) -> tuple[int, dict | None]:
+    """GET an OpsGenie endpoint, retrying a rate limit or a server error.
+
+    Returns `(status, payload)`, with the payload parsed only on 200 — a permanent status
+    (404 for an unknown schedule, 401 for a wrong key) is handed back for the caller to
+    report rather than retried. A retryable status or a transport failure raises once the
+    attempts are used up, so the caller falls back the same way it always did.
+    """
+    async def attempt() -> tuple[int, dict | None]:
+        timeout = aiohttp.ClientTimeout(total=OPSGENIE_HTTP_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, params=params) as response:
+                if retryutil.is_retryable_status(response.status):
+                    raise retryutil.TransientHTTPError(
+                        what, response.status,
+                        retryutil.parse_retry_after(response.headers.get("Retry-After")))
+                if response.status != 200:
+                    return response.status, None
+                return response.status, await response.json()
+
+    return await retryutil.retry_async(attempt, what=what)
 
 
 def load_opsgenie_tokens() -> OpsGenieTokens:
@@ -110,15 +141,14 @@ async def resolve_opsgenie_on_call(app: AsyncApp, opsgenie_api_token: str, sched
         "flat": "true",
     }
 
+    what = f"Reading the on-call recipients of OpsGenie schedule '{schedule_name}'"
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(url, headers=headers, params=params) as response:
-                if response.status != 200:
-                    log_error(f"Failed to retrieve on-call recipients for OpsGenie schedule '{schedule_name}': {response.status}")
-                    return "", None
-                payload = await response.json()
+        status, payload = await _get_opsgenie_json(url, headers, params, what)
     except Exception as e:
         log_error(f"Failed to retrieve on-call recipients for OpsGenie schedule '{schedule_name}':", e)
+        return "", None
+    if payload is None:
+        log_error(f"Failed to retrieve on-call recipients for OpsGenie schedule '{schedule_name}': {status}")
         return "", None
 
     recipients = payload.get("data", {}).get("onCallRecipients", [])
@@ -280,15 +310,14 @@ async def resolve_opsgenie_on_call_period(opsgenie_api_token: str, schedule_name
         "intervalUnit": "months",
     }
 
+    what = f"Reading the timeline of OpsGenie schedule '{schedule_name}'"
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(url, headers=headers, params=params) as response:
-                if response.status != 200:
-                    log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}': {response.status}")
-                    return "", ""
-                payload = await response.json()
+        status, payload = await _get_opsgenie_json(url, headers, params, what)
     except Exception as e:
         log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}':", e)
+        return "", ""
+    if payload is None:
+        log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}': {status}")
         return "", ""
 
     return find_opsgenie_on_call_period(payload.get("data", {}), recipient_email)
@@ -312,15 +341,14 @@ async def resolve_opsgenie_upcoming_on_call_period(opsgenie_api_token: str, sche
         "intervalUnit": "months",
     }
 
+    what = f"Reading the timeline of OpsGenie schedule '{schedule_name}'"
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(url, headers=headers, params=params) as response:
-                if response.status != 200:
-                    log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}': {response.status}")
-                    return "", "", ""
-                payload = await response.json()
+        status, payload = await _get_opsgenie_json(url, headers, params, what)
     except Exception as e:
         log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}':", e)
+        return "", "", ""
+    if payload is None:
+        log_error(f"Failed to retrieve timeline for OpsGenie schedule '{schedule_name}': {status}")
         return "", "", ""
 
     return find_opsgenie_upcoming_on_call_period(payload.get("data", {}))
@@ -404,28 +432,42 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_alert_token: str, channel,
     # The alias is OpsGenie's dedup key, so it uses the slug rather than the
     # display name — that also keeps a dev instance from deduping against prod.
     slug = bot_slug(state.bot_name)
-    async with aiohttp.ClientSession() as session:
-        try:
-            data = {
-                "message": f"#{channel.name}: {text}",
-                "alias": f"{slug}: {user_name} in #{channel.name} {ts}",
-                "description": f"{user_name} in #{channel.name}: {text}",
-                "tags": [state.bot_name],
-                "details": {
-                    "channel": f"#{channel.name}",
-                    "sender": user_name,
-                    "bot": slug,
-                    "permalink": permalink,
-                },
-                "priority": priority,
-            }
+    data = {
+        "message": f"#{channel.name}: {text}",
+        # Being the dedup key also makes the retries below safe: a POST that the previous
+        # attempt did deliver folds into that alert rather than raising a second one.
+        "alias": f"{slug}: {user_name} in #{channel.name} {ts}",
+        "description": f"{user_name} in #{channel.name}: {text}",
+        "tags": [state.bot_name],
+        "details": {
+            "channel": f"#{channel.name}",
+            "sender": user_name,
+            "bot": slug,
+            "permalink": permalink,
+        },
+        "priority": priority,
+    }
+    what = f"Raising the OpsGenie alert for message {ts} in #{channel.name}"
+
+    async def attempt() -> int:
+        timeout = aiohttp.ClientTimeout(total=OPSGENIE_HTTP_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, headers=headers, data=json.dumps(data)) as response:
-                if response.status != 202:
-                    log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}: {response.status}")
-                else:
-                    log(f"Successfully sent OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name} with status code {response.status}")
-        except Exception as e:
-            log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}:", e)
+                if response.status != 202 and retryutil.is_retryable_status(response.status):
+                    raise retryutil.TransientHTTPError(
+                        what, response.status,
+                        retryutil.parse_retry_after(response.headers.get("Retry-After")))
+                return response.status
+
+    try:
+        status = await retryutil.retry_async(attempt, what=what)
+    except Exception as e:
+        log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}:", e)
+        return
+    if status != 202:
+        log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}: {status}")
+    else:
+        log(f"Successfully sent OpsGenie alert for message {ts} in channel #{channel.name}, user @{user.name} with status code {status}")
 
 
 async def send_heartbeat(opsgenie_alert_token: str, opsgenie_heartbeat_name: str) -> None:
@@ -434,12 +476,19 @@ async def send_heartbeat(opsgenie_alert_token: str, opsgenie_heartbeat_name: str
         'Authorization': f'GenieKey {opsgenie_alert_token}'
     }
     log(f"Starting to send heartbeat to {url}...")
-    async with aiohttp.ClientSession() as session:
+    # The loop is the retry: a missed ping is followed by another one a minute later, and
+    # OpsGenie's own heartbeat expiry is what decides when enough have been missed to matter.
+    # The per-request deadline is what keeps that promise — without it a hung connection
+    # would stall the loop for aiohttp's five-minute default and expire the heartbeat.
+    timeout = aiohttp.ClientTimeout(total=OPSGENIE_HTTP_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         while True:
             try:
                 async with session.get(url, headers=headers) as response:
                     if response.status != 202:
                         log_error(f"Failed to send heartbeat: {response.status}")
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 log_error("Exception while sending heartbeat:", e)
-            await asyncio.sleep(60)
+            await asyncio.sleep(HEARTBEAT_INTERVAL)

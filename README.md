@@ -289,6 +289,13 @@ back 90 days (`HUTBOT_CALENDAR_LOOKBACK_DAYS`) — widen that for a calendar who
 months apart. Both are chart values as well (`calendar.ttlSeconds`, `calendar.lookbackDays`), so a
 deployment can set them without touching the image.
 
+A feed that cannot be fetched keeps answering from its last copy for a day
+(`HUTBOT_CALENDAR_STALE_GRACE`, `calendar.staleGraceSeconds`), because a condition judged on a
+day-old calendar is wrong far less often than one judged on no calendar — "on vacation" would
+otherwise quietly become "not on vacation" for as long as the host is down. Past that the copy is
+dropped. A feed that just failed is not asked again until its TTL is up, so a host that is down
+costs three attempts per TTL rather than three per message.
+
 A remote feed must be `https://`, and URLs pointing at any non-global address — including private,
 link-local and the shared `100.64.0.0/10` range — are refused because the bot fetches them from
 inside the cluster. The host name is resolved and checked too, at every redirect hop, so a public
@@ -445,6 +452,12 @@ existing configs keep working unchanged.
   - Once a message is handled, its buttons are removed and replaced by a one-line note of what
     happened: *Dave Grieser: [I've got it]* or *Dave Grieser: [Page] ▶︎ alarm* for a press, and
     *⌛︎ 1m* or *⌛︎ 5m ▶︎ alarm* when the escalation acted instead.
+  - An escalation Slack refuses to take is tried again — three times, a minute apart — and the
+    buttons stay on the message until one of them gets through or the attempts run out. A restart
+    in the middle of that restores the escalation rather than losing it, so a Slack outage can
+    duplicate an escalation but not swallow one. A reminder whose send fails is retried the same
+    way. A config that *declines* — a condition says no — is not retried: it would decide the same
+    thing a minute later.
 
 - **"Need help?" example** — a question that defaults to "Yes" if ignored:
   ```bash
@@ -772,9 +785,11 @@ export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
 # Without an entry the bot refuses the fetch and logs the address it resolved to. Needs the
 # matching NETWORKPOLICY_RULES entry (and HOST_ALIASES, if cluster DNS does not serve the zone).
 export HUTBOT_CALENDAR_ALLOWED_HOSTS='outlook-bridge.prod.example.systems'
-# Calendar tunables; unset means the bot's own defaults, 300 seconds and 90 days.
+# Calendar tunables; unset means the bot's own defaults, 300 seconds, 90 days and a day.
 export HUTBOT_CALENDAR_TTL=300
 export HUTBOT_CALENDAR_LOOKBACK_DAYS=90
+# How long an unreachable feed's last copy is still used past the TTL; `0` stops that.
+export HUTBOT_CALENDAR_STALE_GRACE=86400
 # Minutes between reads of the calendar bridge's listing; unset means 60, `0` reads it once at
 # startup. The listing URL itself carries a token and lives in the Secret, not here.
 export HUTBOT_CALENDAR_BRIDGE_REFRESH=60
@@ -1290,9 +1305,11 @@ export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
 # Without an entry the bot refuses the fetch and logs the address it resolved to. Needs the
 # matching NETWORKPOLICY_RULES entry (and HOST_ALIASES, if cluster DNS does not serve the zone).
 export HUTBOT_CALENDAR_ALLOWED_HOSTS='outlook-bridge.prod.example.systems'
-# Calendar tunables; unset means the bot's own defaults, 300 seconds and 90 days.
+# Calendar tunables; unset means the bot's own defaults, 300 seconds, 90 days and a day.
 export HUTBOT_CALENDAR_TTL=300
 export HUTBOT_CALENDAR_LOOKBACK_DAYS=90
+# How long an unreachable feed's last copy is still used past the TTL; `0` stops that.
+export HUTBOT_CALENDAR_STALE_GRACE=86400
 # Minutes between reads of the calendar bridge's listing; unset means 60, `0` reads it once at
 # startup. The listing URL itself carries a token and lives in the Secret, not here.
 export HUTBOT_CALENDAR_BRIDGE_REFRESH=60

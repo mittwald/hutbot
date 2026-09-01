@@ -105,6 +105,11 @@ _channel_members_cache: dict[str, tuple[float, set]] = {}
 # what makes these keys secret material, since a built-in's URL is an operator's token.
 _calendar_cache: dict[str, tuple[float, object, str]] = {}
 
+# When each feed URL was last found unreachable, so a feed that is down is asked again on its
+# own TTL rather than on every message that evaluates a calendar condition. Keyed the same way,
+# and therefore secret in the same way.
+_calendar_failures: dict[str, float] = {}
+
 # Serializes web-UI config writes (mutate channel_config + save_configuration).
 _config_write_lock = asyncio.Lock()
 
@@ -130,6 +135,7 @@ def reset() -> None:
     team_cache.clear()
     _channel_members_cache.clear()
     _calendar_cache.clear()
+    _calendar_failures.clear()
     bridge_calendar_titles.clear()
     current_command.set('')
     _scheduler_last_check = None
