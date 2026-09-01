@@ -26,6 +26,10 @@ from .textutil import log_debug
 # channels doesn't hammer conversations.members on every UI request.
 _CHANNEL_MEMBERS_TTL = 300.0
 
+# Channel names, on the same footing and for the same reason: a rule list needs one name per
+# channel, and a rename is cosmetic, so serving a slightly stale one costs nothing.
+_CHANNEL_NAME_TTL = 300.0
+
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     if channel_id not in state.channel_config:
@@ -38,12 +42,23 @@ async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
 
 
 async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
+    """A channel's name, cached for _CHANNEL_NAME_TTL seconds.
+
+    Falls back to the id, which is what every caller prints when the lookup fails. A failed
+    lookup is not cached, so a channel the bot momentarily could not read is asked again
+    rather than being called by its id for the next five minutes.
+    """
+    now = time.monotonic()
+    cached = state._channel_name_cache.get(channel_id)
+    if cached and (now - cached[0]) < _CHANNEL_NAME_TTL:
+        return cached[1]
     try:
         response = await retryutil.retry_async(
             lambda: app.client.conversations_info(channel=channel_id),
             what=f"Reading the name of channel {channel_id}")
         channel_name = response.get('channel', {}).get('name', '')
         if channel_name:
+            state._channel_name_cache[channel_id] = (now, channel_name)
             return channel_name
     except Exception as e:
         log_error(f"Failed to get channel name for {channel_id}", e)
