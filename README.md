@@ -340,7 +340,9 @@ renaming is the **Rename** button next to **Delete rule**.
 ```
 
 `export config` prints one config as JSON, ready to paste into `import config` in another
-channel (or on another instance). Only the fields that differ from the defaults are exported:
+channel (or on another instance). The rule hub of the [App Home
+UI](#configuring-hutbot-from-slack-the-app-home) has the same two as buttons, with the same
+payload. Only the fields that differ from the defaults are exported:
 
 ```json
 {
@@ -605,7 +607,14 @@ There are two ways in:
 Both paths lead to a rule's **hub**: one row per group of settings — trigger, action and
 message, conditions, buttons, filters, calendar, OpsGenie, date and time — each with what it is
 currently set to and an **Edit** button. The hub is also where a rule is enabled, disabled,
-renamed, deleted or run once by hand.
+renamed, deleted, run once by hand, or exported and imported.
+
+**Export** and **Import** are the same payload as
+[`export config` / `import config`](#exporting-and-importing-a-config), which is often easier
+to use here: Export shows the JSON in a modal to copy out, and Import takes a paste plus the
+name to put it under, instead of one long command line. As with the command, an import
+describes a whole rule — anything the export left out goes back to its default, the calendar
+feed URL included, since that is never exported.
 
 A few things are worth knowing:
 
@@ -1460,6 +1469,8 @@ split into cohesive modules; `bot.py` remains as a backward-compatible launcher:
 - `hutbot/messaging.py`, `hutbot/actions.py`, `hutbot/buttons.py` — sending, the action engine, and interactive buttons/escalation
 - `hutbot/scheduling.py`, `hutbot/routing.py` — scheduled replies / cron triggers and Slack event routing
 - `hutbot/commands/` — slash-command parsing and handlers
+- `hutbot/configexport.py` — the `export config` payload and reading one back, shared by the
+  commands and the App Home's export/import modals
 - `hutbot/apphome/` — the configuration UI inside Slack: `fields.py` maps a config field to the
   Block Kit block that edits it, `views.py` builds every view (pure — no Slack, no writes), and
   `handlers.py` is the only half that talks to Slack, writing through `webui_backend.py`

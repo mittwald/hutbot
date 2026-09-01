@@ -18,6 +18,7 @@ from .fields import block_id
 from .. import buttonutil
 from .. import calendarfeed
 from .. import conditionutil
+from .. import configexport
 from .. import datetimefmt
 from .. import state
 from ..constants import (
@@ -62,10 +63,12 @@ VIEW_CONDITION_ROW = "cond_row"
 VIEW_BUTTON_ROW = "btn_row"
 VIEW_NEW_RULE = "new_rule"
 VIEW_RENAME_RULE = "rename_rule"
+VIEW_IMPORT = "import"
 VIEW_HUB = "hub"
 VIEW_PICKER = "picker"
 VIEW_LIST = "list"
 VIEW_NOTICE = "notice"
+VIEW_EXPORT = "export"
 
 # Which section each hub row opens, in the order the hub lists them.
 SECTION_ORDER = ("trigger", "message", "conditions", "buttons", "filters",
@@ -540,6 +543,8 @@ def hub_view(meta: dict, channel_id: str, config_name: str, config: dict) -> dic
         row.append(_button("Delete", "delete", value=rule_meta, style="danger",
                            confirm=_confirm("Delete rule", f"Delete `{config_name}` for good?")))
     row.append(_button("Run now", "run", value=rule_meta))
+    row.append(_button("Export", "export", value=rule_meta))
+    row.append(_button("Import", "import", value=rule_meta))
     blocks.append(_actions(row))
     return _modal(VIEW_HUB, "Rule", blocks, rule_meta)
 
@@ -561,6 +566,56 @@ def name_view(meta: dict, channel_id: str, config_name: str = "") -> dict:
     return _modal(VIEW_RENAME_RULE if renaming else VIEW_NEW_RULE,
                   "Rename rule" if renaming else "New rule", blocks,
                   fields.encode_meta(channel_id, config_name), submit="Save")
+
+
+def export_view(meta: dict, channel_id: str, config_name: str, config: dict) -> dict:
+    """One rule as JSON, to copy out. Nothing to submit — the text *is* the answer.
+
+    The same payload `export config` prints, from `configexport`, so a rule copied out of a
+    modal and one copied out of a message are the same bytes.
+    """
+    command = meta.get('slash_command') or state.slash_command
+    dumped = configexport.dump_payload(configexport.build_payload(config_name, config))
+    blocks: list[dict] = [
+        _section(f"*`{config_name}`* of <#{channel_id}>, ready to import elsewhere:"),
+        {"type": "rich_text", "elements": [{
+            "type": "rich_text_preformatted",
+            "elements": [{"type": "text", "text": dumped}],
+            "language": "json",
+        }]},
+        _context("Only the settings that differ from the defaults are here, so importing it "
+                 "changes only what was actually set."),
+    ]
+    if config.get('calendar_url'):
+        # Same warning the command gives: the link is a bearer secret, so it is left out and
+        # the importing side has to be told to set it again.
+        blocks.append(_context(
+            "The calendar feed URL is a secret and is *not* included; set it again with "
+            f"`{command} [config] set calendar <url>` after importing."))
+    return _modal(VIEW_EXPORT, "Export rule", blocks,
+                  fields.encode_meta(channel_id, config_name))
+
+
+def import_view(meta: dict, channel_id: str, config_name: str) -> dict:
+    """Paste an export to create or replace a rule.
+
+    The name is asked for separately and prefilled with the rule this was opened from, so an
+    export lands where the person wants it rather than where it came from.
+    """
+    blocks = [
+        _input(fields.BLOCK_NAME, _text_input(fields.BLOCK_NAME, config_name,
+                                              placeholder="nightly"),
+               label="Into rule", hint="An existing rule is replaced; a new name is created.",
+               optional=False),
+        _input(fields.BLOCK_IMPORT,
+               _text_input(fields.BLOCK_IMPORT, "", multiline=True,
+                           placeholder='{"format": "hutbot-config/1", …}'),
+               label="Exported JSON", optional=False),
+        _context("Anything the export leaves out goes back to its default — including the "
+                 "calendar feed URL, which is never exported."),
+    ]
+    return _modal(VIEW_IMPORT, "Import rule", blocks,
+                  fields.encode_meta(channel_id, config_name), submit="Import")
 
 
 # --- section forms --------------------------------------------------------------------
