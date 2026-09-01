@@ -7,11 +7,13 @@ concatenation. Keeping the mapping here rather than inside the view builders mea
 that renders a form and the code that reads it back cannot drift apart unnoticed — the same
 argument `conditionutil` makes for itself.
 
-Depends on `constants` alone, so it is testable with plain dicts and no Slack payloads.
+Depends on `constants` and `buttonutil`, both leaves, so it is testable with plain dicts and
+no Slack payloads.
 """
 
 import json
 
+from ..buttonutil import format_config_list
 from ..constants import (
     CONDITION_OPERATORS_WITHOUT_VALUE,
     CONFIG_UI_BLOCK_PREFIX,
@@ -227,7 +229,15 @@ def read_block(values: dict, block: str):
 
 
 def _text(values: dict, block: str) -> str:
+    """One block's value as the string the config stores.
+
+    A multi-select answers with a list, and the two fields edited that way — an escalation's
+    rules and a `config` button's — are stored as one comma-separated string. Joining it here
+    with `format_config_list` keeps that spelling the same as the one the setters write.
+    """
     raw = read_block(values, block)
+    if isinstance(raw, list):
+        return format_config_list(str(item).strip() for item in raw if str(item).strip())
     return "" if raw is None else str(raw).strip()
 
 
