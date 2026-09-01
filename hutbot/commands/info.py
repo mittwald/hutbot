@@ -1,5 +1,7 @@
 """Read-only slash-command handlers: lists, team lookup, and config display."""
 
+import copy
+import json
 import re
 
 from slack_bolt.async_app import AsyncApp
@@ -23,6 +25,8 @@ from ..constants import (
     ACK_DESTINATIONS,
     BUTTON_ACTION_ACK,
     CONDITION_MODE_ALL,
+    CONFIG_EXPORT_FORMAT,
+    DEFAULT_CONFIG,
     ACTION_DM_USER,
     DATETIME_TEMPLATE_VARIABLES,
     TEMPLATE_DATETIME_VARIABLES,
@@ -131,6 +135,54 @@ async def get_team_of(app: AsyncApp, channel, username: str, user, thread_ts: st
         await messaging.send_message(app, channel, user, message, thread_ts)
     else:
         await messaging.send_message(app, channel, user, f"Unknown user: `{username}`.", thread_ts)
+
+
+# Left out of an export on purpose: the calendar URL is a bearer secret that must never be
+# printed to the channel (`export config` says so when one is set), and `disabled_reason` is
+# the bot's own bookkeeping, not a setting the exporter made.
+EXPORT_SKIPPED_FIELDS = {'calendar_url', 'disabled_reason'}
+
+
+async def export_config(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    """`export config [<name>]` — one config as JSON, ready for `import config`.
+
+    Only the fields that differ from the defaults are exported, so the JSON stays readable
+    and importing it changes only what the exporter actually set.
+    """
+    config = channel.configs.get(config_name)
+    if config is None:
+        await messaging.send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
+        return
+
+    settings = {
+        key: copy.deepcopy(value)
+        for key, value in config.items()
+        if key in DEFAULT_CONFIG and key not in EXPORT_SKIPPED_FIELDS and value != DEFAULT_CONFIG[key]
+    }
+    payload = {"format": CONFIG_EXPORT_FORMAT, "name": config_name, "settings": settings}
+    dumped = json.dumps(payload, indent=2, ensure_ascii=False)
+    # A backtick can only occur inside a JSON string, so escaping every one of them keeps the
+    # JSON valid (and round-tripping) while a message containing ``` cannot close the code
+    # fence early the way `show config` has to guard against.
+    dumped = dumped.replace("`", "\\u0060")
+
+    notes = [f"_Import it with `{state.slash_command} import config [<name>] <json>`; a name given there wins over the exported one._"]
+    if config.get('calendar_url'):
+        notes.append(f"_The calendar feed URL is a secret and was *not* exported; set it again with `{state.slash_command} [config] set calendar <url>`._")
+    heading = f"Configuration `{config_name}` of #{channel.name}:"
+    note_text = "\n".join(notes)
+    message = f"{heading}\n```\n{dumped}\n```\n{note_text}"
+    blocks = messaging.section_blocks(heading)
+    blocks.append({
+        "type": "rich_text",
+        "elements": [{
+            "type": "rich_text_preformatted",
+            "elements": [{"type": "text", "text": dumped}],
+            "language": "json",
+        }],
+    })
+    blocks.extend(messaging.section_blocks(note_text))
+    await messaging.send_message(app, channel, user, message, thread_ts, blocks=blocks)
 
 
 # Zero-width spaces, so a value carrying a fence of its own cannot close the code block the

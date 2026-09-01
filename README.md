@@ -332,6 +332,42 @@ The reply says what else moved, e.g. *"also updated 2 rules and 1 posted message
 starts a command (`set`, `delete`, `rename`, …) — the same rules the web UI applies, where
 renaming is the **Rename** button next to **Delete rule**.
 
+## Exporting and importing a config
+
+```bash
+/hutbot export config [<name>]
+/hutbot import config [<name>] <json>
+```
+
+`export config` prints one config as JSON, ready to paste into `import config` in another
+channel (or on another instance). Only the fields that differ from the defaults are exported:
+
+```json
+{
+  "format": "hutbot-config/1",
+  "name": "escalate",
+  "settings": {
+    "wait_time": 600,
+    "reply_message": "Anybody there?",
+    "trigger": "manual"
+  }
+}
+```
+
+`import config` creates the config, or **replaces** it entirely if one with that name already
+exists. A name given in the command — `import config <name> <json>` or the `<config>` prefix —
+wins over the `name` in the JSON; without either, the exported name is used. The JSON may be
+pasted bare or inside a code block, and a plain `{ "wait_time": 600, … }` settings object
+without the envelope is accepted too.
+
+Every import runs through the same validation as the web UI save and the setters, so an
+import cannot store what a setter would have refused; a refused import changes nothing and
+lists each offending field. Fields missing from `settings` take their defaults. Two fields
+never travel: `disabled_reason` is the bot's own bookkeeping, and the calendar feed URL is a
+bearer secret that must not be printed to the channel — the export says so when one is set,
+and `set calendar <url>` restores it on the imported config (a `calendar_builtin` name is
+exported normally).
+
 ## Triggers, conditions, and actions
 
 Beyond the classic "reply if a message goes unanswered" behavior, each named config is a **rule**

@@ -58,6 +58,13 @@ ENABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'enable\s+(only[_ -]?)?w
 DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)?work[_ -]?days')
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
 DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)')
+# `export config` prints one config as JSON; `import config` reads such an export back. The
+# name is optional in both: export falls back to the addressed config, import to the name the
+# export carries. The import is anchored and DOTALL because the pasted JSON spans lines, and
+# its group starts at `{` or a backtick (a code fence) — neither can start a config name, so
+# the optional name never swallows the JSON.
+EXPORT_CONFIG_PATTERN = re.compile(r'^export\s+config(uration)?(?:\s+(?P<name>\S+))?\s*$', re.IGNORECASE)
+IMPORT_CONFIG_PATTERN = re.compile(r'^import\s+config(uration)?(?:\s+(?P<name>[A-Za-z0-9-_\.:/]+))?\s+(?P<json>[{`].*)$', re.IGNORECASE | re.DOTALL)
 # The old name is one word, because a config name cannot contain a space. The new one takes
 # the rest of the line so that a name with a space in it is *rejected by name*, rather than
 # failing to look like this command at all — and so a missing new name says so.

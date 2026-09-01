@@ -149,11 +149,16 @@ def command_footer_blocks() -> list[dict]:
     }]
 
 
-async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "", footer: bool = True) -> None:
-    """Reply to a command. `footer` is off for all but the last part of a chunked reply."""
+async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "", footer: bool = True, blocks: list[dict] | None = None) -> None:
+    """Reply to a command. `footer` is off for all but the last part of a chunked reply.
+
+    Callers may supply blocks when content needs a block type that mrkdwn sections cannot
+    represent safely, such as one preformatted export longer than a section's 3000 characters.
+    """
     # Blocks render the message; `text` stays the notification fallback, and carries the footer
     # in its plain-text spelling so a push notification is not missing the command it answers.
-    blocks = section_blocks(text) + (command_footer_blocks() if footer else [])
+    blocks = list(blocks) if blocks is not None else section_blocks(text)
+    blocks += command_footer_blocks() if footer else []
     if footer:
         text += command_footer()
     log_debug(channel, f"Attempting to send message to #{channel.name}, user @{user.name}: {text.replace(chr(10), '\\n')}")
@@ -532,6 +537,8 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} [config] disable", "Disable this config."),
             (f"{command} rename config <name> <new-name>", "Rename a configuration, and everything pointing at it."),
             (f"{command} delete config <name>", "Delete a configuration."),
+            (f"{command} export config [<name>]", "Print a configuration as JSON to copy elsewhere."),
+            (f"{command} import config [<name>] <json>", "Create or replace a configuration from an export."),
         ]),
         ("Trigger", [
             (f"{command} [config] set trigger <message|manual>", "Set how the rule starts."),

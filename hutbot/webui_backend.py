@@ -22,6 +22,7 @@ from . import conditionutil
 from . import datetimefmt
 from . import persistence
 from . import renaming
+from . import targets
 from .buttonutil import format_config_list, parse_config_list
 from .constants import (
     ACTION_DM_USER,
@@ -345,6 +346,8 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
         errors['action_target'] = "This action needs a target (a user, user group, or channel)."
     elif target_template_error:
         errors['action_target'] = target_template_error
+    elif action == ACTION_POST_CHANNEL and "{{" not in action_target and not targets.parse_channel_ref(action_target):
+        errors['action_target'] = "Pick a channel from Slack's autocomplete, or enter its C… id."
     else:
         cfg['action_target'] = action_target
 

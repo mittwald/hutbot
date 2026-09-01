@@ -1039,3 +1039,231 @@ async def test_commas_alone_name_no_team():
     assert channel.configs["default"]["excluded_teams"] == []
     assert send.call_args.args[3] == (
         "Invalid *excluded teams*. Name a team, or several separated by commas.")
+
+
+@pytest.mark.asyncio
+async def test_import_config_creates_a_config_from_an_export():
+    _seed_user_caches()
+    app = _ui_app()
+    channel = Channel(id="C12345", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User("U12345", "test", "Test User", "Testers")
+    payload = json.dumps({
+        "format": "hutbot-config/1",
+        "name": "alarms",
+        "settings": {"wait_time": 300, "reply_message": "Alarm message", "trigger": "manual"},
+    })
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, f"import config {payload}", channel, user)
+
+    assert "has been *created*" in sent_messages(send)
+    imported = channel.configs["alarms"]
+    assert imported["wait_time"] == 300
+    assert imported["reply_message"] == "Alarm message"
+    assert imported["trigger"] == "manual"
+    # Fields the export does not name take their defaults.
+    assert imported["opsgenie"] == DEFAULT_CONFIG["opsgenie"]
+    assert imported["buttons"] == []
+
+
+@pytest.mark.asyncio
+async def test_import_config_replaces_an_existing_config_in_place():
+    _seed_user_caches()
+    app = _ui_app()
+    existing = copy.deepcopy(DEFAULT_CONFIG)
+    existing["opsgenie"] = True
+    channel = Channel(id="C12345", name="general", configs={"default": existing})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'import config default {"wait_time": 300}', channel, user)
+
+    assert "Configuration `default` has been *replaced* from the import." in sent_messages(send)
+    # The same dict object, mutated in place, so queued work holding it sees the change —
+    # and the import is the whole config: the old opsgenie flag is gone, not merged.
+    assert channel.configs["default"] is existing
+    assert existing["wait_time"] == 300
+    assert existing["opsgenie"] is False
+
+
+@pytest.mark.asyncio
+async def test_import_config_round_trips_an_export():
+    _seed_user_caches()
+    app = _ui_app()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config.update({
+        "wait_time": 300,
+        "reply_message": "Anybody there?",
+        "trigger": "cron",
+        "cron": "0 9 * * 1-5",
+        "conditions": [{"variable": "message", "operator": "contains", "value": "x", "case_sensitive": False}],
+        "buttons": [{"label": "Done", "action": "ack", "value": "Handled."}],
+        "escalation_timeout": 600,
+        "escalation_kind": "config",
+        "escalation_target": "default",
+        "hours": ["09:00", "17:00"],
+    })
+    source = Channel(id="C111", name="general", configs={"rota": config})
+    target = Channel(id="C222", name="other", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "export config rota", source, user)
+    exported = re.search(r"```\n(.*?)\n```", sent_messages(send), re.DOTALL).group(1)
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, f"import config {exported}", target, user)
+
+    assert "Configuration `rota` has been *created*" in sent_messages(send)
+    assert target.configs["rota"] == config
+
+
+@pytest.mark.asyncio
+async def test_import_config_accepts_a_fenced_block_and_an_explicit_name_wins():
+    _seed_user_caches()
+    app = _ui_app()
+    channel = Channel(id="C12345", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User("U12345", "test", "Test User", "Testers")
+    payload = json.dumps({"format": "hutbot-config/1", "name": "alarms", "settings": {"wait_time": 300}})
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, f"import config other ```json\n{payload}\n```", channel, user)
+
+    assert "Configuration `other` has been *created*" in sent_messages(send)
+    assert "alarms" not in channel.configs
+    assert channel.configs["other"]["wait_time"] == 300
+
+
+@pytest.mark.asyncio
+async def test_import_config_rejects_invalid_json_and_unknown_fields():
+    _seed_user_caches()
+    app = _ui_app()
+    channel = Channel(id="C12345", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration') as save, patch('hutbot.messaging.send_message') as send:
+        await process_command(app, "import config {not json", channel, user)
+    assert "not valid JSON" in sent_messages(send)
+    save.assert_not_called()
+
+    with patch('hutbot.persistence.save_configuration') as save, patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'import config alarms {"wai_time": 300}', channel, user)
+    assert "Unknown setting(s) in the import: `wai_time`." in sent_messages(send)
+    assert "alarms" not in channel.configs
+    save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_import_config_refuses_a_bad_value_and_changes_nothing():
+    _seed_user_caches()
+    app = _ui_app()
+    channel = Channel(id="C12345", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration') as save, patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'import config alarms {"wait_time": "soon", "trigger": "sometimes"}', channel, user)
+
+    text = sent_messages(send)
+    assert "Nothing imported" in text
+    assert "`wait_time`" in text
+    assert "`trigger`" in text
+    assert "alarms" not in channel.configs
+    save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_import_config_rejects_an_unsupported_format_and_a_reserved_name():
+    _seed_user_caches()
+    app = _ui_app()
+    channel = Channel(id="C12345", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'import config {"format": "hutbot-config/999", "name": "a", "settings": {}}', channel, user)
+    assert "Unsupported export format `hutbot-config/999`" in sent_messages(send)
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, 'import config {"format": "hutbot-config/1", "name": "delete", "settings": {}}', channel, user)
+    assert "`delete` cannot be a configuration name" in sent_messages(send)
+    assert "delete" not in channel.configs
+
+
+@pytest.mark.asyncio
+async def test_an_addressed_default_import_ignores_the_exported_name():
+    _seed_user_caches()
+    app = _ui_app()
+    channel = Channel(id="C12345", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User("U12345", "test", "Test User", "Testers")
+    payload = json.dumps({
+        "format": "hutbot-config/1",
+        "name": "alarms",
+        "settings": {"wait_time": 300},
+    })
+
+    with patch('hutbot.persistence.save_configuration'), patch('hutbot.messaging.send_message') as send:
+        await process_command(app, f"default import config {payload}", channel, user)
+
+    assert "Configuration `default` has been *replaced*" in sent_messages(send)
+    assert channel.configs["default"]["wait_time"] == 300
+    assert "alarms" not in channel.configs
+
+
+@pytest.mark.asyncio
+async def test_import_config_rejects_a_non_channel_post_target():
+    _seed_user_caches()
+    app = _ui_app()
+    channel = Channel(id="C12345", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User("U12345", "test", "Test User", "Testers")
+
+    with patch('hutbot.persistence.save_configuration') as save, \
+         patch('hutbot.messaging.send_message') as send:
+        await process_command(
+            app, 'import config alarms {"action":"post_channel","action_target":"not-a-channel"}',
+            channel, user)
+
+    assert "`action_target`" in sent_messages(send)
+    assert "alarms" not in channel.configs
+    save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_import_rechecks_the_config_under_the_whole_config_write_lock():
+    app = _ui_app()
+    old = copy.deepcopy(DEFAULT_CONFIG)
+    old["opsgenie"] = True
+    configs = {"default": copy.deepcopy(DEFAULT_CONFIG), "alarms": old}
+    channel = Channel(id="C12345", name="general", configs=configs)
+    hutbot.state.channel_config[channel.id] = configs
+    user = User("U12345", "test", "Test User", "Testers")
+    validation_started = asyncio.Event()
+    finish_validation = asyncio.Event()
+    saved_while_locked = []
+
+    async def delayed_validation(*_args, **_kwargs):
+        validation_started.set()
+        await finish_validation.wait()
+        clean = copy.deepcopy(DEFAULT_CONFIG)
+        clean["wait_time"] = 300
+        return clean, {}
+
+    async def save():
+        saved_while_locked.append(hutbot.state._config_write_lock.locked())
+
+    with patch('hutbot.webui_backend.validate_config_payload', side_effect=delayed_validation), \
+         patch('hutbot.persistence.save_configuration', new=save), \
+         patch('hutbot.messaging.send_message') as send:
+        importing = asyncio.create_task(
+            process_command(app, 'alarms import config {"wait_time":300}', channel, user))
+        await validation_started.wait()
+        ok, error, _ = await hutbot.renaming.rename_config(channel.id, "alarms", "renamed")
+        assert ok is True and error == ""
+        finish_validation.set()
+        await importing
+
+    # Rename keeps its original object and values. Import observes the now-vacant old name,
+    # creates it, and reports that result instead of mutating the renamed/detached object.
+    assert configs["renamed"] is old
+    assert configs["renamed"]["opsgenie"] is True
+    assert configs["alarms"]["wait_time"] == 300
+    assert "Configuration `alarms` has been *created*" in sent_messages(send)
+    assert saved_while_locked == [True, True]

@@ -21,7 +21,7 @@ from . import setters
 from . import info
 
 
-async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, config_name: str, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), allow_test_message: bool = False, command_ts: str = "") -> bool:
+async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, config_name: str, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), allow_test_message: bool = False, command_ts: str = "", config_addressed: bool = False) -> bool:
     """Parses and executes a command, returns True if a command was matched."""
     # A bare `/hutbot` — or a lone @mention, whose text is stripped to nothing before it
     # gets here — is someone looking for the command list, not a typo to scold.
@@ -134,6 +134,12 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     elif (match := patterns.DELETE_CONFIG_PATTERN.match(command_text)):
         name = strip_quotes(match.group("name"))
         await setters.delete_config(app, channel, name, user, thread_ts)
+    elif (match := patterns.EXPORT_CONFIG_PATTERN.match(command_text)):
+        name = strip_quotes(match.group("name") or "")
+        await info.export_config(app, channel, name or config_name, user, thread_ts)
+    elif (match := patterns.IMPORT_CONFIG_PATTERN.match(command_text)):
+        addressed_name = config_name if config_addressed else ""
+        await setters.import_config(app, channel, addressed_name, strip_quotes(match.group("name") or ""), match.group("json"), user, thread_ts)
     elif patterns.SHOW_CONFIG_PATTERN.match(command_text):
         await info.show_config(app, channel, user, thread_ts)
     elif patterns.HELP_VARIABLES_PATTERN.match(command_text):
@@ -184,8 +190,10 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
     state.current_command.set(f"{state.slash_command} {text}".strip())
     command_ts = command_ts or thread_ts
 
-    async def run(command_text: str, config_name: str) -> bool:
-        return await parse_and_execute_command(app, command_text, channel, config_name, user, thread_ts, opsgenie_tokens, allow_test_message, command_ts)
+    async def run(command_text: str, config_name: str, config_addressed: bool = False) -> bool:
+        return await parse_and_execute_command(
+            app, command_text, channel, config_name, user, thread_ts, opsgenie_tokens,
+            allow_test_message, command_ts, config_addressed)
 
     parts = text.split(None, 1)
     leading_word, remainder = (parts[0], parts[1]) if len(parts) > 1 else ("", "")
@@ -195,7 +203,7 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
     # that tie, because naming one is deliberate; otherwise the text is a command
     # for the default config.
     if remainder and leading_word in channel.configs and matches_a_command(remainder, allow_test_message):
-        if await run(remainder, leading_word):
+        if await run(remainder, leading_word, config_addressed=True):
             return
 
     if await run(text, DEFAULT_CONFIG_NAME):
@@ -210,7 +218,7 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
         if not CONFIG_NAME_PATTERN.match(leading_word):
             await messaging.send_message(app, channel, user, f"Invalid config name: `{leading_word}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.", thread_ts)
             return
-        if await run(remainder, leading_word):
+        if await run(remainder, leading_word, config_addressed=True):
             return
 
     await messaging.send_message(app, channel, user, f"Huh? :thinking_face: Maybe type `{state.slash_command} help` for a list of commands.", thread_ts)

@@ -1,3 +1,5 @@
+import copy
+
 from tests._common import *  # noqa: F401,F403
 
 
@@ -824,3 +826,122 @@ async def test_help_and_news_placeholders_are_not_slack_mentions(command):
     text = sent_messages(mock_send_message)
     assert "<#" not in text, text
     assert "<@" not in text, text
+
+
+def _exported_json(text: str) -> dict:
+    """The JSON payload out of an export message's code fence."""
+    match = re.search(r"```\n(.*?)\n```", text, re.DOTALL)
+    assert match, text
+    return json.loads(match.group(1))
+
+
+@pytest.mark.asyncio
+async def test_export_config_prints_only_non_default_fields():
+    app = AsyncMock()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config.update({"wait_time": 300, "reply_message": "Alarm message", "opsgenie": True})
+    channel = Channel(id="C123", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG), "alarms": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "export config alarms", channel, user)
+
+    text = sent_messages(mock_send_message)
+    payload = _exported_json(text)
+    assert payload["format"] == "hutbot-config/1"
+    assert payload["name"] == "alarms"
+    assert payload["settings"] == {"wait_time": 300, "reply_message": "Alarm message", "opsgenie": True}
+    assert "import config" in text
+
+
+@pytest.mark.asyncio
+async def test_export_config_defaults_to_the_addressed_config():
+    app = AsyncMock()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["wait_time"] = 300
+    channel = Channel(id="C123", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG), "alarms": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "alarms export config", channel, user)
+    assert _exported_json(sent_messages(mock_send_message))["name"] == "alarms"
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "export config", channel, user)
+    payload = _exported_json(sent_messages(mock_send_message))
+    assert payload["name"] == "default"
+    assert payload["settings"] == {}
+
+
+@pytest.mark.asyncio
+async def test_export_config_never_prints_the_calendar_url():
+    app = AsyncMock()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["calendar_url"] = "https://cal.example.com/SECRETTOKEN/rota.ics"
+    channel = Channel(id="C123", name="general", configs={"alarms": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "export config alarms", channel, user)
+
+    text = sent_messages(mock_send_message)
+    assert "SECRETTOKEN" not in text
+    assert "was *not* exported" in text
+    assert "calendar_url" not in _exported_json(text)["settings"]
+
+
+@pytest.mark.asyncio
+async def test_export_config_escapes_backticks_so_the_fence_survives():
+    app = AsyncMock()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["reply_message"] = "run this:\n```\nmake all\n```"
+    channel = Channel(id="C123", name="general", configs={"alarms": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "export config alarms", channel, user)
+
+    text = sent_messages(mock_send_message)
+    # Exactly the opening and closing fence of the export itself.
+    assert text.count("```") == 2
+    payload = _exported_json(text)
+    # The ` escapes decode back to real backticks, so the round trip is exact.
+    assert payload["settings"]["reply_message"] == config["reply_message"]
+
+
+@pytest.mark.asyncio
+async def test_export_config_unknown_name():
+    app = AsyncMock()
+    channel = Channel(id="C123", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "export config nope", channel, user)
+    assert "Configuration `nope` not found." in sent_messages(mock_send_message)
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_export_is_one_preformatted_block():
+    app = _ui_app()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["reply_message"] = "x" * 4000
+    channel = Channel(id="C123", name="general", configs={"alarms": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    await process_command(app, "export config alarms", channel, user)
+
+    blocks = app.client.chat_postEphemeral.await_args.kwargs["blocks"]
+    exports = [
+        element
+        for block in blocks if block["type"] == "rich_text"
+        for element in block["elements"]
+        if element["type"] == "rich_text_preformatted" and element.get("language") == "json"
+    ]
+    assert len(exports) == 1
+    dumped = exports[0]["elements"][0]["text"]
+    assert len(dumped) > hutbot.messaging.SLACK_SECTION_TEXT_LIMIT
+    assert json.loads(dumped)["settings"]["reply_message"] == "x" * 4000
+    assert all(
+        len(block["text"]["text"]) <= hutbot.messaging.SLACK_SECTION_TEXT_LIMIT
+        for block in blocks if block["type"] == "section"
+    )
