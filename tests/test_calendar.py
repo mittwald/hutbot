@@ -426,7 +426,7 @@ async def test_calendar_datetime_variables_accept_format_arguments(live_cal):
     channel = _mk_channel({"cal": config})
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))), \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")):
-        text = await hutbot.actions.render_action_text(app, "token", channel, config, "cal", {"channel_id": "C12345"})
+        text = await hutbot.actions.render_action_text(app, OPSGENIE_TOKENS, channel, config, "cal", {"channel_id": "C12345"})
     current, _ = _current_and_next(live_cal, config)
     expected = datetime.datetime.fromisoformat(current.start).astimezone(ZoneInfo("Europe/Berlin"))
     assert text == expected.strftime("%d.%m.%Y %H:%M")
@@ -807,7 +807,7 @@ async def test_calendar_is_not_fetched_when_no_variable_references_it():
     channel = _mk_channel({"plain": config})
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(None, ""))) as fetch, \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")):
-        await hutbot.actions.render_action_text(app, "token", channel, config, "plain", {"channel_id": "C12345"})
+        await hutbot.actions.render_action_text(app, OPSGENIE_TOKENS, channel, config, "plain", {"channel_id": "C12345"})
     fetch.assert_not_awaited()
 
 
@@ -819,7 +819,7 @@ async def test_calendar_is_fetched_once_when_a_variable_references_it(live_cal):
     channel = _mk_channel({"cal": config})
     with patch('hutbot.calendarfeed.fetch_calendar', new=AsyncMock(return_value=(live_cal, "Team Kalender"))) as fetch, \
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")):
-        text = await hutbot.actions.render_action_text(app, "token", channel, config, "cal", {"channel_id": "C12345"})
+        text = await hutbot.actions.render_action_text(app, OPSGENIE_TOKENS, channel, config, "cal", {"channel_id": "C12345"})
     assert fetch.await_count == 1
     assert "Composerbereitstellung" in text
 
@@ -837,7 +837,7 @@ async def test_calendar_condition_gates_a_rule(live_cal):
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})) as post:
         posted, reason = await hutbot.actions.run_action_with_reason(
-            app, "token", channel, config, "gated", context={"channel_id": "C12345"})
+            app, OPSGENIE_TOKENS, channel, config, "gated", context={"channel_id": "C12345"})
     assert posted is not None and reason == ""
     assert post.await_count == 1
 
@@ -854,7 +854,7 @@ async def test_calendar_condition_blocks_when_no_event_matches(live_cal):
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post:
         posted, reason = await hutbot.actions.run_action_with_reason(
-            app, "token", channel, config, "gated", context={"channel_id": "C12345"})
+            app, OPSGENIE_TOKENS, channel, config, "gated", context={"channel_id": "C12345"})
     assert posted is None and "did not match" in reason
     post.assert_not_awaited()
 
@@ -1294,7 +1294,7 @@ async def _run_with_target(action, target, calendar):
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "D1", "ts": "1"})):
         posted, reason = await hutbot.actions.run_action_with_reason(
-            app, "token", channel, config, "oncall", context={"channel_id": "C12345"})
+            app, OPSGENIE_TOKENS, channel, config, "oncall", context={"channel_id": "C12345"})
     opened = (app.client.conversations_open.await_args.kwargs.get("users")
               if app.client.conversations_open.await_count else None)
     return bool(posted), opened
@@ -1747,7 +1747,7 @@ async def test_a_gated_rule_reads_its_condition_and_its_message_at_one_moment(ca
     _seed_user_caches()
     with _patch_http(_FakeResponse(text=SAMPLE_ICS), calls):
         met, reason, variables = await hutbot.actions.evaluate_conditions(
-            _ui_app(), "", channel, config, "default", {"channel_id": channel.id})
+            _ui_app(), OpsGenieTokens(), channel, config, "default", {"channel_id": channel.id})
 
     assert met is True, reason
     assert len(calls) == 1

@@ -80,7 +80,7 @@ async def test_schedule_reply_renders_template_variables():
     )
 
     with patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
-        await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", "1234.1")
+        await schedule_reply(app, OPSGENIE_TOKENS, channel, config, "alerts", user, "Original text", "1234.1")
 
     app.client.chat_postMessage.assert_awaited_once_with(
         channel="C12345",

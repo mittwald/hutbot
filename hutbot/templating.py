@@ -32,7 +32,7 @@ from .constants import (
     normalize_selector,
     parse_event_offset,
 )
-from .models import Channel, TemplateExpression, TemplateExpressionError, User
+from .models import Channel, OpsGenieTokens, TemplateExpression, TemplateExpressionError, User
 
 
 def iter_template_expression_parts(message: str):
@@ -571,11 +571,11 @@ def clock_slice_variables(config: dict | None, ts: str) -> dict[str, str]:
     return values
 
 
-async def build_reply_template_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False, include_calendar: bool = False, calendar_selectors: list[tuple[str, str]] | None = None, parent: dict | None = None, press: dict | None = None) -> dict[str, str]:
+async def build_reply_template_variables(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, user: User, text: str, ts: str, permalink: str, include_opsgenie: bool = False, include_calendar: bool = False, calendar_selectors: list[tuple[str, str]] | None = None, parent: dict | None = None, press: dict | None = None) -> dict[str, str]:
     wait_time = config.get('wait_time') or 0
     opsgenie_template_variables = {}
     if include_opsgenie:
-        opsgenie_template_variables = await opsgenie.get_opsgenie_template_variables(app, opsgenie_token, config)
+        opsgenie_template_variables = await opsgenie.get_opsgenie_template_variables(app, opsgenie_tokens.api, config)
     # Both providers cost a network round-trip, so they are only resolved when something
     # actually references one of their variables (see `actions._build_variables`).
     calendar_template_variables = {}

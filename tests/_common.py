@@ -17,7 +17,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, mock_open, patch, call
 from slack_sdk.errors import SlackApiError
 from employee_list import get_env_var
 
-from hutbot.models import BuiltinCalendar, Channel, User, Usergroup, ScheduledReply
+from hutbot.models import BuiltinCalendar, Channel, OpsGenieTokens, User, Usergroup, ScheduledReply
 from hutbot.constants import (
     ACTION_DM_USER,
     ACTION_GROUP_DM,
@@ -83,6 +83,10 @@ import hutbot.commands.dispatch
 import hutbot.commands.preview
 import hutbot.commands.setters
 import hutbot.commands.info
+
+# The two Opsgenie keys a run carries. The halves differ on purpose, so a test can tell which
+# endpoint a call reached: alerts and the heartbeat take `.alert`, on-call lookups take `.api`.
+OPSGENIE_TOKENS = OpsGenieTokens("alert-token", "api-token")
 
 # The instance's built-in calendars, as a test fixture. Every URL carries the marker
 # SECRETTOKEN, so a leak test can look for it by name wherever a token must not appear.

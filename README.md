@@ -712,7 +712,6 @@ python -m hutbot
 
    - See [Hutbot Slack App](https://api.slack.com/apps/A07RQ54Q5H9)
    - See [Hutbot_DEV Slack App](https://api.slack.com/apps/A0BN19HUTAP)
-   - Hosted at `nexus-cli get projects p-knksv4 -olink`
 
 9. **Invite Bot**
 
@@ -805,13 +804,24 @@ only as a file so large lists do not hit the process environment's size limit.
 | ----- | -------- | ------- |
 | `SLACK_APP_TOKEN` | yes | Socket Mode connection (`xapp-…`) |
 | `SLACK_BOT_TOKEN` | yes | Slack Web API (`xoxb-…`) |
-| `OPSGENIE_TOKEN` | no | Opsgenie alerts, on-call lookups, heartbeat |
+| `OPSGENIE_TOKEN` | no | Opsgenie alerts and heartbeat — an *integration* API key (a team's API integration) |
+| `OPSGENIE_API_TOKEN` | no | Opsgenie on-call lookups — an *account* API key (Settings → API key management) with read access; falls back to `OPSGENIE_TOKEN` |
 | `OPSGENIE_HEARTBEAT_NAME` | no | Heartbeat to ping; empty on dev so it cannot ping production's |
 | `EMPLOYEE_LIST_USERNAME` | no | Employee-list credentials for team lookups |
 | `EMPLOYEE_LIST_PASSWORD` | no | " |
 | `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record |
 | `HUTBOT_CALENDAR_BRIDGE_URL` | no | The calendar bridge's listing endpoint, token included (see below) |
 | `HUTBOT_BUILTIN_CALENDARS` | no | Calendars offered on top of the bridge's, and overrides of them (see below) |
+
+Opsgenie's two key types are not interchangeable, which is why alerts and on-call lookups have a
+field each. Creating an alert (`POST /v2/alerts`) and pinging a heartbeat go through an
+**integration** API key, from a team's *API* integration; reading a schedule or its timeline
+(`GET /v2/schedules/…` — what `{{opsgenie_current_user}}`, `on-call` and `list opsgenie-schedules`
+resolve) is only served to an **account** API key from *Settings → API key management*, and that key
+in turn creates alerts only with the *Create and Update* access right. Each key is rejected on the
+other's endpoints, so a single field could serve only one of the two. `OPSGENIE_API_TOKEN` falls
+back to `OPSGENIE_TOKEN` when it is unset: a secret written before the split keeps working, with
+whatever half its one key is authorized for.
 
 ```bash
 export VAULT_ADDR=https://vault.m3.services
@@ -834,7 +844,7 @@ make seed-vault                         # and .../hutbot from .env
 make seed-vault ARGS='--calendars ./calendars.json --sync'
 ```
 
-It picks only the nine secret keys out of the file, drops the ones it does not set (an empty
+It picks only the secret keys it knows out of the file, drops the ones it does not set (an empty
 `OPSGENIE_HEARTBEAT_NAME` stays unset rather than becoming `""`), requires both Slack tokens,
 validates a `--calendars` file the way the sync script does, and hands Vault a `@file` so no value
 reaches a command line. It **refuses a path that already has fields** unless `--force`, because a

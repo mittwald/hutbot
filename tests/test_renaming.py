@@ -204,7 +204,7 @@ async def test_a_reminder_renamed_mid_wait_still_cleans_up_after_itself():
 
     with patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
         await hutbot.scheduling.schedule_reply(
-            app, "token", channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1")
+            app, OPSGENIE_TOKENS, channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1")
 
     # Filed under the new name, and cleaned up there — not left behind to fire again on restart.
     assert not hutbot.state._scheduled_replies_cache
@@ -226,7 +226,7 @@ async def test_a_deleted_config_still_cleans_up_its_reminder():
 
     with patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
         await hutbot.scheduling.schedule_reply(
-            app, "token", channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1")
+            app, OPSGENIE_TOKENS, channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1")
 
     assert not hutbot.state._scheduled_replies_cache
 
@@ -390,7 +390,7 @@ async def test_a_reminder_renamed_mid_wait_runs_under_the_new_name():
 
     with patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
         await hutbot.scheduling.schedule_reply(
-            app, "token", channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1")
+            app, OPSGENIE_TOKENS, channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1")
 
     assert app.client.chat_postMessage.call_args.kwargs["text"] == "from standup-nag"
 
@@ -411,7 +411,7 @@ async def test_a_reminder_renamed_mid_wait_registers_its_buttons_under_the_new_n
     with patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()):
         await hutbot.scheduling.schedule_reply(
-            app, "token", channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1")
+            app, OPSGENIE_TOKENS, channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1")
 
     record = hutbot.state.pending_buttons[("C1", "reply-ts")]
     assert record['config_name'] == "standup-nag"
@@ -456,7 +456,7 @@ async def test_a_reminder_still_cleans_up_after_a_rename_then_a_ui_save():
     # validator will not accept 0 — and this test is about the cleanup, not the waiting.
     with patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
         await hutbot.scheduling.schedule_reply(
-            app, "token", channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1",
+            app, OPSGENIE_TOKENS, channel, config, "nag", User("U1", "d", "D", "T"), "x", "9.1",
             wait_time_override=0)
 
     # Nothing left behind to be restored and fired again after a restart.
@@ -487,7 +487,7 @@ async def test_a_press_after_a_rename_resolves_the_source_from_the_record():
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "b", "B", "T"))), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     assert post.await_args.args[2] == "ack from standup-nag"
 
@@ -511,7 +511,7 @@ async def test_a_press_on_a_record_without_a_source_name_still_uses_the_payload(
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "b", "B", "T"))), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post:
-        await hutbot.buttons.handle_button_press(app, "token", body, action)
+        await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     # No snapshot on the record, so the button came from the live config the payload names.
     assert post.await_args.args[2] == "thanks"

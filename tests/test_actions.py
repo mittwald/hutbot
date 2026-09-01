@@ -77,12 +77,12 @@ async def test_conditions_gate_run_action():
     channel = _mk_channel({"gated": config})
     with patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})) as post:
         posted, reason = await hutbot.actions.run_action_with_reason(
-            app, "token", channel, config, "gated", context={"text": "nothing to see"})
+            app, OPSGENIE_TOKENS, channel, config, "gated", context={"text": "nothing to see"})
         assert posted is None and "did not match" in reason
         post.assert_not_awaited()
 
         posted, reason = await hutbot.actions.run_action_with_reason(
-            app, "token", channel, config, "gated", context={"text": "please deploy this"})
+            app, OPSGENIE_TOKENS, channel, config, "gated", context={"text": "please deploy this"})
         assert posted is not None and reason == ""
         assert post.await_count == 1
 
@@ -99,7 +99,7 @@ async def test_blocked_config_does_not_page_opsgenie():
     with patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert, \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})):
         # No message behind the run, so `{{message}}` is empty and the gate closes.
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "page", context={"channel_id": "C12345"})
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "page", context={"channel_id": "C12345"})
     assert posted is None
     alert.assert_not_awaited()
 
@@ -119,14 +119,14 @@ async def test_a_clock_condition_gates_on_the_moment_its_at_names():
 
     with patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})) as post:
         posted, reason = await hutbot.actions.run_action_with_reason(
-            app, "token", channel, config, "fortnight", context=context)
+            app, OPSGENIE_TOKENS, channel, config, "fortnight", context=context)
         assert posted is not None and reason == ""
         assert post.await_args.args[2] == "in two weeks: 25.08.2026"
 
         # The same instant, judged against the day the message was sent: not a fortnight later.
         config["conditions"] = [{"variable": "date", "operator": "equals", "value": "11.08.2026", "at": "+2w"}]
         posted, reason = await hutbot.actions.run_action_with_reason(
-            app, "token", channel, config, "fortnight", context=context)
+            app, OPSGENIE_TOKENS, channel, config, "fortnight", context=context)
         assert posted is None and "did not match" in reason
         assert post.await_count == 1
 
@@ -144,7 +144,7 @@ async def test_a_clock_condition_is_settled_at_arrival_and_asks_no_calendar():
 
     with patch('hutbot.calendarfeed.get_calendar_template_variables', new=AsyncMock(return_value={})) as calendar:
         ruled_out, reason = await hutbot.actions.conditions_ruled_out_at_arrival(
-            app, "token", channel, config, "fortnight", context=context)
+            app, OPSGENIE_TOKENS, channel, config, "fortnight", context=context)
 
     assert ruled_out is True and "did not match" in reason
     calendar.assert_not_awaited()
@@ -165,7 +165,7 @@ async def test_conditions_build_variables_once():
     with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value=resolved)) as og, \
          patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})):
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "page", context={"channel_id": "C12345"})
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "page", context={"channel_id": "C12345"})
     assert posted is not None
     assert og.await_count == 1
 
@@ -181,7 +181,7 @@ async def test_conditions_do_not_fetch_opsgenie_when_unreferenced():
     with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})) as og, \
          patch('hutbot.calendarfeed.get_calendar_template_variables', new=AsyncMock(return_value={})) as cal, \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})):
-        await hutbot.actions.run_action(app, "token", channel, config, "plain", context={"channel_id": "C12345"})
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "plain", context={"channel_id": "C12345"})
     og.assert_not_awaited()
     cal.assert_not_awaited()
 
@@ -197,7 +197,7 @@ async def test_action_dm_user_opens_dm_and_posts():
     config["action_target"] = "<@U777>"
     channel = _mk_channel({"src": config})
     with patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U777", "alice", "Alice", "Team"))):
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "src")
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
     app.client.conversations_open.assert_awaited_once_with(users=["U777"])
     assert app.client.chat_postMessage.call_args.kwargs["channel"] == "D999"
     assert posted["channel"] == "D999"
@@ -215,7 +215,7 @@ async def test_action_group_dm_resolves_members_and_opens_mpim():
     channel = _mk_channel({"src": config})
     with patch('hutbot.slackcache.get_usergroup_by_handle', new=AsyncMock(return_value=Usergroup("S1", "oncall", "On Call"))), \
          patch('hutbot.slackcache.get_usergroup_members', new=AsyncMock(return_value=["U1", "U2", "U3"])):
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "src")
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
     app.client.conversations_open.assert_awaited_once_with(users=["U1", "U2", "U3"])
     assert app.client.chat_postMessage.call_args.kwargs["channel"] == "G888"
     assert posted["channel"] == "G888"
@@ -229,12 +229,12 @@ async def test_run_action_fires_opsgenie_when_slack_post_fails():
 
     with patch('hutbot.actions.action_reply', new=AsyncMock(return_value=None)), \
          patch('hutbot.actions.maybe_post_opsgenie_alert', new=AsyncMock()) as alert:
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "src", {"text": "DB down"})
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", {"text": "DB down"})
 
     assert posted is None
     # The trailing argument is the shared variable dict: every run builds one before rendering,
     # so the message, the target and the alert cannot disagree about a time-dependent value.
-    alert.assert_awaited_once_with(app, "token", channel, config, "src", {"text": "DB down"}, "", ANY)
+    alert.assert_awaited_once_with(app, OPSGENIE_TOKENS, channel, config, "src", {"text": "DB down"}, "", ANY)
     assert isinstance(alert.await_args.args[-1], dict)
 
 
@@ -264,7 +264,7 @@ async def test_a_reply_reports_the_channel_it_landed_in():
     config = DEFAULT_CONFIG.copy()
     channel = _mk_channel({"src": config})
 
-    posted = await hutbot.actions.run_action(app, "token", channel, config, "src")
+    posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
 
     assert posted["recipients"] == ["#general"]
 
@@ -279,7 +279,7 @@ async def test_a_dm_reports_the_person_and_not_the_dm_conversation():
     channel = _mk_channel({"src": config})
 
     with patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U777", "alice", "Alice", "Team"))):
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "src")
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
 
     assert posted["recipients"] == ["<@U777>"]
 
@@ -294,7 +294,7 @@ async def test_a_group_dm_reports_every_member_it_opened():
 
     with patch('hutbot.slackcache.get_usergroup_by_handle', new=AsyncMock(return_value=Usergroup("S1", "oncall", "On Call"))), \
          patch('hutbot.slackcache.get_usergroup_members', new=AsyncMock(return_value=["U1", "U2", "U3"])):
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "src")
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
 
     assert posted["recipients"] == ["<@U1>", "<@U2>", "<@U3>"]
 
@@ -310,7 +310,7 @@ async def test_a_group_dm_reports_the_eight_it_opened_not_the_nine_it_resolved()
 
     with patch('hutbot.slackcache.get_usergroup_by_handle', new=AsyncMock(return_value=Usergroup("S1", "oncall", "On Call"))), \
          patch('hutbot.slackcache.get_usergroup_members', new=AsyncMock(return_value=members)):
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "src")
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
 
     assert posted["recipients"] == [f"<@U{index}>" for index in range(1, 9)]
 
@@ -324,7 +324,7 @@ async def test_a_channel_post_reports_the_target_channel_not_the_defining_one():
 
     app.client.conversations_info.return_value = {"channel": {"name": "incidents"}}
 
-    posted = await hutbot.actions.run_action(app, "token", channel, config, "src")
+    posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
 
     assert posted["recipients"] == ["#incidents"]
 
@@ -338,7 +338,7 @@ async def test_a_channel_post_falls_back_to_the_form_slack_expands_itself():
     config = {**DEFAULT_CONFIG.copy(), "action": hutbot.constants.ACTION_POST_CHANNEL, "action_target": "<#C777>"}
     channel = _mk_channel({"src": config})
 
-    posted = await hutbot.actions.run_action(app, "token", channel, config, "src")
+    posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
 
     assert posted["recipients"] == ["<#C777>"]
 
@@ -358,7 +358,7 @@ async def test_the_parent_facts_describe_the_run_that_built_them():
     with patch('hutbot.slackcache.get_usergroup_by_handle', new=AsyncMock(return_value=Usergroup("S1", "oncall", "On Call"))), \
          patch('hutbot.slackcache.get_usergroup_members', new=AsyncMock(return_value=["U1", "U2"])), \
          patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
-        await hutbot.actions.run_action(app, "token", channel, config, "src",
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src",
                                         {"user": User("U5", "bob", "Bob", "T"), "channel_id": "C12345"})
 
     facts = reg.await_args.kwargs["parent"]
@@ -383,7 +383,7 @@ async def test_the_parent_facts_record_a_rendered_target_not_the_template():
 
     with patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U5", "bob", "Bob", "T"))), \
          patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
-        await hutbot.actions.run_action(app, "token", channel, config, "src",
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src",
                                         {"user": User("U5", "bob", "Bob", "T")})
 
     assert reg.await_args.kwargs["parent"]["target"] == "<@U5>"
@@ -399,7 +399,7 @@ async def test_the_parent_facts_are_capped_so_a_chain_cannot_compound_them():
     channel = _mk_channel({"src": config})
 
     with patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
-        await hutbot.actions.run_action(app, "token", channel, config, "src",
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src",
                                         {"text": "x" * (hutbot.constants.PARENT_VARIABLE_LENGTH_LIMIT + 50)})
 
     facts = reg.await_args.kwargs["parent"]
@@ -422,7 +422,7 @@ async def test_a_config_without_conditions_resolves_a_provider_once_for_message_
         with patch('hutbot.opsgenie.get_opsgenie_template_variables',
                    new=AsyncMock(return_value={"opsgenie_current_user": "<@U1>"})) as og, \
              patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()):
-            await hutbot.actions.run_action(app, "token", channel, config, "src", {"text": "DB down"})
+            await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", {"text": "DB down"})
     finally:
         hutbot.state.opsgenie_configured = False
 
@@ -439,7 +439,7 @@ async def test_the_chain_depth_counts_one_hop_per_config():
     channel = _mk_channel({"src": config})
 
     with patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
-        await hutbot.actions.run_action(app, "token", channel, config, "src", {"parent": {"depth": 3}})
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", {"parent": {"depth": 3}})
 
     assert reg.await_args.kwargs["parent"]["depth"] == 4
 
@@ -452,7 +452,7 @@ async def test_a_run_with_no_parent_starts_the_count_at_one():
     channel = _mk_channel({"src": config})
 
     with patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
-        await hutbot.actions.run_action(app, "token", channel, config, "src")
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src")
 
     assert reg.await_args.kwargs["parent"]["depth"] == 1
 
@@ -465,7 +465,7 @@ async def test_too_deep_a_chain_stops_without_posting():
     too_deep = {"parent": {"depth": hutbot.constants.MAX_ACTION_CHAIN_DEPTH + 1}}
 
     posted, reason = await hutbot.actions.run_action_with_reason(
-        app, "token", channel, config, "src", too_deep)
+        app, OPSGENIE_TOKENS, channel, config, "src", too_deep)
 
     assert posted is None
     assert reason == f"action chain is more than {hutbot.constants.MAX_ACTION_CHAIN_DEPTH} configs deep"
@@ -481,7 +481,7 @@ async def test_a_chain_at_the_limit_still_runs():
     at_limit = {"parent": {"depth": hutbot.constants.MAX_ACTION_CHAIN_DEPTH}}
 
     posted, reason = await hutbot.actions.run_action_with_reason(
-        app, "token", channel, config, "src", at_limit)
+        app, OPSGENIE_TOKENS, channel, config, "src", at_limit)
 
     assert reason == "" and posted is not None
 
@@ -495,7 +495,7 @@ async def test_a_record_without_a_depth_starts_counting_again():
     channel = _mk_channel({"src": config})
 
     with patch('hutbot.buttons.register_escalation', new=AsyncMock()) as reg:
-        await hutbot.actions.run_action(app, "token", channel, config, "src", {"parent": {"config_name": "old"}})
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", {"parent": {"config_name": "old"}})
 
     assert reg.await_args.kwargs["parent"]["depth"] == 1
 
@@ -525,7 +525,7 @@ async def test_an_alert_template_that_cannot_fire_resolves_no_provider(condition
 
     with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})) as og, \
          patch('hutbot.calendarfeed.get_calendar_template_variables', new=AsyncMock(return_value={})) as cal:
-        await hutbot.actions.run_action(app, "token", channel, config, "src", {"text": "x"})
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", {"text": "x"})
 
     og.assert_not_awaited()
     cal.assert_not_awaited()
@@ -545,7 +545,7 @@ async def test_an_alert_template_nothing_else_names_still_resolves_when_it_can_f
              patch('hutbot.calendarfeed.get_calendar_template_variables',
                    new=AsyncMock(return_value={"calendar_summary": "Standup"})) as cal, \
              patch('hutbot.opsgenie.post_opsgenie_alert', new=AsyncMock()) as alert:
-            await hutbot.actions.run_action(app, "token", channel, config, "src", {"text": "x"})
+            await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", {"text": "x"})
     finally:
         hutbot.state.opsgenie_configured = False
 
@@ -563,7 +563,7 @@ async def test_an_alert_template_costs_nothing_on_an_instance_without_opsgenie()
 
     with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})) as og, \
          patch('hutbot.calendarfeed.get_calendar_template_variables', new=AsyncMock(return_value={})) as cal:
-        await hutbot.actions.run_action(app, "token", channel, config, "src", {"text": "x"})
+        await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", {"text": "x"})
 
     og.assert_not_awaited()
     cal.assert_not_awaited()
@@ -580,7 +580,7 @@ async def test_a_condition_on_a_provider_is_resolved_even_with_the_alert_off():
 
     with patch('hutbot.opsgenie.get_opsgenie_template_variables',
                new=AsyncMock(return_value={"opsgenie_current_user": "<@U1>"})) as og:
-        posted = await hutbot.actions.run_action(app, "token", channel, config, "src", {"text": "x"})
+        posted = await hutbot.actions.run_action(app, OPSGENIE_TOKENS, channel, config, "src", {"text": "x"})
 
     assert og.await_count == 1
     assert posted is not None

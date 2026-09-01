@@ -9,6 +9,7 @@ import urllib.parse
 import aiohttp
 from slack_bolt.async_app import AsyncApp
 
+from employee_list import get_env_var
 from logutil import log, log_error, log_warning
 
 from . import datetimefmt
@@ -27,8 +28,22 @@ from .constants import (
     UNKNOWN_OPSGENIE_SCHEDULE_PLACEHOLDER,
     UNKNOWN_USER_ONCALL_PLACEHOLDER,
 )
-from .models import OpsGenieContext, OpsGeniePeriod, User
+from .models import OpsGenieContext, OpsGeniePeriod, OpsGenieTokens, User
 from .textutil import log_debug
+
+
+def load_opsgenie_tokens() -> OpsGenieTokens:
+    """The two Opsgenie credentials from the environment.
+
+    Alerts and the heartbeat ping go through `OPSGENIE_TOKEN`, an *integration* API key; reading a
+    schedule or its timeline goes through `OPSGENIE_API_TOKEN`, an *account* API key from Opsgenie's
+    API key management. Opsgenie rejects each key on the other's endpoints, which is why one field
+    cannot serve both. A deployment that carries only the old single key keeps working: the read
+    token falls back to it, so whichever half that key is authorized for still works.
+    """
+    alert_token = (get_env_var("OPSGENIE_TOKEN") or "").strip()
+    api_token = (get_env_var("OPSGENIE_API_TOKEN") or "").strip()
+    return OpsGenieTokens(alert_token, api_token or alert_token)
 
 
 def get_opsgenie_priority(config: dict | None) -> str:
@@ -79,16 +94,16 @@ async def resolve_slack_user_for_opsgenie_recipient(app: AsyncApp, recipient_ema
     return slack_user
 
 
-async def resolve_opsgenie_on_call(app: AsyncApp, opsgenie_token: str, schedule_name: str) -> tuple[str, User | None]:
+async def resolve_opsgenie_on_call(app: AsyncApp, opsgenie_api_token: str, schedule_name: str) -> tuple[str, User | None]:
     schedule_name = schedule_name.strip()
-    if not opsgenie_token:
+    if not opsgenie_api_token:
         log_warning(f"Cannot resolve OpsGenie schedule '{schedule_name}': missing token.")
         return "", None
 
     encoded_schedule_name = urllib.parse.quote(schedule_name, safe="")
     url = f"https://api.opsgenie.com/v2/schedules/{encoded_schedule_name}/on-calls"
     headers = {
-        "Authorization": f"GenieKey {opsgenie_token}",
+        "Authorization": f"GenieKey {opsgenie_api_token}",
     }
     params = {
         "scheduleIdentifierType": "name",
@@ -247,15 +262,15 @@ def find_opsgenie_upcoming_on_call_period(data: dict, now: datetime.datetime | N
     return recipient_email, start, end
 
 
-async def resolve_opsgenie_on_call_period(opsgenie_token: str, schedule_name: str, recipient_email: str) -> tuple[str, str]:
+async def resolve_opsgenie_on_call_period(opsgenie_api_token: str, schedule_name: str, recipient_email: str) -> tuple[str, str]:
     schedule_name = schedule_name.strip()
-    if not opsgenie_token:
+    if not opsgenie_api_token:
         return "", ""
 
     encoded_schedule_name = urllib.parse.quote(schedule_name, safe="")
     url = f"https://api.opsgenie.com/v2/schedules/{encoded_schedule_name}/timeline"
     headers = {
-        "Authorization": f"GenieKey {opsgenie_token}",
+        "Authorization": f"GenieKey {opsgenie_api_token}",
     }
     timeline_start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
     params = {
@@ -279,15 +294,15 @@ async def resolve_opsgenie_on_call_period(opsgenie_token: str, schedule_name: st
     return find_opsgenie_on_call_period(payload.get("data", {}), recipient_email)
 
 
-async def resolve_opsgenie_upcoming_on_call_period(opsgenie_token: str, schedule_name: str) -> tuple[str, str, str]:
+async def resolve_opsgenie_upcoming_on_call_period(opsgenie_api_token: str, schedule_name: str) -> tuple[str, str, str]:
     schedule_name = schedule_name.strip()
-    if not opsgenie_token:
+    if not opsgenie_api_token:
         return "", "", ""
 
     encoded_schedule_name = urllib.parse.quote(schedule_name, safe="")
     url = f"https://api.opsgenie.com/v2/schedules/{encoded_schedule_name}/timeline"
     headers = {
-        "Authorization": f"GenieKey {opsgenie_token}",
+        "Authorization": f"GenieKey {opsgenie_api_token}",
     }
     timeline_start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
     params = {
@@ -311,53 +326,53 @@ async def resolve_opsgenie_upcoming_on_call_period(opsgenie_token: str, schedule
     return find_opsgenie_upcoming_on_call_period(payload.get("data", {}))
 
 
-async def resolve_opsgenie_on_call_context(app: AsyncApp, opsgenie_token: str, schedule_name: str, include_next: bool = True) -> OpsGenieContext:
+async def resolve_opsgenie_on_call_context(app: AsyncApp, opsgenie_api_token: str, schedule_name: str, include_next: bool = True) -> OpsGenieContext:
     schedule_name = schedule_name.strip()
     empty_period = OpsGeniePeriod("", None, "", "")
     current_period = empty_period
     next_period = empty_period
 
-    recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_token, schedule_name)
+    recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_api_token, schedule_name)
     if recipient_email:
-        start, end = await resolve_opsgenie_on_call_period(opsgenie_token, schedule_name, recipient_email)
+        start, end = await resolve_opsgenie_on_call_period(opsgenie_api_token, schedule_name, recipient_email)
         current_period = OpsGeniePeriod(recipient_email, slack_user, start, end)
 
     if include_next:
-        next_email, next_start, next_end = await resolve_opsgenie_upcoming_on_call_period(opsgenie_token, schedule_name)
+        next_email, next_start, next_end = await resolve_opsgenie_upcoming_on_call_period(opsgenie_api_token, schedule_name)
         next_slack_user = await resolve_slack_user_for_opsgenie_recipient(app, next_email) if next_email else None
         next_period = OpsGeniePeriod(next_email, next_slack_user, next_start, next_end)
 
     return OpsGenieContext(schedule_name, current_period, next_period)
 
 
-async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_token: str, config: dict) -> dict[str, str]:
+async def get_opsgenie_template_variables(app: AsyncApp, opsgenie_api_token: str, config: dict) -> dict[str, str]:
     schedule_name = config.get("opsgenie_schedule_name", "").strip()
     variables = get_opsgenie_placeholder_variables(config)
     if not schedule_name:
         return variables
 
-    context = await resolve_opsgenie_on_call_context(app, opsgenie_token, schedule_name, include_next=True)
+    context = await resolve_opsgenie_on_call_context(app, opsgenie_api_token, schedule_name, include_next=True)
     fill_opsgenie_period_variables(variables, config, "current", context.current)
     fill_opsgenie_period_variables(variables, config, "next", context.next)
 
     return variables
 
 
-async def send_current_on_call(app: AsyncApp, opsgenie_token: str, channel, config_name: str, schedule_name: str, user, thread_ts: str = "") -> None:
+async def send_current_on_call(app: AsyncApp, opsgenie_api_token: str, channel, config_name: str, schedule_name: str, user, thread_ts: str = "") -> None:
     config = channel.configs.get(config_name) or copy.deepcopy(DEFAULT_CONFIG)
     schedule_name = schedule_name.strip() or config.get("opsgenie_schedule_name", "").strip()
     if not schedule_name:
         await messaging.send_message(app, channel, user, f"No OpsGenie schedule configured. Use `{state.slash_command} [config] set opsgenie-schedule <name>` or `{state.slash_command} [config] on-call <schedule name>`.", thread_ts)
         return
-    if not opsgenie_token:
-        await messaging.send_message(app, channel, user, "OpsGenie is not configured. Missing `OPSGENIE_TOKEN`.", thread_ts)
+    if not opsgenie_api_token:
+        await messaging.send_message(app, channel, user, "OpsGenie on-call lookups are not configured. Missing `OPSGENIE_API_TOKEN`.", thread_ts)
         return
 
-    recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_token, schedule_name)
+    recipient_email, slack_user = await resolve_opsgenie_on_call(app, opsgenie_api_token, schedule_name)
     if recipient_email:
-        start, end = await resolve_opsgenie_on_call_period(opsgenie_token, schedule_name, recipient_email)
+        start, end = await resolve_opsgenie_on_call_period(opsgenie_api_token, schedule_name, recipient_email)
     else:
-        recipient_email, start, end = await resolve_opsgenie_upcoming_on_call_period(opsgenie_token, schedule_name)
+        recipient_email, start, end = await resolve_opsgenie_upcoming_on_call_period(opsgenie_api_token, schedule_name)
         if recipient_email:
             slack_user = await resolve_slack_user_for_opsgenie_recipient(app, recipient_email)
 
@@ -375,7 +390,7 @@ async def send_current_on_call(app: AsyncApp, opsgenie_token: str, channel, conf
     await messaging.send_message(app, channel, user, message, thread_ts)
 
 
-async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel, config: dict | None, user: User, text: str, ts: str, permalink: str) -> None:
+async def post_opsgenie_alert(app: AsyncApp, opsgenie_alert_token: str, channel, config: dict | None, user: User, text: str, ts: str, permalink: str) -> None:
     log_debug(channel, f"> {text.replace(chr(10), '\\n')}")
     text = await messaging.clean_slack_text(app, channel, text)
     log_debug(channel, f"< {text}")
@@ -384,7 +399,7 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel, confi
     url = 'https://api.opsgenie.com/v2/alerts'
     headers = {
         'Content-Type': 'application/json',
-        'Authorization': f'GenieKey {opsgenie_token}'
+        'Authorization': f'GenieKey {opsgenie_alert_token}'
     }
     # The alias is OpsGenie's dedup key, so it uses the slug rather than the
     # display name — that also keeps a dev instance from deduping against prod.
@@ -413,10 +428,10 @@ async def post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel, confi
             log_error(f"Failed to send alert for message {ts} in channel #{channel.name}, user @{user.name}:", e)
 
 
-async def send_heartbeat(opsgenie_token: str, opsgenie_heartbeat_name: str) -> None:
+async def send_heartbeat(opsgenie_alert_token: str, opsgenie_heartbeat_name: str) -> None:
     url = 'https://api.opsgenie.com/v2/heartbeats/' + opsgenie_heartbeat_name + '/ping'
     headers = {
-        'Authorization': f'GenieKey {opsgenie_token}'
+        'Authorization': f'GenieKey {opsgenie_alert_token}'
     }
     log(f"Starting to send heartbeat to {url}...")
     async with aiohttp.ClientSession() as session:

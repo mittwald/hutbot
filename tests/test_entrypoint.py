@@ -112,7 +112,7 @@ async def test_startup_waits_for_the_bridge_roster_before_restoring_timers(monke
 
     monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-    for name in ("OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME", "HUTBOT_BUILTIN_CALENDARS",
+    for name in ("OPSGENIE_TOKEN", "OPSGENIE_API_TOKEN", "OPSGENIE_HEARTBEAT_NAME", "HUTBOT_BUILTIN_CALENDARS",
                  "HUTBOT_BUILTIN_CALENDARS_FILE", "HUTBOT_CALENDAR_BRIDGE_URL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(entrypoint, "load_env_file", lambda: None)

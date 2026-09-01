@@ -14,7 +14,7 @@ from . import actions
 from . import persistence
 from .conditionutil import snapshot_conditions
 from .constants import CONDITION_MODE_ALL, SCHEDULER_INTERVAL, TRIGGER_CRON
-from .models import ScheduledReply
+from .models import OpsGenieTokens, ScheduledReply
 
 try:
     from croniter import croniter
@@ -65,7 +65,7 @@ def rename_scheduled_replies(channel_id: str, old_name: str, new_name: str) -> i
     return len(moved)
 
 
-async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None, original_wait_time: float | None = None, conditions_snapshot: dict | None = None) -> None:
+async def schedule_reply(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None, original_wait_time: float | None = None, conditions_snapshot: dict | None = None) -> None:
     # Captured before the wait so an edit during it cannot retroactively cancel this
     # reminder; a restored reply brings its original snapshot along.
     frozen_conditions = conditions_snapshot if conditions_snapshot is not None else snapshot_conditions(config)
@@ -99,7 +99,7 @@ async def schedule_reply(app: AsyncApp, opsgenie_token: str, channel, config: di
         # A rename during the wait moved this config, and the reply belongs to whatever it is
         # called now — that is the name `{{config}}` renders, and the name any buttons this
         # reply posts record as theirs.
-        posted = await actions.run_action(app, opsgenie_token, channel, run_config, _current_config_name(channel.id, config, config_name), context={
+        posted = await actions.run_action(app, opsgenie_tokens, channel, run_config, _current_config_name(channel.id, config, config_name), context={
             'user': user,
             'text': text,
             'ts': ts,
@@ -137,7 +137,7 @@ def _cron_due(cron_expr: str, config: dict, last: datetime.datetime, now: dateti
     return nxt <= current
 
 
-async def run_scheduler(app: AsyncApp, opsgenie_token: str) -> None:
+async def run_scheduler(app: AsyncApp, opsgenie_tokens: OpsGenieTokens) -> None:
     if croniter is None:
         log_warning("croniter is not installed; scheduled triggers are disabled.")
         return
@@ -146,12 +146,12 @@ async def run_scheduler(app: AsyncApp, opsgenie_token: str) -> None:
     while True:
         await asyncio.sleep(SCHEDULER_INTERVAL)
         try:
-            await scheduler_tick(app, opsgenie_token)
+            await scheduler_tick(app, opsgenie_tokens)
         except Exception as e:
             log_error("Scheduler tick failed:", e)
 
 
-async def scheduler_tick(app: AsyncApp, opsgenie_token: str) -> None:
+async def scheduler_tick(app: AsyncApp, opsgenie_tokens: OpsGenieTokens) -> None:
     now = datetime.datetime.now(datetime.timezone.utc)
     last = state._scheduler_last_check or now
     state._scheduler_last_check = now
@@ -174,12 +174,12 @@ async def scheduler_tick(app: AsyncApp, opsgenie_token: str) -> None:
             # cron path cannot drift out of step with the message and button paths.
             log(f"Cron config '{config_name}' in #{channel.name} firing.")
             try:
-                await actions.run_action(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel_id})
+                await actions.run_action(app, opsgenie_tokens, channel, config, config_name, context={'channel_id': channel_id})
             except Exception as e:
                 log_error(f"Cron config '{config_name}' action failed:", e)
 
 
-async def restore_scheduled_replies(app: AsyncApp, opsgenie_token: str) -> None:
+async def restore_scheduled_replies(app: AsyncApp, opsgenie_tokens: OpsGenieTokens) -> None:
     entries = list(state._scheduled_replies_cache.items())
     invalid_keys = []
     restored = 0
@@ -206,7 +206,7 @@ async def restore_scheduled_replies(app: AsyncApp, opsgenie_token: str) -> None:
             if isinstance(entry.get('conditions'), list) else None
         )
         log(f"Restoring reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, due {send_at.isoformat(timespec='seconds')}.")
-        task = asyncio.create_task(schedule_reply(app, opsgenie_token, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining, original_wait_time=original_wait_time, conditions_snapshot=cached_conditions))
+        task = asyncio.create_task(schedule_reply(app, opsgenie_tokens, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining, original_wait_time=original_wait_time, conditions_snapshot=cached_conditions))
         state.scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
         restored += 1
     for key in invalid_keys:

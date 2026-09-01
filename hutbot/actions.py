@@ -33,7 +33,7 @@ from .constants import (
     PARENT_VARIABLE_LENGTH_LIMIT,
     TEAM_UNKNOWN,
 )
-from .models import Channel, User
+from .models import Channel, OpsGenieTokens, User
 
 
 def _alert_is_live(config: dict) -> bool:
@@ -56,7 +56,7 @@ def _referenced_variables(config: dict) -> set[str]:
     return referenced
 
 
-async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, referenced: set[str], calendar_selectors: list[tuple[str, str]] | None = None) -> dict[str, str]:
+async def _build_variables(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None, referenced: set[str], calendar_selectors: list[tuple[str, str]] | None = None) -> dict[str, str]:
     """Resolve the template-variable namespace once for a whole run.
 
     `referenced` is every variable name the run might read — the message template, the
@@ -74,7 +74,7 @@ async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel,
     if permalink is None:
         permalink = await slackcache.get_message_permalink(app, channel, ts) if ts else ""
     return await templating.build_reply_template_variables(
-        app, opsgenie_token, channel, config, config_name, user, context.get('text', ''), ts, permalink,
+        app, opsgenie_tokens, channel, config, config_name, user, context.get('text', ''), ts, permalink,
         include_opsgenie=bool(OPSGENIE_TEMPLATE_VARIABLES.intersection(referenced)),
         include_calendar=bool(CALENDAR_TEMPLATE_VARIABLES.intersection(referenced)),
         calendar_selectors=calendar_selectors,
@@ -83,26 +83,26 @@ async def _build_variables(app: AsyncApp, opsgenie_token: str, channel: Channel,
     )
 
 
-async def _render_template(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, template: str, variables: dict[str, str] | None = None) -> str:
+async def _render_template(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None, template: str, variables: dict[str, str] | None = None) -> str:
     template = template or ''
     if variables is None:
         variables = await _build_variables(
-            app, opsgenie_token, channel, config, config_name, context,
+            app, opsgenie_tokens, channel, config, config_name, context,
             templating.find_template_variables(template),
             templating.find_calendar_selectors(template))
     return templating.render_reply_message_template(template, variables, config)
 
 
-async def render_template_text(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, template: str, variables: dict[str, str] | None = None) -> str:
+async def render_template_text(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None, template: str, variables: dict[str, str] | None = None) -> str:
     """Render any template with a config's variables — a button's message, say."""
-    return await _render_template(app, opsgenie_token, channel, config, config_name, context, template, variables)
+    return await _render_template(app, opsgenie_tokens, channel, config, config_name, context, template, variables)
 
 
-async def render_action_text(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, variables: dict[str, str] | None = None) -> str:
-    return await _render_template(app, opsgenie_token, channel, config, config_name, context, config.get('reply_message') or '', variables)
+async def render_action_text(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None, variables: dict[str, str] | None = None) -> str:
+    return await _render_template(app, opsgenie_tokens, channel, config, config_name, context, config.get('reply_message') or '', variables)
 
 
-async def maybe_post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None, posted_ts: str = '', variables: dict[str, str] | None = None) -> None:
+async def maybe_post_opsgenie_alert(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None, posted_ts: str = '', variables: dict[str, str] | None = None) -> None:
     """Fire an OpsGenie alert when a config that just ran has OpsGenie enabled.
 
     The alert text defaults to the (original) message in context; a non-empty
@@ -115,14 +115,14 @@ async def maybe_post_opsgenie_alert(app: AsyncApp, opsgenie_token: str, channel:
     context = context or {}
     user = context.get('user') or User(id='', name=state.bot_user_name, real_name=state.bot_name, team=TEAM_UNKNOWN)
     template = config.get('opsgenie_message') or ''
-    alert_text = await _render_template(app, opsgenie_token, channel, config, config_name, context, template, variables) if template else context.get('text', '')
+    alert_text = await _render_template(app, opsgenie_tokens, channel, config, config_name, context, template, variables) if template else context.get('text', '')
     log(f"Sending OpsGenie alert for config '{config_name}' in #{channel.name}.")
     # Scheduled/manual runs have no original-message ts, which would give every
     # recurrence the same OpsGenie alias and collapse them via dedup. Fall back to
     # the just-posted message ts so each run is a distinct alert. Used for the alias
     # only — not threaded into context/template variables.
     alert_ts = context.get('ts', '') or posted_ts
-    await opsgenie.post_opsgenie_alert(app, opsgenie_token, channel, config, user, alert_text, alert_ts, context.get('permalink', ''))
+    await opsgenie.post_opsgenie_alert(app, opsgenie_tokens.alert, channel, config, user, alert_text, alert_ts, context.get('permalink', ''))
 
 
 def _with_recipients(posted: dict | None, recipients: list[str]) -> dict | None:
@@ -287,7 +287,7 @@ def missing_target_reason(config: dict) -> str:
     return ""
 
 
-async def evaluate_conditions(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None, variables: dict[str, str] | None = None) -> tuple[bool, str, dict[str, str] | None]:
+async def evaluate_conditions(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None = None, variables: dict[str, str] | None = None) -> tuple[bool, str, dict[str, str] | None]:
     """Whether a config's conditions allow it to run.
 
     Returns `(met, reason, variables)`; the resolved variables come back so the caller can
@@ -298,14 +298,14 @@ async def evaluate_conditions(app: AsyncApp, opsgenie_token: str, channel: Chann
         return True, "", variables
     if variables is None:
         variables = await _build_variables(
-            app, opsgenie_token, channel, config, config_name, context,
+            app, opsgenie_tokens, channel, config, config_name, context,
             _referenced_variables(config),
             templating.config_calendar_selectors(config, include_alert=_alert_is_live(config)))
     met, reason = conditionutil.evaluate_conditions(config, variables)
     return met, reason, variables
 
 
-async def conditions_ruled_out_at_arrival(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> tuple[bool, str]:
+async def conditions_ruled_out_at_arrival(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> tuple[bool, str]:
     """Whether a message rule's conditions already fail on what is known right now.
 
     A message reminder can sit in the queue for up to a day before its conditions are judged.
@@ -323,11 +323,11 @@ async def conditions_ruled_out_at_arrival(app: AsyncApp, opsgenie_token: str, ch
     # An empty permalink keeps this free of a Slack round-trip; `message_link` is a fire-time
     # variable precisely so no settled condition can ask for it.
     context = {**(context or {}), 'permalink': (context or {}).get('permalink') or ''}
-    variables = await _build_variables(app, opsgenie_token, channel, config, config_name, context, referenced)
+    variables = await _build_variables(app, opsgenie_tokens, channel, config, config_name, context, referenced)
     return conditionutil.conditions_ruled_out(config, variables)
 
 
-async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> tuple[dict | None, str]:
+async def run_action_with_reason(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> tuple[dict | None, str]:
     """`run_action`, plus why nothing was sent — so callers can report it.
 
     The conditions gate lives here rather than at each trigger, so no entry point can
@@ -344,7 +344,7 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
         log_error(f"Config '{config_name}' in #{channel.name} cannot run: {reason}; set one with `set action {action.replace('_', '-')} {ACTION_TARGET_HINTS[action]}`.")
         return None, reason
 
-    met, condition_reason, variables = await evaluate_conditions(app, opsgenie_token, channel, config, config_name, context)
+    met, condition_reason, variables = await evaluate_conditions(app, opsgenie_tokens, channel, config, config_name, context)
     if not met:
         log(f"Config '{config_name}' in #{channel.name} did not run: {condition_reason}.")
         return None, condition_reason
@@ -355,16 +355,16 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
         # alert cannot disagree — and so `parent_run_facts` below describes the namespace the
         # message was actually rendered with.
         variables = await _build_variables(
-            app, opsgenie_token, channel, config, config_name, context,
+            app, opsgenie_tokens, channel, config, config_name, context,
             _referenced_variables(config),
             templating.config_calendar_selectors(config, include_alert=_alert_is_live(config)))
 
-    text = await render_action_text(app, opsgenie_token, channel, config, config_name, context, variables)
+    text = await render_action_text(app, opsgenie_tokens, channel, config, config_name, context, variables)
     # A target may name people through variables — `{{calendar_other_attendee_users}}`
     # for whoever is on call — so it is rendered with the same namespace as the message.
     target = config.get('action_target') or ''
     if target_is_templated(target):
-        target = await render_template_text(app, opsgenie_token, channel, config, config_name, context, target, variables)
+        target = await render_template_text(app, opsgenie_tokens, channel, config, config_name, context, target, variables)
     blocks = buttons.build_button_blocks(config, channel.id, config_name, text)
     log(f"Running action '{action}' for config '{config_name}' in #{channel.name}.")
     if action == ACTION_REPLY:
@@ -380,11 +380,11 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
         return None, f"unknown action `{action}`"
     if posted and posted.get('ts') and config.get('buttons'):
         await buttons.register_escalation(
-            app, opsgenie_token, posted['channel'], posted['ts'], channel.id, config_name, config,
+            app, opsgenie_tokens, posted['channel'], posted['ts'], channel.id, config_name, config,
             context, posted_text=text,
             parent=parent_run_facts(config, action, target, posted, variables, context))
     # OpsGenie is just a config property: any config that runs and has it enabled alerts.
-    await maybe_post_opsgenie_alert(app, opsgenie_token, channel, config, config_name, context, (posted or {}).get('ts', ''), variables)
+    await maybe_post_opsgenie_alert(app, opsgenie_tokens, channel, config, config_name, context, (posted or {}).get('ts', ''), variables)
     if not posted:
         # The action ran but Slack rejected it; callers already say "did not send
         # anything", so adding a reason here would only stutter.
@@ -392,6 +392,6 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_token: str, channel: Ch
     return {**posted, 'text': text}, ""
 
 
-async def run_action(app: AsyncApp, opsgenie_token: str, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> dict | None:
-    posted, _ = await run_action_with_reason(app, opsgenie_token, channel, config, config_name, context)
+async def run_action(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel: Channel, config: dict, config_name: str, context: dict | None = None) -> dict | None:
+    posted, _ = await run_action_with_reason(app, opsgenie_tokens, channel, config, config_name, context)
     return posted

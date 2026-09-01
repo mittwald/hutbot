@@ -34,7 +34,7 @@ async def main() -> None:
 
     slack_app_token = get_env_var("SLACK_APP_TOKEN")
     slack_bot_token = get_env_var("SLACK_BOT_TOKEN")
-    opsgenie_token = get_env_var("OPSGENIE_TOKEN")
+    opsgenie_tokens = opsgenie.load_opsgenie_tokens()
     opsgenie_heartbeat_name = get_env_var("OPSGENIE_HEARTBEAT_NAME")
     state.slash_command = normalize_slash_command(get_env_var("HUTBOT_SLASH_COMMAND"))
     state.bot_name = get_env_var("HUTBOT_BOT_NAME").strip() or DEFAULT_BOT_NAME
@@ -82,15 +82,15 @@ async def main() -> None:
         # Only the listing is waited for — the titles behind it arrive in the background.
         await calendarfeed.wait_for_bridge_roster()
         await persistence.load_replies_cache()
-        await scheduling.restore_scheduled_replies(app, opsgenie_token)
+        await scheduling.restore_scheduled_replies(app, opsgenie_tokens)
         await persistence.load_button_cache()
-        await buttons.restore_pending_buttons(app, opsgenie_token)
-        routing.register_app_handlers(app, opsgenie_token=opsgenie_token)
+        await buttons.restore_pending_buttons(app, opsgenie_tokens)
+        routing.register_app_handlers(app, opsgenie_tokens=opsgenie_tokens)
         handler = AsyncSocketModeHandler(app, slack_app_token)
-        if opsgenie_token and opsgenie_heartbeat_name:
+        if opsgenie_tokens.alert and opsgenie_heartbeat_name:
             state.opsgenie_configured = True
-            heartbeat_task = asyncio.create_task(opsgenie.send_heartbeat(opsgenie_token, opsgenie_heartbeat_name))
-        scheduler_task = asyncio.create_task(scheduling.run_scheduler(app, opsgenie_token))
+            heartbeat_task = asyncio.create_task(opsgenie.send_heartbeat(opsgenie_tokens.alert, opsgenie_heartbeat_name))
+        scheduler_task = asyncio.create_task(scheduling.run_scheduler(app, opsgenie_tokens))
         web_runner = await webui_backend.maybe_start_web_ui(app)
         await handler.start_async()
     except asyncio.CancelledError:

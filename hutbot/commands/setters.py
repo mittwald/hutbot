@@ -53,7 +53,7 @@ from ..constants import (
     DATETIME_TEMPLATE_VARIABLES,
     parse_event_offset,
 )
-from ..models import TemplateExpressionError
+from ..models import OpsGenieTokens, TemplateExpressionError
 from ..textutil import decode_escaped_newlines, log_debug, parse_quoted_tokens, strip_quotes, unwrap_slack_link
 
 try:
@@ -735,7 +735,7 @@ async def set_escalation(app: AsyncApp, channel, config_name: str, minutes_str: 
     await messaging.send_message(app, channel, user, f"*Escalation* set: after `{minutes}` minutes without a press, {does} in configuration `{config_name}`{warning}.", thread_ts)
 
 
-async def run_config_now(app: AsyncApp, opsgenie_token: str, channel, config_name: str, user, thread_ts: str = "") -> None:
+async def run_config_now(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, config_name: str, user, thread_ts: str = "") -> None:
     config = channel.configs.get(config_name)
     if not config:
         await messaging.send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
@@ -745,7 +745,7 @@ async def run_config_now(app: AsyncApp, opsgenie_token: str, channel, config_nam
         await messaging.send_message(app, channel, user, f"Cannot run configuration `{config_name}`: {reason}. Set one with {_set_action_hint(config_name, config)}.", thread_ts)
         return
     await messaging.send_message(app, channel, user, f"Running configuration `{config_name}` now…", thread_ts)
-    posted, run_reason = await actions.run_action_with_reason(app, opsgenie_token, channel, config, config_name, context={'channel_id': channel.id, 'user': user})
+    posted, run_reason = await actions.run_action_with_reason(app, opsgenie_tokens, channel, config, config_name, context={'channel_id': channel.id, 'user': user})
     if not posted:
         if run_reason:
             message = f"Configuration `{config_name}` did not send anything: {run_reason}. Check it with `{state.slash_command} show config`."

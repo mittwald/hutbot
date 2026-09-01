@@ -26,7 +26,7 @@ from .constants import (
     SLACK_SYSTEM_USER_IDS,
     TRIGGER_MESSAGE,
 )
-from .models import ScheduledReply
+from .models import OpsGenieTokens, ScheduledReply
 from .textutil import extract_message_text, log_debug
 
 
@@ -34,7 +34,7 @@ def is_command(text: str) -> bool:
     return f"<@{state.bot_user_id}>" in text
 
 
-async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None:
+async def route_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, event: dict) -> None:
     subtype = event.get('subtype')
     previous_message = event.get('previous_message', {})
     channel_id = event.get('channel', '')
@@ -72,13 +72,13 @@ async def route_message(app: AsyncApp, opsgenie_token: str, event: dict) -> None
         await handle_message_deletion(app, channel, previous_user, previous_message.get('ts'))
     elif user and is_command(text):
         # command
-        await commands.process_command(app, text, channel, user, ts, opsgenie_token, allow_test_message=True, command_ts=ts)
+        await commands.process_command(app, text, channel, user, ts, opsgenie_tokens, allow_test_message=True, command_ts=ts)
     elif user and thread_ts:
         # thread
         await handle_thread_response(app, channel, user, thread_ts, actor_is_bot)
     elif user and ts:
         # channel message
-        await handle_channel_message(app, opsgenie_token, channel, user, text, ts, actor_is_bot)
+        await handle_channel_message(app, opsgenie_tokens, channel, user, text, ts, actor_is_bot)
 
 
 def user_matches_actor_criteria(config: dict | None, user, actor_is_bot: bool = False) -> bool:
@@ -141,7 +141,7 @@ async def handle_thread_response(app: AsyncApp, channel, reply_user, thread_ts: 
         del state.scheduled_messages[key]
 
 
-async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel, user, text: str, ts: str, actor_is_bot: bool = False):
+async def handle_channel_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, user, text: str, ts: str, actor_is_bot: bool = False):
     for config_name, config in channel.configs.items():
         if config.get('trigger', TRIGGER_MESSAGE) != TRIGGER_MESSAGE:
             # Schedule/manual rules are driven by the scheduler or buttons, not messages.
@@ -175,7 +175,7 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel, us
         # message and its sender cannot change before then — so if those already rule it
         # out, skip queueing a reminder for up to a day that could never be sent.
         ruled_out, condition_reason = await actions.conditions_ruled_out_at_arrival(
-            app, opsgenie_token, channel, config, config_name,
+            app, opsgenie_tokens, channel, config, config_name,
             {'user': user, 'text': text, 'ts': ts, 'channel_id': channel.id, 'permalink': ''})
         if ruled_out:
             log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because {condition_reason}.")
@@ -184,7 +184,7 @@ async def handle_channel_message(app: AsyncApp, opsgenie_token: str, channel, us
         # One snapshot for the live task and the persisted entry, so a restart after a
         # config edit restores the reply with the conditions it was scheduled under.
         conditions_snapshot = conditionutil.snapshot_conditions(config)
-        task = asyncio.create_task(scheduling.schedule_reply(app, opsgenie_token, channel, config, config_name, user, text, ts, conditions_snapshot=conditions_snapshot))
+        task = asyncio.create_task(scheduling.schedule_reply(app, opsgenie_tokens, channel, config, config_name, user, text, ts, conditions_snapshot=conditions_snapshot))
         state.scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
         send_at = datetime.datetime.now() + datetime.timedelta(seconds=config['wait_time'])
         state._scheduled_replies_cache[(channel.id, ts, config_name)] = {
@@ -321,21 +321,21 @@ async def handle_bot_added_to_channel(app: AsyncApp, channel_id: str) -> None:
         f"Configuration(s) still disabled from an earlier removal: {', '.join(names)}.")
 
 
-async def handle_command_event(app: AsyncApp, command: dict, opsgenie_token: str = ""):
+async def handle_command_event(app: AsyncApp, command: dict, opsgenie_tokens: OpsGenieTokens = OpsGenieTokens()):
     text = command.get('text', '')
     channel_id = command.get('channel_id', '')
     user_id = command.get('user_id', '')
 
     channel = await slackcache.get_channel_by_id(app, channel_id)
     user = await slackcache.get_user_by_id(app, user_id)
-    await commands.process_command(app, text, channel, user, opsgenie_token=opsgenie_token)
+    await commands.process_command(app, text, channel, user, opsgenie_tokens=opsgenie_tokens)
 
 
-def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
+def register_app_handlers(app: AsyncApp, opsgenie_tokens: OpsGenieTokens = OpsGenieTokens()) -> None:
 
     @app.event("message")
     async def handle_message_events(body, logger):
-        await route_message(app, opsgenie_token, body.get('event', {}) if body else {})
+        await route_message(app, opsgenie_tokens, body.get('event', {}) if body else {})
 
     @app.event("reaction_added")
     async def handle_reaction_added_events(body, logger):
@@ -356,9 +356,9 @@ def register_app_handlers(app: AsyncApp, opsgenie_token: str = "") -> None:
     @app.command(state.slash_command)
     async def handle_command(ack, body, logger):
         await ack()
-        await handle_command_event(app, body, opsgenie_token)
+        await handle_command_event(app, body, opsgenie_tokens)
 
     @app.action(re.compile(rf"^{BUTTON_ACTION_PREFIX}:"))
     async def handle_button_action(ack, body, action, logger):
         await ack()
-        await buttons.handle_button_press(app, opsgenie_token, body, action)
+        await buttons.handle_button_press(app, opsgenie_tokens, body, action)

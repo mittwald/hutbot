@@ -20,7 +20,7 @@ async def test_schedule_reply_cleans_up_scheduled_message_after_send():
     hutbot.state.scheduled_messages[key] = ScheduledReply(task=AsyncMock(), user_id=user.id)
 
     with patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
-        await schedule_reply(app, "token", channel, config, "alerts", user, "Original text", ts)
+        await schedule_reply(app, OPSGENIE_TOKENS, channel, config, "alerts", user, "Original text", ts)
 
     app.client.chat_postMessage.assert_awaited_once()
     assert key not in hutbot.state.scheduled_messages
@@ -40,7 +40,7 @@ async def test_schedule_reply_keeps_plain_message_unchanged():
 
     with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock()) as mock_get_opsgenie_template_variables, \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
-        await schedule_reply(app, "token", channel, config, "default", user, "Original text", "1234.1")
+        await schedule_reply(app, OPSGENIE_TOKENS, channel, config, "default", user, "Original text", "1234.1")
 
     mock_get_opsgenie_template_variables.assert_not_awaited()
     app.client.chat_postMessage.assert_awaited_once_with(channel="C12345", text="Anybody?", mrkdwn=True, thread_ts="1234.1")
@@ -158,7 +158,7 @@ async def test_schedule_reply_removes_entry_from_cache():
     hutbot.state._scheduled_replies_cache[key] = {'channel_id': channel.id, 'ts': ts, 'config_name': 'default', 'user_id': user.id, 'text': 'x', 'send_at': '2026-01-01T00:00:00'}
 
     with patch('hutbot.messaging.send_message'), patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
-        await schedule_reply(app, "token", channel, config, "default", user, "x", ts)
+        await schedule_reply(app, OPSGENIE_TOKENS, channel, config, "default", user, "x", ts)
 
     assert key not in hutbot.state._scheduled_replies_cache
 
@@ -379,7 +379,7 @@ async def _run_pending_reply(cfg, edit=None, snapshot=None):
          patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "9.1"})) as post:
         task = asyncio.create_task(hutbot.scheduling.schedule_reply(
-            app, "token", channel, cfg, "default", user_dave(), "please look at this", "1.1",
+            app, OPSGENIE_TOKENS, channel, cfg, "default", user_dave(), "please look at this", "1.1",
             wait_time_override=0.2, conditions_snapshot=snapshot))
         await asyncio.sleep(0.02)
         if edit:
@@ -460,7 +460,7 @@ async def test_the_persisted_reply_carries_its_conditions_snapshot():
     hutbot.state.channel_config["C12345"] = channel.configs
     with patch('hutbot.scheduling.schedule_reply', new=AsyncMock()), \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
-        await hutbot.routing.handle_channel_message(app, "token", channel, user_dave(), "please look", "1.1")
+        await hutbot.routing.handle_channel_message(app, OPSGENIE_TOKENS, channel, user_dave(), "please look", "1.1")
     entry = hutbot.state._scheduled_replies_cache[("C12345", "1.1", "default")]
     assert entry["conditions"] == [_cond("look")]
     assert entry["conditions_mode"] == "any"
