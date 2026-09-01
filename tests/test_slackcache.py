@@ -1,4 +1,4 @@
-"""Slack lookups that the caches cannot answer — bot ids above all."""
+"""Slack lookups the caches cannot answer: bot ids, and what a conversation is."""
 
 from tests._common import *  # noqa: F401,F403
 
@@ -95,3 +95,37 @@ async def test_a_bot_lookup_that_fails_still_leaves_a_usable_user(capsys):
     # The same fallback a failed user lookup gets: the id stands in for the name.
     assert user == User(id="B08BSKV9CMB", name="B08BSKV9CMB", real_name="", team=TEAM_UNKNOWN)
     assert "Failed to fetch bot `B08BSKV9CMB`:" in capsys.readouterr().err
+
+
+# --- channels ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_channel_name_is_looked_up_once_and_then_served_from_the_cache():
+    # Every rule list needs one name per channel it shows, so an uncached lookup is one
+    # `conversations.info` per channel on every render of the App Home tab and the web UI.
+    app = AsyncMock()
+    app.client.conversations_info = AsyncMock(return_value={"channel": {"name": "general"}})
+    assert await hutbot.slackcache.get_channel_name(app, "C12345") == "general"
+    assert await hutbot.slackcache.get_channel_name(app, "C12345") == "general"
+    assert app.client.conversations_info.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stale_channel_name_is_looked_up_again():
+    app = AsyncMock()
+    app.client.conversations_info = AsyncMock(return_value={"channel": {"name": "general"}})
+    await hutbot.slackcache.get_channel_name(app, "C12345")
+    stamp, name = hutbot.state._channel_name_cache["C12345"]
+    hutbot.state._channel_name_cache["C12345"] = (stamp - hutbot.slackcache._CHANNEL_NAME_TTL - 1, name)
+    await hutbot.slackcache.get_channel_name(app, "C12345")
+    assert app.client.conversations_info.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_channel_name_lookup_is_not_cached():
+    # Otherwise a channel the bot momentarily could not read would be printed by its id for
+    # the next five minutes.
+    app = AsyncMock()
+    app.client.conversations_info = AsyncMock(side_effect=SlackApiError("no", {"error": "boom"}))
+    assert await hutbot.slackcache.get_channel_name(app, "C12345") == "C12345"
+    assert "C12345" not in hutbot.state._channel_name_cache
