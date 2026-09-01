@@ -36,6 +36,14 @@ from .constants import (
 from .models import Channel, OpsGenieTokens, User
 
 
+# What `run_action_with_reason` reports when the config ran and Slack refused the post,
+# as opposed to a condition declining it. A decision comes out the same way a minute later
+# and must not be retried; a refused post is exactly what a caller holding a pending record —
+# a scheduled reply, a button escalation — should try again before dropping it.
+# Phrased as a fragment because `run config now` prints it back to the user.
+DELIVERY_FAILED_REASON = "Slack would not take the message"
+
+
 def _alert_is_live(config: dict) -> bool:
     """Whether this run could really send an OpsGenie alert — the gate `maybe_post_opsgenie_alert` uses."""
     return bool(state.opsgenie_configured and (config or {}).get('opsgenie'))
@@ -386,9 +394,9 @@ async def run_action_with_reason(app: AsyncApp, opsgenie_tokens: OpsGenieTokens,
     # OpsGenie is just a config property: any config that runs and has it enabled alerts.
     await maybe_post_opsgenie_alert(app, opsgenie_tokens, channel, config, config_name, context, (posted or {}).get('ts', ''), variables)
     if not posted:
-        # The action ran but Slack rejected it; callers already say "did not send
-        # anything", so adding a reason here would only stutter.
-        return None, ""
+        # The action ran and Slack rejected it. Said in a way a caller can tell apart from a
+        # condition declining, because this one is worth another attempt and that one is not.
+        return None, DELIVERY_FAILED_REASON
     return {**posted, 'text': text}, ""
 
 

@@ -41,6 +41,10 @@ calendar:
   # disables the cache, which is a setting rather than a default. Trades freshness against a
   # host nobody here controls, and conditions can make the path hot.
   ttlSeconds: ""
+  # How long past that TTL an unreachable feed's last copy is still used, in seconds. Empty =
+  # the bot's default (86400); `0` stops serving a stale copy at all, so a feed that is down
+  # answers its conditions with nothing — which reads as "no event", not as "unknown".
+  staleGraceSeconds: ""
   # How often the calendar bridge's listing is read again, in minutes. Empty = the bot's
   # default (60); `0` reads the listing once at startup and never again. The listing URL
   # itself is a Secret key (HUTBOT_CALENDAR_BRIDGE_URL), not a value here, because it carries

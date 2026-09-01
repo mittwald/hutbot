@@ -139,6 +139,11 @@ async def handle_thread_response(app: AsyncApp, channel, reply_user, thread_ts: 
     for key in keys_to_cancel:
         state.scheduled_messages[key].task.cancel()
         del state.scheduled_messages[key]
+        # The cancelling caller drops the persisted record, because the cancelled task cannot
+        # tell a deliberate cancellation from a shutdown — and a shutdown's replies are meant
+        # to be restored by the next process, not deleted on the way out.
+        state._scheduled_replies_cache.pop(key, None)
+    await persistence.flush_replies_cache()
 
 
 async def handle_channel_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, user, text: str, ts: str, actor_is_bot: bool = False):
@@ -230,6 +235,11 @@ async def handle_reaction_added(app: AsyncApp, event):
     for key in keys_to_cancel:
         state.scheduled_messages[key].task.cancel()
         del state.scheduled_messages[key]
+        # The cancelling caller drops the persisted record, because the cancelled task cannot
+        # tell a deliberate cancellation from a shutdown — and a shutdown's replies are meant
+        # to be restored by the next process, not deleted on the way out.
+        state._scheduled_replies_cache.pop(key, None)
+    await persistence.flush_replies_cache()
 
 
 async def handle_message_deletion(app: AsyncApp, channel, previous_message_user, previous_message_ts: str):
@@ -249,6 +259,11 @@ async def handle_message_deletion(app: AsyncApp, channel, previous_message_user,
     for key in keys_to_cancel:
         state.scheduled_messages[key].task.cancel()
         del state.scheduled_messages[key]
+        # The cancelling caller drops the persisted record, because the cancelled task cannot
+        # tell a deliberate cancellation from a shutdown — and a shutdown's replies are meant
+        # to be restored by the next process, not deleted on the way out.
+        state._scheduled_replies_cache.pop(key, None)
+    await persistence.flush_replies_cache()
 
 
 def is_bot_membership_event(event: dict) -> bool:

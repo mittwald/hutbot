@@ -10,6 +10,7 @@ import aiofiles
 from slack_bolt.async_app import AsyncApp
 
 from logutil import log, log_error, log_warning
+import fileutil
 
 from . import state
 from . import constants
@@ -146,12 +147,7 @@ async def load_configuration(app: AsyncApp) -> None:
 
 
 async def save_configuration() -> None:
-    try:
-        async with aiofiles.open(constants.CONFIG_FILE_NAME, 'w') as f:
-            content = json.dumps(state.channel_config, indent=2)
-            await f.write(content)
-    except Exception as e:
-        log_error("Failed to save configuration:", e)
+    await fileutil.write_json_file(constants.CONFIG_FILE_NAME, state.channel_config, "Saving the configuration")
 
 
 async def load_replies_cache() -> None:
@@ -173,11 +169,9 @@ async def load_replies_cache() -> None:
 
 
 async def flush_replies_cache() -> None:
-    try:
-        async with aiofiles.open(constants.SCHEDULED_REPLIES_CACHE_FILE, 'w') as f:
-            await f.write(json.dumps(list(state._scheduled_replies_cache.values()), indent=2))
-    except Exception as e:
-        log_error("Failed to flush scheduled replies cache:", e)
+    await fileutil.write_json_file(constants.SCHEDULED_REPLIES_CACHE_FILE,
+                           list(state._scheduled_replies_cache.values()),
+                           "Writing the scheduled replies cache")
 
 
 async def load_button_cache() -> None:
@@ -197,8 +191,6 @@ async def load_button_cache() -> None:
 
 
 async def flush_button_cache() -> None:
-    try:
-        async with aiofiles.open(constants.BUTTON_CACHE_FILE, 'w') as f:
-            await f.write(json.dumps(list(state._button_states_cache.values()), indent=2))
-    except Exception as e:
-        log_error("Failed to flush button states cache:", e)
+    await fileutil.write_json_file(constants.BUTTON_CACHE_FILE,
+                           list(state._button_states_cache.values()),
+                           "Writing the button states cache")

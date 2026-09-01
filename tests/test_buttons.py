@@ -207,7 +207,7 @@ async def test_handle_button_press_routes_to_target_and_cancels_timeout():
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     assert key not in hutbot.state.pending_buttons
     assert run.await_count == 1
@@ -230,7 +230,7 @@ async def test_button_press_ack_cancels_without_running_config():
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post, \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     assert key not in hutbot.state.pending_buttons
     run.assert_not_awaited()
@@ -255,7 +255,7 @@ async def test_button_press_config_passes_orig_context():
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     run.assert_awaited_once()
     assert run.await_args.args[4] == "oncall"
@@ -346,7 +346,7 @@ async def test_button_record_is_consumed_once_for_duplicate_and_stale_presses():
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
         await asyncio.gather(
             hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, button_action),
             hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, button_action),
@@ -374,7 +374,7 @@ async def test_escalation_task_runs_config_target():
     }
     with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
         await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
     assert run.await_count == 1
     assert run.await_args.args[4] == "escalate"
@@ -401,7 +401,7 @@ async def test_escalation_task_config_passes_orig_context():
     with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U5", "carol", "Carol", "T"))), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
         await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
     run.assert_awaited_once()
     assert run.await_args.args[4] == "oncall"
@@ -534,7 +534,7 @@ async def test_config_button_attributes_to_original_author_not_presser():
     with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=lambda app, uid, *a, **k: users[uid])), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     ctx = run.await_args.kwargs["context"]
     assert ctx["user"].id == "U5"   # original author, not presser U9
@@ -561,7 +561,7 @@ async def test_button_resolves_from_snapshot_and_strips_after_press():
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U9", "bob", "Bob", "T"))), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock()) as post, \
-         patch('hutbot.actions.run_action', new=AsyncMock()) as run:
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))) as run:
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
     run.assert_not_awaited()                                   # snapshot ack, not the edited config action
     post.assert_awaited_once_with(app, "C12345", "ok", None, "10.1")
@@ -828,7 +828,7 @@ async def test_a_press_leaves_a_note_in_place_of_the_buttons(button, expected):
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=dave)), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})), \
-         patch('hutbot.actions.run_action', new=AsyncMock()):
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))):
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{expected}"
@@ -856,7 +856,7 @@ async def test_an_escalation_leaves_a_note_in_place_of_the_buttons(escalation, e
          patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(return_value=User("U1", "dave", "Dave", "T"))), \
          patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})), \
-         patch('hutbot.actions.run_action', new=AsyncMock()):
+         patch('hutbot.actions.run_action_with_reason', new=AsyncMock(return_value=({"channel": "C12345", "ts": "R2"}, ""))):
         await hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0)
 
     assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{expected}"

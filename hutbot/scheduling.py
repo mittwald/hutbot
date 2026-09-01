@@ -22,6 +22,14 @@ except ImportError:  # pragma: no cover - dependency optional at runtime
     croniter = None
 
 
+# A reply whose delivery fails is tried again this many times, this far apart. The retries
+# inside `messaging` cover a hiccup within one call; these cover the outage that outlasts it —
+# and until they are used up the reply stays in the persisted cache, so a restart in the
+# middle of one restores the reply rather than dropping it on the floor.
+DELIVERY_ATTEMPTS = 3
+DELIVERY_RETRY_DELAY = 60.0
+
+
 def format_minutes(seconds: float) -> str:
     minutes = int(seconds // 60)
     return f"{minutes} min" if minutes == 1 else f"{minutes} mins"
@@ -87,40 +95,62 @@ async def schedule_reply(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel
             if int(original_wait_time) != int(wait_time):
                 timing += f", config now {format_minutes(wait_time)}"
     log(f"{verb} reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, {timing}, opsgenie {'enabled' if opsgenie_enabled else 'disabled'}{', but not configured' if opsgenie_enabled and not state.opsgenie_configured else ''}")
+    cancelled = False
     try:
         await asyncio.sleep(actual_wait)
-        permalink = await slackcache.get_message_permalink(app, channel, ts)
-        # Single unified send path: the reply (and any configured action/buttons)
-        # goes through the action engine. The message context lets the reply thread
-        # on the original message and reuse its template variables.
-        # Everything except the conditions is read live, so a changed message or action
-        # still applies; the conditions are the ones this reply was scheduled with.
-        run_config = {**config, **frozen_conditions}
-        # A rename during the wait moved this config, and the reply belongs to whatever it is
-        # called now — that is the name `{{config}}` renders, and the name any buttons this
-        # reply posts record as theirs.
-        posted = await actions.run_action(app, opsgenie_tokens, channel, run_config, _current_config_name(channel.id, config, config_name), context={
-            'user': user,
-            'text': text,
-            'ts': ts,
-            'thread_ts': ts,
-            'channel_id': channel.id,
-            'permalink': permalink,
-        })
-        # OpsGenie is fired inside run_action when this config has it enabled. To
-        # button-gate an alert, put OpsGenie on a separate (manual) config and run
-        # it from a button / button-timeout instead of on the reply config itself.
+        for attempt in range(1, DELIVERY_ATTEMPTS + 1):
+            try:
+                permalink = await slackcache.get_message_permalink(app, channel, ts)
+                # Single unified send path: the reply (and any configured action/buttons)
+                # goes through the action engine. The message context lets the reply thread
+                # on the original message and reuse its template variables.
+                # Everything except the conditions is read live, so a changed message or action
+                # still applies; the conditions are the ones this reply was scheduled with.
+                run_config = {**config, **frozen_conditions}
+                # A rename during the wait moved this config, and the reply belongs to whatever it
+                # is called now — that is the name `{{config}}` renders, and the name any buttons
+                # this reply posts record as theirs.
+                posted, reason = await actions.run_action_with_reason(app, opsgenie_tokens, channel, run_config, _current_config_name(channel.id, config, config_name), context={
+                    'user': user,
+                    'text': text,
+                    'ts': ts,
+                    'thread_ts': ts,
+                    'channel_id': channel.id,
+                    'permalink': permalink,
+                })
+                # OpsGenie is fired inside run_action when this config has it enabled. To
+                # button-gate an alert, put OpsGenie on a separate (manual) config and run
+                # it from a button / button-timeout instead of on the reply config itself.
+                if posted or reason != actions.DELIVERY_FAILED_REASON:
+                    # Sent — or deliberately not sent, because a condition declined or the config
+                    # names no target. Only a delivery failure is worth another attempt; a
+                    # decision would come out the same way in a minute.
+                    break
+            except Exception as e:
+                log_error(f"Failed to send scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
+            if attempt < DELIVERY_ATTEMPTS:
+                log_warning(f"Retrying the scheduled reply for message {ts} in channel #{channel.name} for "
+                            f"config '{config_name}' in {DELIVERY_RETRY_DELAY:.0f}s ({attempt}/{DELIVERY_ATTEMPTS}).")
+                await asyncio.sleep(DELIVERY_RETRY_DELAY)
+            else:
+                log_error(f"Giving up on the scheduled reply for message {ts} in channel #{channel.name} for "
+                          f"config '{config_name}', user @{user.name} after {DELIVERY_ATTEMPTS} attempts.")
     except asyncio.CancelledError as e:
+        # A thread reply, a reaction, a deleted message, a config removed — or the process going
+        # down. Which of those it was decides whether the persisted record may be dropped, and
+        # this task cannot tell: whoever cancelled deliberately drops it themselves (see
+        # `routing`), and what is left is a shutdown, whose replies the next process restores.
         log(f"Cancelling scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
-    except Exception as e:
-        log_error(f"Failed to send scheduled reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}:", e)
+        cancelled = True
+        raise
     finally:
         # Not `scheduled_message_key`: a rename during the wait moved this reply onto a new
         # name, and the records to drop are the ones filed under it now.
         cleanup_key = (channel.id, ts, _current_config_name(channel.id, config, config_name))
         state.scheduled_messages.pop(cleanup_key, None)
-        state._scheduled_replies_cache.pop(cleanup_key, None)
-        await persistence.flush_replies_cache()
+        if not cancelled:
+            state._scheduled_replies_cache.pop(cleanup_key, None)
+            await persistence.flush_replies_cache()
 
 
 def _cron_due(cron_expr: str, config: dict, last: datetime.datetime, now: datetime.datetime) -> bool:
@@ -174,6 +204,9 @@ async def scheduler_tick(app: AsyncApp, opsgenie_tokens: OpsGenieTokens) -> None
             # cron path cannot drift out of step with the message and button paths.
             log(f"Cron config '{config_name}' in #{channel.name} firing.")
             try:
+                # A cron config fires again on its own schedule, so a failed run is not retried
+                # here: the next occurrence is the retry, and repeating a missed 09:00 reminder
+                # at 09:02 is rarely what the schedule meant.
                 await actions.run_action(app, opsgenie_tokens, channel, config, config_name, context={'channel_id': channel_id})
             except Exception as e:
                 log_error(f"Cron config '{config_name}' action failed:", e)

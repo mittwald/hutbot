@@ -167,3 +167,25 @@ async def test_startup_waits_for_the_bridge_roster_before_restoring_timers(monke
         assert order.index("wait_for_bridge_roster") < order.index(restored), order
     # The listing is read while the Slack calls are in flight, not after the wait began.
     assert order.index("run_bridge_refresh_loop") < order.index("wait_for_bridge_roster"), order
+
+
+def test_slack_client_retries_a_rate_limit_and_a_dropped_connection():
+    """Fitted to the client, so all ~20 Slack call sites get them without asking."""
+    from slack_sdk.http_retry.builtin_async_handlers import (
+        AsyncConnectionErrorRetryHandler,
+        AsyncRateLimitErrorRetryHandler,
+    )
+    from slack_sdk.web.async_client import AsyncWebClient
+    from types import SimpleNamespace
+
+    import hutbot.__main__ as entrypoint
+
+    app = SimpleNamespace(client=AsyncWebClient(token="xoxb-test"))
+    entrypoint.configure_slack_retries(app)
+    handlers = app.client.retry_handlers
+    assert any(isinstance(h, AsyncRateLimitErrorRetryHandler) for h in handlers)
+    assert any(isinstance(h, AsyncConnectionErrorRetryHandler) for h in handlers)
+
+    # Called twice (a reconnect, a test) it must not stack a second copy of each.
+    entrypoint.configure_slack_retries(app)
+    assert len(app.client.retry_handlers) == len(handlers)

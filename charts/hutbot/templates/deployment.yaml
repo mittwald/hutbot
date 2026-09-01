@@ -175,6 +175,13 @@ spec:
             - name: HUTBOT_CALENDAR_TTL
               value: {{ .Values.calendar.ttlSeconds | quote }}
             {{- end }}
+            {{- if and (not (kindIs "invalid" .Values.calendar.staleGraceSeconds)) (ne (printf "%v" .Values.calendar.staleGraceSeconds) "") }}
+            # How long an unreachable feed's last copy is still used past the TTL. Zero is a real
+            # setting: it stops serving a stale copy, at the price of a feed that is down
+            # answering its conditions with nothing.
+            - name: HUTBOT_CALENDAR_STALE_GRACE
+              value: {{ .Values.calendar.staleGraceSeconds | quote }}
+            {{- end }}
             {{- if and (not (kindIs "invalid" .Values.calendar.bridgeRefreshMinutes)) (ne (printf "%v" .Values.calendar.bridgeRefreshMinutes) "") }}
             # Minutes between reads of the calendar bridge's listing. Zero is a real setting here
             # too: it reads the listing once at startup and never again.

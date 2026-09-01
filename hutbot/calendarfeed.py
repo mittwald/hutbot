@@ -25,6 +25,7 @@ import recurring_ical_events
 
 from employee_list import get_env_var
 from logutil import log, log_error, log_warning
+import retryutil
 
 from . import conditionutil
 from . import datetimefmt
@@ -63,6 +64,11 @@ _MAX_ICS_BYTES = 5 * 1024 * 1024
 _ICS_ACCEPT = "text/calendar, text/plain;q=0.5, */*;q=0.1"
 _HTTP_TIMEOUT = 10
 _MAX_REDIRECTS = 3
+# How long past its TTL a cached calendar is still preferable to no calendar at all. A feed
+# that cannot be reached must not silently turn "on vacation" into "not on vacation": a
+# condition answered from a day-old copy is wrong far less often than one answered from
+# nothing. Past the grace the entry is dropped and the condition degrades as before.
+_CALENDAR_STALE_GRACE = float(os.environ.get('HUTBOT_CALENDAR_STALE_GRACE', str(24 * 60 * 60)))
 # How far back a negative `offset` searches. The ICS library has no `before()`, so the
 # previous event is found by scanning a window; env-tunable because a sparse calendar may
 # need a wider one. Read at import; tests patch the module attribute.
@@ -1050,44 +1056,55 @@ async def _get_calendar_document(url: str, *, accept: str = _ICS_ACCEPT,
     `accept`, `max_bytes` and `what` are what let the bridge listing — JSON, small, and worth
     naming as itself in an error — travel this same guarded path rather than one of its own.
     """
-    timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)
-    headers = {"Accept": accept}
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        for _ in range(_MAX_REDIRECTS + 1):
-            try:
-                url = validate_calendar_url(url)
-            except ValueError as e:
-                log_error(f"Refusing to fetch the {what} {describe_calendar_url(url)}: {e}.")
-                return None
-            host = urllib.parse.urlsplit(url).hostname or ""
-            if not _is_loopback_host(host) and not _is_allowed_host(host):
-                problem = await _resolve_public_host(host)
-                if problem:
-                    log_error(f"Refusing to fetch the {what} {describe_calendar_url(url)}: {problem} "
-                              f"(name the host in {ALLOWED_HOSTS_ENV} if it is meant to be reachable).")
+    async def attempt() -> str | None:
+        # Each attempt starts from the URL it was asked for: a redirect chain followed on a
+        # previous try tells us nothing about where this one goes, and every hop is validated
+        # on its own anyway.
+        current = url
+        timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)
+        headers = {"Accept": accept}
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for _ in range(_MAX_REDIRECTS + 1):
+                try:
+                    current = validate_calendar_url(current)
+                except ValueError as e:
+                    log_error(f"Refusing to fetch the {what} {describe_calendar_url(current)}: {e}.")
                     return None
-
-            async with session.get(url, headers=headers, allow_redirects=False) as response:
-                if response.status in (301, 302, 303, 307, 308):
-                    location = response.headers.get("Location", "")
-                    if not location:
-                        log_error(f"The {what} {describe_calendar_url(url)} redirected without a target.")
+                host = urllib.parse.urlsplit(current).hostname or ""
+                if not _is_loopback_host(host) and not _is_allowed_host(host):
+                    problem = await _resolve_public_host(host)
+                    if problem:
+                        log_error(f"Refusing to fetch the {what} {describe_calendar_url(current)}: {problem} "
+                                  f"(name the host in {ALLOWED_HOSTS_ENV} if it is meant to be reachable).")
                         return None
-                    url = urllib.parse.urljoin(url, location)
-                    continue
-                if response.status != 200:
-                    log_error(f"Failed to fetch the {what} {describe_calendar_url(url)}: {response.status}")
-                    return None
-                if response.content_length and response.content_length > max_bytes:
-                    log_error(f"The {what} {describe_calendar_url(url)} is too large ({response.content_length} bytes).")
-                    return None
-                text = await _read_capped(response, max_bytes)
-                if text is None:
-                    log_error(f"The {what} {describe_calendar_url(url)} is larger than {max_bytes} bytes.")
-                return text
 
-    log_error(f"The {what} {describe_calendar_url(url)} redirected more than {_MAX_REDIRECTS} times.")
-    return None
+                async with session.get(current, headers=headers, allow_redirects=False) as response:
+                    if response.status in (301, 302, 303, 307, 308):
+                        location = response.headers.get("Location", "")
+                        if not location:
+                            log_error(f"The {what} {describe_calendar_url(current)} redirected without a target.")
+                            return None
+                        current = urllib.parse.urljoin(current, location)
+                        continue
+                    if retryutil.is_retryable_status(response.status):
+                        raise retryutil.TransientHTTPError(
+                            f"Fetching the {what} {describe_calendar_url(current)}", response.status,
+                            retryutil.parse_retry_after(response.headers.get("Retry-After")))
+                    if response.status != 200:
+                        log_error(f"Failed to fetch the {what} {describe_calendar_url(current)}: {response.status}")
+                        return None
+                    if response.content_length and response.content_length > max_bytes:
+                        log_error(f"The {what} {describe_calendar_url(current)} is too large ({response.content_length} bytes).")
+                        return None
+                    text = await _read_capped(response, max_bytes)
+                    if text is None:
+                        log_error(f"The {what} {describe_calendar_url(current)} is larger than {max_bytes} bytes.")
+                    return text
+
+        log_error(f"The {what} {describe_calendar_url(current)} redirected more than {_MAX_REDIRECTS} times.")
+        return None
+
+    return await retryutil.retry_async(attempt, what=f"Fetching the {what} {describe_calendar_url(url)}")
 
 
 async def fetch_calendar(url: str) -> tuple[object | None, str]:
@@ -1095,28 +1112,61 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
 
     Never raises: a failure logs and returns ``(None, "")`` so a broken feed degrades a
     rule instead of taking down the event loop, matching the OpsGenie helpers.
-    Successful parses are cached per URL for ``_CALENDAR_TTL`` seconds.
+    Successful parses are cached per URL for ``_CALENDAR_TTL`` seconds, and a fetch that
+    fails falls back to that copy for ``_CALENDAR_STALE_GRACE`` beyond it.
     """
     url = (url or "").strip()
     if not url:
         return None, ""
 
+    now = time.monotonic()
     cached = state._calendar_cache.get(url)
-    if cached and (time.monotonic() - cached[0]) < _CALENDAR_TTL:
+    if cached and (now - cached[0]) < _CALENDAR_TTL:
         return cached[1], cached[2]
+
+    def last_good() -> tuple[object | None, str]:
+        """The last copy of this feed, while it is young enough to still be worth having."""
+        if not cached:
+            return None, ""
+        # The grace is time *past the TTL*, not total age: a feed cached for an hour and graced
+        # for five minutes is served for an hour and five minutes, not discarded the moment the
+        # hour is up. A zero grace therefore stops serving a stale copy at all, which is what
+        # this path is reached with.
+        if (time.monotonic() - cached[0]) >= _CALENDAR_TTL + _CALENDAR_STALE_GRACE:
+            # Past the grace it is dropped, so a feed that has been gone for a day stops
+            # answering conditions with what it said before it went.
+            state._calendar_cache.pop(url, None)
+            return None, ""
+        return cached[1], cached[2]
+
+    def stale(reason: str) -> tuple[object | None, str]:
+        state._calendar_failures[url] = time.monotonic()
+        calendar, name = last_good()
+        if calendar is not None:
+            log_warning(f"{reason} for the calendar feed {describe_calendar_url(url)}; "
+                        f"using the copy from {int(time.monotonic() - cached[0])}s ago.")
+        return calendar, name
+
+    # A feed that just failed is not asked again by the next message. The fetch below already
+    # gives it three attempts; a calendar condition is evaluated per message, and repeating
+    # those three against a host that is down would cost more than the answer is worth. It is
+    # tried again on the same TTL a healthy feed is refreshed on.
+    failed_at = state._calendar_failures.get(url)
+    if failed_at is not None and (now - failed_at) < _CALENDAR_TTL:
+        return last_good()
 
     try:
         text = await _get_calendar_document(url)
     except Exception as e:
         log_error(f"Failed to fetch the calendar feed {describe_calendar_url(url)}:", e)
-        return None, ""
+        return stale("The fetch failed")
     if text is None:
-        return None, ""
+        return stale("The fetch failed")
 
     if "BEGIN:VCALENDAR" not in text:
         # Usually an HTML sign-in page: say so instead of reporting an empty calendar.
         log_error(f"Calendar feed {describe_calendar_url(url)} did not return an iCalendar document.")
-        return None, ""
+        return stale("The feed did not answer with an iCalendar document")
 
     try:
         # Parsing a real feed takes tens of milliseconds, which is long enough to be worth
@@ -1124,7 +1174,7 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
         calendar = await asyncio.to_thread(icalendar.Calendar.from_ical, text)
     except Exception as e:
         log_error(f"Failed to parse the calendar feed {describe_calendar_url(url)}:", e)
-        return None, ""
+        return stale("The feed did not parse")
 
     name = ""
     try:
@@ -1133,6 +1183,7 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
         name = ""
 
     state._calendar_cache[url] = (time.monotonic(), calendar, name)
+    state._calendar_failures.pop(url, None)
     return calendar, name
 
 

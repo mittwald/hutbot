@@ -1,12 +1,11 @@
 """Low-level Slack message posting + Slack-text cleaning / mention resolution."""
 
 import re
-import asyncio
 
 from slack_bolt.async_app import AsyncApp
-from slack_sdk.errors import SlackApiError
 
-from logutil import log_error, log_warning
+from logutil import log_error
+import retryutil
 
 from . import slackcache
 from . import state
@@ -158,57 +157,57 @@ async def send_message(app: AsyncApp, channel: Channel, user: User, text: str, t
     if footer:
         text += command_footer()
     log_debug(channel, f"Attempting to send message to #{channel.name}, user @{user.name}: {text.replace(chr(10), '\\n')}")
-    retries = 3
-    delay = 1
-    for attempt in range(retries):
-        try:
-            if thread_ts:
-                await app.client.chat_postMessage(
-                    channel=channel.id,
-                    thread_ts=thread_ts,
-                    text=text,
-                    blocks=blocks,
-                    mrkdwn=True
-                )
-            else:
-                await app.client.chat_postEphemeral(
-                    channel=channel.id,
-                    user=user.id,
-                    text=text,
-                    blocks=blocks,
-                    mrkdwn=True
-                )
-            log_debug(channel, f"Successfully sent message to #{channel.name}, user @{user.name}")
-            return  # Exit if successful
-        except SlackApiError as e:
-            if attempt < retries - 1:
-                log_warning(f"Failed to send message in channel #{channel.name}, user @{user.name}, retrying in {delay} seconds ({attempt + 1}/{retries})...", e)
-                await asyncio.sleep(delay)
-                delay *= 2  # Exponential backoff
-            else:
-                log_error(f"Failed to send message in channel #{channel.name}, user @{user.name} after {retries} attempts:", e)
+
+    async def attempt() -> None:
+        if thread_ts:
+            await app.client.chat_postMessage(
+                channel=channel.id,
+                thread_ts=thread_ts,
+                text=text,
+                blocks=blocks,
+                mrkdwn=True
+            )
+        else:
+            await app.client.chat_postEphemeral(
+                channel=channel.id,
+                user=user.id,
+                text=text,
+                blocks=blocks,
+                mrkdwn=True
+            )
+
+    try:
+        await retryutil.retry_async(attempt, what=f"Sending a message in #{channel.name} to @{user.name}")
+    except Exception as e:
+        # A command reply nobody can resend: the command is gone by the time this is read, so
+        # the failure is logged rather than raised at a handler that could only log it again.
+        log_error(f"Failed to send message in channel #{channel.name}, user @{user.name}:", e)
+        return
+    log_debug(channel, f"Successfully sent message to #{channel.name}, user @{user.name}")
 
 
 async def _post_message(app: AsyncApp, channel_id: str, text: str, blocks: list | None, thread_ts: str = "") -> dict | None:
+    """Post a message, or return None once the retries are used up.
+
+    Callers treat None as "nothing was posted": `run_action` skips the buttons that would have
+    been attached to it, and the scheduled reply that asked for it is kept for another turn
+    rather than dropped.
+    """
     kwargs = {"channel": channel_id, "text": text, "mrkdwn": True}
     if blocks:
         kwargs["blocks"] = blocks
     if thread_ts:
         kwargs["thread_ts"] = thread_ts
-    retries = 3
-    delay = 1
-    for attempt in range(retries):
-        try:
-            response = await app.client.chat_postMessage(**kwargs)
-            return {"channel": channel_id, "ts": response.get("ts")}
-        except SlackApiError as e:
-            if attempt < retries - 1:
-                log_warning(f"Failed to post message to {channel_id}, retrying in {delay} seconds ({attempt + 1}/{retries})...", e)
-                await asyncio.sleep(delay)
-                delay *= 2
-            else:
-                log_error(f"Failed to post message to {channel_id} after {retries} attempts:", e)
-                return None
+
+    async def attempt() -> dict:
+        response = await app.client.chat_postMessage(**kwargs)
+        return {"channel": channel_id, "ts": response.get("ts")}
+
+    try:
+        return await retryutil.retry_async(attempt, what=f"Posting a message to {channel_id}")
+    except Exception as e:
+        log_error(f"Failed to post message to {channel_id}:", e)
+        return None
 
 
 async def replace_ids(app: AsyncApp, channel: Channel | None, text: str) -> str:
