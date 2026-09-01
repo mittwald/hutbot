@@ -113,6 +113,14 @@ _calendar_failures: dict[str, float] = {}
 # Serializes web-UI config writes (mutate channel_config + save_configuration).
 _config_write_lock = asyncio.Lock()
 
+# Which channel each user last looked at in the App Home tab, keyed by Slack user id. Slack
+# carries no state between one `views.publish` and the next, and the tab is republished from
+# scratch on every open and every change, so without this a user would be dropped back to
+# their first channel each time. In-process on purpose: it is a viewing position, not a
+# setting, and losing it on a restart costs one click. Its keys also record who this process
+# has ever published a tab for, which is how a mutation knows whose tab is worth refreshing.
+home_tab_channel: dict[str, str] = {}
+
 # The command currently being handled, already normalized to its `/hutbot …` form, so every
 # reply can say what it was answering. Per-task (a ContextVar, not a global) because several
 # commands can be in flight at once.
@@ -134,6 +142,7 @@ def reset() -> None:
     id_usergroup_cache.clear()
     team_cache.clear()
     _channel_members_cache.clear()
+    home_tab_channel.clear()
     _calendar_cache.clear()
     _calendar_failures.clear()
     bridge_calendar_titles.clear()

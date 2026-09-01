@@ -151,6 +151,10 @@ def _input(field: str, element: dict, label: str = "", hint: str = "",
         "element": element,
         "optional": optional,
     }
+    # An element inside an `input` block sends nothing unless its block says to: without this
+    # a form could never redraw itself when the value that decides its shape changes.
+    if str(element.get("action_id", "")).startswith(action_id("render") + ":"):
+        block["dispatch_action"] = True
     if hint:
         block["hint"] = _plain(hint, SLACK_HEADER_TEXT_LIMIT)
     return block
@@ -455,7 +459,8 @@ def edit_config_blocks(channel_id: str) -> list[dict]:
 def home_view(meta: dict, channel_id: str, channels: list, configs: dict) -> dict:
     """The App Home tab: one channel's rules, with a picker for the others.
 
-    `channels` is `[(channel_id, name), …]`, already filtered to the ones the viewer is in.
+    `channels` is what `webui_backend.list_user_config_channels` returns — `{id, name}` dicts,
+    already filtered to the channels the viewer belongs to.
     """
     bot_name = meta.get('bot_name') or state.bot_name
     command = meta.get('slash_command') or state.slash_command
@@ -467,7 +472,8 @@ def home_view(meta: dict, channel_id: str, channels: list, configs: dict) -> dic
             f"Invite me to a channel and run `{command} help` to get started."))
         return {"type": "home", "private_metadata": fields.encode_meta(""), "blocks": blocks}
 
-    options = [_option(cid, f"#{name}") for cid, name in channels[:SLACK_OPTION_LIMIT]]
+    options = [_option(channel['id'], f"#{channel['name']}")
+               for channel in channels[:SLACK_OPTION_LIMIT]]
     picker = {"type": "static_select", "action_id": action_id("channel"), "options": options}
     chosen = _initial(options, channel_id)
     if chosen is not None:
