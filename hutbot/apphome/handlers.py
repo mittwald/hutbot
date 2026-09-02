@@ -16,6 +16,13 @@ Two rules hold the design together:
 * **No drafts anywhere.** A row form's submit *is* the write, and a list is re-read from the
   live config every time it is rendered. Nothing to persist across a restart, nothing to
   expire, and no way for the screen to disagree with `bot.json`.
+
+And one rule about the modal itself: **nothing is ever pushed.** There is one `views.open`, and
+every move after it — into a section, into a row, back out again — is a `views.update` on that
+same view. Slack caps a modal stack at three, and a form that saves has to answer with the
+view to land on, which *replaces* the form rather than popping it. Pushing a form and then
+landing on its parent therefore grows the stack by one on every save, and the third edit gets
+`push_limit_reached`. Staying flat cannot.
 """
 
 import json
@@ -159,15 +166,11 @@ async def _open(app: AsyncApp, body: dict, view: dict) -> None:
         log_error("Could not open a configuration modal:", e)
 
 
-async def _push(app: AsyncApp, body: dict, view: dict) -> None:
-    try:
-        await app.client.views_push(trigger_id=body.get('trigger_id'), view=view)
-    except SlackApiError as e:
-        log_error("Could not open a configuration modal:", e)
-
-
 async def _update(app: AsyncApp, body: dict, view: dict) -> None:
-    # No `hash`: one user drives one modal, so a hash would only buy `hash_conflict` failures.
+    """Move the one open modal to another view. The only navigation there is.
+
+    No `hash`: one user drives one modal, so a hash would only buy `hash_conflict` failures.
+    """
     try:
         await app.client.views_update(view_id=_view_id(body), view=view)
     except SlackApiError as e:
@@ -181,6 +184,19 @@ def _hub(channel_id: str, config_name: str, configs: dict | None = None) -> dict
     if config is None:
         return views.notice_view("Gone", f"`{config_name}` no longer exists in <#{channel_id}>.")
     return views.hub_view(_meta(configs), channel_id, config_name, config)
+
+
+def _landing(channel_id: str, config_name: str, parts) -> dict:
+    """Where a Back button or a successful save goes.
+
+    `["list", "buttons"]` for the button list, anything else for the rule hub. The escalation
+    form and the row forms belong to a list, so leaving or saving one goes back to that list
+    rather than all the way out to the hub.
+    """
+    parts = list(parts)
+    if len(parts) >= 2 and parts[0] == 'list' and parts[1] in fields.LIST_SECTIONS:
+        return _list_view(channel_id, config_name, parts[1])
+    return _hub(channel_id, config_name)
 
 
 def _list_view(channel_id: str, config_name: str, section: str) -> dict:
@@ -280,13 +296,13 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
     elif kind == 'rename':
         await _update(app, body, views.name_view(_meta(), channel_id, config_name))
     elif kind == 'nav':
-        await _update(app, body, _hub(channel_id, config_name))
+        await _update(app, body, _landing(channel_id, config_name, parts[1:]))
     elif kind == 'open':
         section = parts[1] if len(parts) > 1 else ""
         view = (_list_view(channel_id, config_name, section)
                 if section in fields.LIST_SECTIONS
                 else _section_view(channel_id, config_name, section))
-        await _push(app, body, view)
+        await _update(app, body, view)
     elif kind == 'toggle_enabled':
         await _toggle_enabled(app, body, channel_id, config_name, user_id)
     elif kind == 'delete':
@@ -296,12 +312,12 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
     elif kind == 'export':
         configs = _configs(channel_id)
         config = configs.get(config_name)
-        await _push(app, body, views.export_view(_meta(configs), channel_id, config_name, config)
-                    if config is not None
-                    else views.notice_view("Gone", f"`{config_name}` no longer exists."))
+        await _update(app, body, views.export_view(_meta(configs), channel_id, config_name,
+                                                   config) if config is not None
+                      else views.notice_view("Gone", f"`{config_name}` no longer exists."))
     elif kind == 'import':
-        await _push(app, body, views.import_view(_meta(_configs(channel_id)), channel_id,
-                                                 config_name))
+        await _update(app, body, views.import_view(_meta(_configs(channel_id)), channel_id,
+                                                   config_name))
     elif kind == 'row':
         await _row_action(app, body, target, parts, action, user_id)
     elif kind == 'field':
@@ -497,9 +513,12 @@ async def _submit_section(app: AsyncApp, ack, view: dict, values: dict, target: 
     if not ok:
         await ack(response_action="errors", errors=_errors_for(view, errors))
         return
-    # Back to the hub, rebuilt from what was just stored, so the summary the user reads is
-    # the saved one rather than the one the form was opened with.
-    await ack(response_action="update", view=_hub(channel_id, config_name))
+    # Rebuilt from what was just stored, so the summary the user reads is the saved one
+    # rather than the one the form was opened with. Escalation goes back to the button list it
+    # was opened from; every other section to the hub.
+    landing = ("list", "buttons") if section == "escalation" else ()
+    await ack(response_action="update",
+              view=_landing(channel_id, config_name, landing))
 
 
 async def _submit_row(app: AsyncApp, ack, view: dict, values: dict, target: dict,

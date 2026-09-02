@@ -708,7 +708,7 @@ async def test_the_export_button_opens_the_payload_without_writing():
     with _slack():
         await handlers.handle_action(app, _body(), _action(
             "hutbot_cfg:export", value=fields.encode_meta(CHANNEL, "default")))
-    view = app.client.views_push.await_args.kwargs["view"]
+    view = app.client.views_update.await_args.kwargs["view"]
     assert view["title"]["text"] == "Export rule"
     assert configs["default"]["wait_time"] == 600
 
@@ -720,7 +720,7 @@ async def test_exporting_a_rule_that_vanished_says_so():
     with _slack():
         await handlers.handle_action(app, _body(), _action(
             "hutbot_cfg:export", value=fields.encode_meta(CHANNEL, "gone")))
-    assert app.client.views_push.await_args.kwargs["view"]["title"]["text"] == "Gone"
+    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Gone"
 
 
 @pytest.mark.asyncio
@@ -730,7 +730,7 @@ async def test_the_import_button_opens_the_paste_form():
     with _slack():
         await handlers.handle_action(app, _body(), _action(
             "hutbot_cfg:import", value=fields.encode_meta(CHANNEL, "default")))
-    assert app.client.views_push.await_args.kwargs["view"]["title"]["text"] == "Import rule"
+    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Import rule"
 
 
 def _import_values(name, pasted):
@@ -881,3 +881,88 @@ async def test_a_non_member_cannot_import():
             fields.encode_meta(CHANNEL, "default"), callback_id=views.VIEW_IMPORT,
             values=_import_values("default", '{"wait_time": 900}')))
     assert configs["default"]["wait_time"] == DEFAULT_CONFIG["wait_time"]
+
+
+# --- the modal stack ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nothing_is_ever_pushed_onto_the_modal_stack():
+    """Slack caps a modal stack at three, and answering a save with the view to land on
+    replaces the form rather than popping it — so pushing a form and then landing on its
+    parent grew the stack by one on every save and hit `push_limit_reached` on the third
+    edit. Every move is a `views.update` on the one open modal instead."""
+    app = _app()
+    _seed({"default": copy.deepcopy(DEFAULT_CONFIG), "oncall": copy.deepcopy(DEFAULT_CONFIG)})
+    ack = AsyncMock()
+    rule = fields.encode_meta(CHANNEL, "default")
+    with _slack():
+        # Three save-then-edit cycles: the third is the one that used to fail.
+        for _ in range(3):
+            await handlers.handle_action(app, _body(), _action(
+                "hutbot_cfg:open:trigger", value=rule))
+            await handlers.handle_view_submission(app, ack, _body(
+                fields.encode_meta(CHANNEL, "default", "trigger"),
+                callback_id=views.VIEW_SECTION,
+                values={**_element("trigger", _option(TRIGGER_MESSAGE)),
+                        **_element("wait_time", _plain("45"))}))
+        for action_id in ("hutbot_cfg:open:conditions", "hutbot_cfg:open:buttons",
+                          "hutbot_cfg:open:escalation", "hutbot_cfg:export",
+                          "hutbot_cfg:import", "hutbot_cfg:nav:hub",
+                          "hutbot_cfg:nav:list:buttons", "hutbot_cfg:rename"):
+            await handlers.handle_action(app, _body(), _action(action_id, value=rule))
+    app.client.views_push.assert_not_awaited()
+    assert app.client.views_open.await_count == 0  # a view was already open throughout
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_section_form_goes_back_to_the_hub():
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(app, _body(
+            fields.encode_meta(CHANNEL, "default", "trigger")),
+            _action("hutbot_cfg:nav:hub", value=fields.encode_meta(CHANNEL, "default")))
+    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Rule"
+
+
+@pytest.mark.asyncio
+async def test_leaving_a_row_form_goes_back_to_its_list_not_to_the_hub():
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(app, _body(
+            fields.encode_meta(CHANNEL, "default", "conditions", 0)),
+            _action("hutbot_cfg:nav:list:conditions",
+                    value=fields.encode_meta(CHANNEL, "default")))
+    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Conditions"
+
+
+@pytest.mark.asyncio
+async def test_saving_the_escalation_goes_back_to_the_buttons_it_cross_checks_with():
+    app = _app()
+    configs = _seed({"default": {**copy.deepcopy(DEFAULT_CONFIG),
+                                 "buttons": [{"label": "Ack", "action": "ack", "value": ""}]}})
+    ack = AsyncMock()
+    values = {**_element("escalation_kind", _option("button")),
+              **_element("escalation_timeout", _plain("15")),
+              **_element("escalation_target", _option("Ack"))}
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default", "escalation"),
+            callback_id=views.VIEW_SECTION, values=values))
+    assert configs["default"]["escalation_timeout"] == 900
+    assert ack.await_args.kwargs["view"]["title"]["text"] == "Buttons"
+
+
+@pytest.mark.asyncio
+async def test_saving_any_other_section_goes_back_to_the_hub():
+    app = _app()
+    _seed()
+    ack = AsyncMock()
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL, "default", "trigger"),
+            callback_id=views.VIEW_SECTION,
+            values={**_element("trigger", _option(TRIGGER_MESSAGE)),
+                    **_element("wait_time", _plain("45"))}))
+    assert ack.await_args.kwargs["view"]["title"]["text"] == "Rule"
