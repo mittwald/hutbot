@@ -67,11 +67,22 @@ except ImportError:  # pragma: no cover - dependency optional at runtime
 
 
 async def list_user_config_channels(app: AsyncApp, user: User) -> list[dict]:
-    """Channels that have a Hutbot config and that `user` belongs to, sorted by name."""
+    """Channels a rule can live in, that `user` belongs to, sorted by name.
+
+    `channel_config` holds an entry for every conversation the bot has seen a message in,
+    because that is what `slackcache.get_channel_by_id` creates — DMs and group DMs included,
+    and channels the bot has since been removed from. None of those can be configured, so
+    listing them offers a picker full of entries that either mean nothing or, with no name to
+    read, show as a bare `C…` id. A channel with no rules *is* listed: that is how the first
+    rule in a newly-invited channel gets created.
+    """
     channels = []
     for channel_id in list(state.channel_config.keys()):
-        if await slackcache.is_user_in_channel(app, channel_id, user.id):
-            channels.append({'id': channel_id, 'name': await slackcache.get_channel_name(app, channel_id)})
+        if not await slackcache.is_user_in_channel(app, channel_id, user.id):
+            continue
+        if not await slackcache.is_configurable_channel(app, channel_id):
+            continue
+        channels.append({'id': channel_id, 'name': await slackcache.get_channel_name(app, channel_id)})
     channels.sort(key=lambda c: c['name'].lower())
     return channels
 

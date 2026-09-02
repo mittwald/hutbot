@@ -97,10 +97,11 @@ _bridge_roster_ready: asyncio.Event = asyncio.Event()
 # Slack member ids per channel, cached briefly (see slackcache.get_channel_members).
 _channel_members_cache: dict[str, tuple[float, set]] = {}
 
-# Channel names by id, with the timestamp of the lookup. A name is only ever used for display,
-# and every rule list — the App Home tab, the web UI's channel list — needs one per channel it
-# shows, so without this a single render is one `conversations.info` call per channel.
-_channel_name_cache: dict[str, tuple[float, str]] = {}
+# What `conversations.info` said about a conversation, with the timestamp of the lookup. Every
+# rule list — the App Home tab, the web UI's channel list — needs one lookup per conversation
+# it shows, both for the name and to tell a real channel from a DM, so without this a single
+# render is one `conversations.info` call per entry.
+_channel_info_cache: dict[str, tuple[float, dict]] = {}
 
 # Parsed ICS calendars per feed URL, cached briefly (see calendarfeed.fetch_calendar).
 # The parsed calendar is cached rather than the raw text (parsing is the expensive part)
@@ -147,7 +148,7 @@ def reset() -> None:
     id_usergroup_cache.clear()
     team_cache.clear()
     _channel_members_cache.clear()
-    _channel_name_cache.clear()
+    _channel_info_cache.clear()
     home_tab_channel.clear()
     _calendar_cache.clear()
     _calendar_failures.clear()

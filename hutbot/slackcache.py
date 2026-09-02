@@ -26,9 +26,10 @@ from .textutil import log_debug
 # channels doesn't hammer conversations.members on every UI request.
 _CHANNEL_MEMBERS_TTL = 300.0
 
-# Channel names, on the same footing and for the same reason: a rule list needs one name per
-# channel, and a rename is cosmetic, so serving a slightly stale one costs nothing.
-_CHANNEL_NAME_TTL = 300.0
+# What a conversation is, on the same footing and for the same reason: a rule list needs one
+# lookup per conversation, and neither a rename nor a channel the bot just joined is urgent, so
+# serving a slightly stale answer costs nothing.
+_CHANNEL_INFO_TTL = 300.0
 
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
@@ -41,29 +42,56 @@ async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     return Channel(id=channel_id, name=name, configs=configs)
 
 
-async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
-    """A channel's name, cached for _CHANNEL_NAME_TTL seconds.
+async def get_channel_info(app: AsyncApp, channel_id: str) -> dict:
+    """What `conversations.info` says about a conversation, cached for _CHANNEL_INFO_TTL.
 
-    Falls back to the id, which is what every caller prints when the lookup fails. A failed
-    lookup is not cached, so a channel the bot momentarily could not read is asked again
-    rather than being called by its id for the next five minutes.
+    `{}` when the lookup failed — which is the answer for a private channel the bot is not in,
+    where Slack reports `channel_not_found` rather than a channel with `is_member: false`. A
+    failure is not cached, so a conversation the bot momentarily could not read is asked again
+    rather than written off for the next five minutes.
     """
     now = time.monotonic()
-    cached = state._channel_name_cache.get(channel_id)
-    if cached and (now - cached[0]) < _CHANNEL_NAME_TTL:
+    cached = state._channel_info_cache.get(channel_id)
+    if cached and (now - cached[0]) < _CHANNEL_INFO_TTL:
         return cached[1]
     try:
         response = await retryutil.retry_async(
             lambda: app.client.conversations_info(channel=channel_id),
-            what=f"Reading the name of channel {channel_id}")
-        channel_name = response.get('channel', {}).get('name', '')
-        if channel_name:
-            state._channel_name_cache[channel_id] = (now, channel_name)
-            return channel_name
+            what=f"Reading the details of channel {channel_id}")
+        info = response.get('channel') or {}
+        if info:
+            # Cached even when it carries no name: a DM has none, and that is a stable answer
+            # rather than a failed lookup.
+            state._channel_info_cache[channel_id] = (now, info)
+            return info
     except Exception as e:
-        log_error(f"Failed to get channel name for {channel_id}", e)
+        log_error(f"Failed to get channel details for {channel_id}", e)
 
-    return channel_id
+    return {}
+
+
+async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
+    """A channel's name, or the id — which is what every caller prints when there is no name."""
+    info = await get_channel_info(app, channel_id)
+    return info.get('name') or channel_id
+
+
+async def is_configurable_channel(app: AsyncApp, channel_id: str) -> bool:
+    """Whether a conversation is a channel a rule can sensibly live in.
+
+    A DM and a group DM are destinations an action posts *to*, never places to configure: the
+    bot reads their messages (to cancel a reminder, to handle a button press) and
+    `get_channel_by_id` therefore knows them, but a rule there would have nothing to watch.
+    Note that a group DM reports `is_channel` as well as `is_mpim`, so it has to be excluded by
+    name rather than by the absence of `is_channel`.
+
+    A channel the bot has left is excluded too. Its rules are kept and disabled — they come
+    back when the bot is invited again — but until then it can neither post there nor read the
+    channel's name, so offering it for editing only invites changes that can never fire.
+    """
+    info = await get_channel_info(app, channel_id)
+    return bool(info.get('is_channel')) and not info.get('is_mpim') \
+        and not info.get('is_im') and bool(info.get('is_member'))
 
 
 async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str:

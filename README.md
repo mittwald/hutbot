@@ -631,6 +631,10 @@ A few things are worth knowing:
   an operator that compares nothing, no OpsGenie details when the alert is off.
 - **The Home tab is a snapshot.** It refreshes on your own changes; use **Refresh** after
   someone else's, or after a slash command.
+- **The channel list is the channels a rule can live in** that you also belong to. A channel
+  with no rules yet is listed, so the first one can be created there; DMs and group DMs are
+  not, and neither is a channel Hutbot has been removed from — its rules are kept and
+  disabled until it is invited back.
 - **A save is refused as a whole.** Every save is validated as a complete rule by the same code
   the web UI and the slash commands use, so a form can be refused over a setting it does not
   show — an escalation pointing at a button that no longer exists, say. The message then says

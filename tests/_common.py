@@ -115,6 +115,19 @@ def _patch_builtin_calendars(entries=None):
         yield
 
 
+def _channel_info(name="general", **overrides):
+    """A `conversations.info` channel as Slack shapes one: a real channel the bot is in.
+
+    Override a flag to get one of the conversations that is *not* configurable — a group DM
+    (`is_mpim=True`, which Slack reports alongside `is_channel`), a DM (`is_im=True`, no name),
+    or a channel the bot has left (`is_member=False`).
+    """
+    info = {"name": name, "is_channel": True, "is_group": False, "is_im": False,
+            "is_mpim": False, "is_member": True, "is_archived": False, "is_private": True}
+    info.update(overrides)
+    return info
+
+
 def _mk_channel(configs=None):
     return Channel(id="C12345", name="general", configs=configs if configs is not None else {"default": DEFAULT_CONFIG.copy()})
 
