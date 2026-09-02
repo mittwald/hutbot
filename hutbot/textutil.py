@@ -13,6 +13,31 @@ def log_debug(channel: Channel | None, *args: object) -> None:
         logutil.log_debug(*args)
 
 
+def channel_label(channel_id: str, channel_name: str = "") -> str:
+    """`#general` once the name is known, the raw id before that."""
+    if channel_name:
+        return f"#{channel_name}"
+    return channel_id or "unknown channel"
+
+
+def describe_message_event(event: dict, channel_name: str = "") -> str:
+    """Where a message event came from, as a log-line origin (see `logutil.log_origin`).
+
+    The sender is named by id rather than by name, because the case this exists for is a
+    sender that could not be resolved to a name at all — a bot posting with a `Bxxxx` id, a
+    workspace member that `users.info` no longer knows. That id is what the Slack API error
+    quotes, so it is what makes the error line traceable to the message that caused it.
+    """
+    actor = event.get('user', '') or event.get('bot_id', '') or 'unknown sender'
+    where = channel_label(event.get('channel', ''), channel_name)
+    ts = event.get('ts', '')
+    description = f"message {ts} in {where} from {actor}" if ts else f"message in {where} from {actor}"
+    subtype = event.get('subtype')
+    if subtype:
+        description += f", subtype {subtype}"
+    return description
+
+
 # Quote characters accepted around any command argument. Backticks are included because
 # Slack renders `like this` as code, so people reach for them naturally.
 QUOTE_CHARACTERS = ('"', "'", '`')

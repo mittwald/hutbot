@@ -1390,6 +1390,23 @@ split into cohesive modules; `bot.py` remains as a backward-compatible launcher:
 
 Run it locally with `python -m hutbot`. Existing `python bot.py` invocations remain supported.
 
+### Log lines
+
+Every line carries a timestamp and a level (`INFO`, `WARN`, `ERROR`, `DEBUG`), and lines from
+the libraries (Bolt, `slack_sdk`, aiohttp) are given the same shape. `WARN`, `ERROR` and
+`DEBUG` lines also name what the process was doing when they were written:
+
+```
+2026-09-02T12:20:10 ERROR [message 1756808401.1 in #alerts from B08BSKV9CMB]: Failed to fetch user `B08BSKV9CMB`: SlackApiError: ...
+```
+
+The part in brackets is the inbound event, timer or background task the work belongs to — a
+message, a reaction, a slash command, a button press, a scheduled reply, a cron config, the
+calendar bridge refresh. It is set once per event by the handlers in `hutbot/routing.py` (see
+`logutil.log_origin`) and carried down through the whole call chain, so a failure deep in a
+lookup can be traced back to the message that caused it without turning on a channel's `debug`
+flag.
+
 ### Running tests
 
 ```bash

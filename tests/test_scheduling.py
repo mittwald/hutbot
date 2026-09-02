@@ -501,3 +501,26 @@ async def test_restore_falls_back_to_the_live_config_for_a_legacy_entry():
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
         await hutbot.scheduling.restore_scheduled_replies(app, "token")
     assert sched.call_args.kwargs["conditions_snapshot"] is None
+
+
+# ----- Where a log line came from (see `logutil.log_origin`) -----
+
+@pytest.mark.asyncio
+async def test_a_scheduled_reply_names_itself_rather_than_whatever_scheduled_it(capsys):
+    app = AsyncMock()
+    channel = Channel(id="C12345", name="general", configs={})
+    config = {**DEFAULT_CONFIG.copy(), "wait_time": 0}
+    user = User("U1", "dave", "Dave Grieser", "Core Platform")
+
+    # The reply is scheduled while a message is being handled, but fires much later; its lines
+    # are about the reply, not about the message that started it.
+    with logutil.log_origin("message 1756.1 in #general from U1"), \
+         patch('hutbot.slackcache.get_message_permalink', new=AsyncMock(return_value="")), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
+         patch('hutbot.actions.run_action_with_reason',
+               new=AsyncMock(side_effect=RuntimeError("a bug, not a blip"))):
+        await schedule_reply(app, OPSGENIE_TOKENS, channel, config, "default", user, "hi", "1756.1",
+                             wait_time_override=0)
+
+    assert "ERROR [scheduled reply for message 1756.1 in #general, config 'default']: " \
+           "Failed to send scheduled reply for message 1756.1" in capsys.readouterr().err

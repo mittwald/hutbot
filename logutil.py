@@ -5,11 +5,25 @@ standalone scripts (``employee_list``, ``query_employees``, ``webui``) log, and 
 should have to import another's domain module to do it.
 """
 
+import contextlib
+import contextvars
 import datetime
 import logging
 import sys
 
 LOG_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+# What the process was busy with when a line was written — the inbound event, the timer, the
+# poll. A failure deep in a lookup otherwise names only the id it could not resolve, and the
+# channel-gated debug lines that would say where it came from are off for every channel but
+# the ones being debugged. The origin is carried in a context variable rather than passed
+# down, because the handlers that know it are many frames above the calls that fail, and an
+# asyncio task copies the context it was created in, so a timer keeps the origin of whatever
+# scheduled it. It is printed on WARN, ERROR and DEBUG lines only: INFO lines are the bulk of
+# the output and already name their channel.
+_LOG_ORIGIN: contextvars.ContextVar[str] = contextvars.ContextVar("hutbot_log_origin", default="")
+
+ORIGIN_LOG_LEVELS = ("WARN", "ERROR", "DEBUG")
 
 # Our own lines say WARN and ERROR; the logging module spells the same levels differently.
 STDLIB_LEVEL_NAMES = {"WARNING": "WARN", "CRITICAL": "ERROR"}
@@ -22,8 +36,16 @@ class _StdlibLogFormatter(logging.Formatter):
         super().__init__(fmt="%(asctime)s %(levelname)s: %(message)s", datefmt=LOG_TIMESTAMP_FORMAT)
 
     def format(self, record: logging.LogRecord) -> str:
-        record.levelname = STDLIB_LEVEL_NAMES.get(record.levelname, record.levelname)
-        return super().format(record)
+        # A library failure (a Slack call, an HTTP session) belongs to the event being handled
+        # just as much as one of our own lines does, so it carries the origin too. The record
+        # is handed to every handler in turn, so the level it arrived with is put back.
+        original_level = record.levelname
+        level = STDLIB_LEVEL_NAMES.get(original_level, original_level)
+        record.levelname = level + _origin_suffix(level)
+        try:
+            return super().format(record)
+        finally:
+            record.levelname = original_level
 
 
 def configure_stdlib_logging() -> None:
@@ -56,6 +78,38 @@ def configure_stdlib_logging() -> None:
         root.addHandler(handler)
 
 
+@contextlib.contextmanager
+def log_origin(description: str):
+    """Tag every WARN/ERROR/DEBUG line written inside this block with where the work came from.
+
+    Wraps an inbound event or a background task at its outermost frame; the previous origin is
+    restored on the way out, so nested blocks and concurrent tasks do not bleed into each other.
+    """
+    token = _LOG_ORIGIN.set(description)
+    try:
+        yield
+    finally:
+        _LOG_ORIGIN.reset(token)
+
+
+def set_log_origin(description: str) -> None:
+    """Refine the running task's origin, e.g. once a channel id has turned into a name.
+
+    Unlike `log_origin` this does not restore the previous value — it is for a handler
+    sharpening its own description, not for wrapping a nested piece of work.
+    """
+    _LOG_ORIGIN.set(description)
+
+
+def get_log_origin() -> str:
+    return _LOG_ORIGIN.get()
+
+
+def _origin_suffix(level: str) -> str:
+    origin = _LOG_ORIGIN.get()
+    return f" [{origin}]" if origin and level in ORIGIN_LOG_LEVELS else ""
+
+
 def _log(file, prefix: str, *args: object) -> None:
     parts = []
     for arg in args:
@@ -66,7 +120,7 @@ def _log(file, prefix: str, *args: object) -> None:
             part = f"{error_type}{': ' + error_message if error_message else ''}"
         parts.append(part)
     message = " ".join(parts)
-    formatted_prefix = f"{datetime.datetime.now().strftime(LOG_TIMESTAMP_FORMAT)} {prefix}:"
+    formatted_prefix = f"{datetime.datetime.now().strftime(LOG_TIMESTAMP_FORMAT)} {prefix}{_origin_suffix(prefix)}:"
     print(formatted_prefix, message, flush=True, file=file)
 
 

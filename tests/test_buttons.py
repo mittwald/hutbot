@@ -1684,3 +1684,32 @@ async def test_one_target_raising_does_not_take_the_rest_of_the_fan_out_down():
     assert [call.args[4] for call in run.await_args_list] == ["alarm", "ticket"]
     assert app.client.chat_update.await_args.kwargs["text"].endswith(
         "_Dave Grieser: [Page] ▶︎ alarm (skipped), ticket_")
+
+
+# ----- Where a log line came from (see `logutil.log_origin`) -----
+
+def test_a_button_press_is_described_by_the_ids_it_carries():
+    body = {"channel": {"id": "C1"}, "container": {"message_ts": "1756.1"}, "user": {"id": "U1"}}
+    action = {"action_id": "hutbot_button:0"}
+
+    assert hutbot.buttons.describe_button_press(body, action) == \
+        "button hutbot_button:0 on message 1756.1 in C1 from U1"
+    assert hutbot.buttons.describe_button_press({}, {}) == \
+        "button ? on message  in unknown channel from unknown presser"
+
+
+@pytest.mark.asyncio
+async def test_an_escalation_timer_names_itself_rather_than_whatever_scheduled_it(capsys):
+    app = MagicMock()
+    key = ("C12345", "R1")
+    hutbot.state.pending_buttons.pop(key, None)
+
+    # The timer usually starts inside a message handler, whose origin it would otherwise keep
+    # for as long as it waits — here an hour after that message was handled.
+    with logutil.log_origin("message 1756.1 in #general from U1"):
+        task = asyncio.create_task(hutbot.buttons._escalation_task(app, OPSGENIE_TOKENS, key, 0))
+    with patch('hutbot.buttons._claim_pending_button', side_effect=RuntimeError("cache unreadable")):
+        await task
+
+    assert "ERROR [escalation timer for message R1 in C12345]: Escalation task failed for message R1:" \
+        in capsys.readouterr().err

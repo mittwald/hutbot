@@ -115,3 +115,57 @@ def test_configuring_twice_does_not_double_every_line(clean_root_logger):
 
     # One handler per stream, however often startup paths call it.
     assert len(_formatted_handlers(clean_root_logger)) == 2
+
+
+def test_a_warning_or_an_error_says_what_the_process_was_doing(capsys):
+    with logutil.log_origin("message 1756.1 in #general from B08BSKV9CMB"):
+        logutil.log_warning("mapping skipped")
+        logutil.log_error("cache unreadable")
+        logutil.log_debug("looking up the sender")
+
+    captured = capsys.readouterr()
+    assert " WARN [message 1756.1 in #general from B08BSKV9CMB]: mapping skipped\n" in captured.err
+    assert " ERROR [message 1756.1 in #general from B08BSKV9CMB]: cache unreadable\n" in captured.err
+    assert " DEBUG [message 1756.1 in #general from B08BSKV9CMB]: looking up the sender\n" in captured.err
+
+
+def test_an_info_line_carries_no_origin(capsys):
+    # INFO lines are the bulk of the output and already name the channel they are about.
+    with logutil.log_origin("message 1756.1 in #general from B08BSKV9CMB"):
+        logutil.log("employees retrieved")
+
+    assert capsys.readouterr().out.endswith(" INFO: employees retrieved\n")
+
+
+def test_the_origin_is_gone_again_once_the_work_is_over(capsys):
+    with logutil.log_origin("message 1756.1 in #general from U1"):
+        assert logutil.get_log_origin() == "message 1756.1 in #general from U1"
+    logutil.log_error("cache unreadable")
+
+    assert capsys.readouterr().err.endswith(" ERROR: cache unreadable\n")
+
+
+def test_a_handler_can_sharpen_its_own_origin(capsys):
+    # What a handler does once a channel id has turned into a name.
+    with logutil.log_origin("message 1756.1 in C123 from U1"):
+        logutil.set_log_origin("message 1756.1 in #general from U1")
+        logutil.log_error("cache unreadable")
+    logutil.log_error("still nothing")
+
+    captured = capsys.readouterr().err
+    assert " ERROR [message 1756.1 in #general from U1]: cache unreadable\n" in captured
+    # The refinement is undone with the block, like any other origin.
+    assert captured.endswith(" ERROR: still nothing\n")
+
+
+def test_a_library_failure_carries_the_origin_too(clean_root_logger, library_logger):
+    logutil.configure_stdlib_logging()
+    stdout, stderr = (io.StringIO(), io.StringIO())
+    for handler, stream in zip(_formatted_handlers(clean_root_logger), (stdout, stderr)):
+        handler.setStream(stream)
+
+    library = library_logger("slack_sdk.web", logging.WARNING)
+    with logutil.log_origin("message 1756.1 in #general from B08BSKV9CMB"):
+        library.warning("rate limited")
+
+    assert " WARN [message 1756.1 in #general from B08BSKV9CMB]: rate limited\n" in stderr.getvalue()

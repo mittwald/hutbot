@@ -6,7 +6,7 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
-from logutil import log, log_error, log_warning
+from logutil import log, log_error, log_origin, log_warning
 import retryutil
 
 from . import state
@@ -35,6 +35,7 @@ from .constants import (
     PRESS_KIND_USER,
 )
 from .models import OpsGenieTokens, PressOutcome, User
+from .textutil import channel_label
 
 
 # An escalation whose message Slack would not take is tried again this many times, this far
@@ -474,6 +475,13 @@ async def _run_escalation(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, entry:
 
 
 async def _escalation_task(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, key: tuple, timeout: float) -> None:
+    # The task inherits the context of whatever created it — a message from an hour ago, or
+    # the restore at startup. What its lines are about is this timer, so it says so itself.
+    with log_origin(f"escalation timer for message {key[1]} in {channel_label(key[0])}"):
+        await _run_escalation_task(app, opsgenie_tokens, key, timeout)
+
+
+async def _run_escalation_task(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, key: tuple, timeout: float) -> None:
     try:
         await asyncio.sleep(timeout)
         entry = _claim_pending_button(key, owner=asyncio.current_task())
@@ -664,6 +672,17 @@ async def _strip_buttons(app: AsyncApp, posted_channel_id: str, message_ts: str,
         # Best-effort, but worth the attempts: buttons left on a handled message stay
         # clickable, which is the stale press against a since-edited config this guards against.
         log_warning(f"Failed to remove buttons from message {message_ts} in {posted_channel_id}:", e)
+
+
+def describe_button_press(body: dict, action: dict) -> str:
+    """Where a button press came from, as a log-line origin (see `logutil.log_origin`)."""
+    container = body.get('container', {}) or {}
+    message = body.get('message', {}) or {}
+    channel_id = (body.get('channel', {}) or {}).get('id') or container.get('channel_id', '')
+    message_ts = container.get('message_ts') or message.get('ts', '')
+    presser = (body.get('user', {}) or {}).get('id', '') or 'unknown presser'
+    return (f"button {action.get('action_id', '') or '?'} on message {message_ts} "
+            f"in {channel_label(channel_id)} from {presser}")
 
 
 async def handle_button_press(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, body: dict, action: dict) -> None:

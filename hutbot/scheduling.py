@@ -5,7 +5,7 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
-from logutil import log, log_error, log_warning
+from logutil import log, log_error, log_origin, log_warning
 
 from . import state
 from . import datetimefmt
@@ -15,6 +15,7 @@ from . import persistence
 from .conditionutil import snapshot_conditions
 from .constants import CONDITION_MODE_ALL, SCHEDULER_INTERVAL, TRIGGER_CRON
 from .models import OpsGenieTokens, ScheduledReply
+from .textutil import channel_label
 
 try:
     from croniter import croniter
@@ -74,6 +75,16 @@ def rename_scheduled_replies(channel_id: str, old_name: str, new_name: str) -> i
 
 
 async def schedule_reply(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None, original_wait_time: float | None = None, conditions_snapshot: dict | None = None) -> None:
+    # The task inherits the context of whoever scheduled it — the message handler, or the
+    # restore at startup. Its lines are about this reply, which may fire an hour later, so it
+    # names itself instead (see `logutil.log_origin`).
+    with log_origin(f"scheduled reply for message {ts} in {channel_label(channel.id, channel.name)}, "
+                    f"config '{config_name}'"):
+        await _run_scheduled_reply(app, opsgenie_tokens, channel, config, config_name, user, text, ts,
+                                   wait_time_override, original_wait_time, conditions_snapshot)
+
+
+async def _run_scheduled_reply(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, channel, config: dict, config_name: str, user, text: str, ts: str, wait_time_override: float | None = None, original_wait_time: float | None = None, conditions_snapshot: dict | None = None) -> None:
     # Captured before the wait so an edit during it cannot retroactively cancel this
     # reminder; a restored reply brings its original snapshot along.
     frozen_conditions = conditions_snapshot if conditions_snapshot is not None else snapshot_conditions(config)
@@ -203,13 +214,14 @@ async def scheduler_tick(app: AsyncApp, opsgenie_tokens: OpsGenieTokens) -> None
             # Conditions are not checked here: `run_action` gates every trigger, so the
             # cron path cannot drift out of step with the message and button paths.
             log(f"Cron config '{config_name}' in #{channel.name} firing.")
-            try:
-                # A cron config fires again on its own schedule, so a failed run is not retried
-                # here: the next occurrence is the retry, and repeating a missed 09:00 reminder
-                # at 09:02 is rarely what the schedule meant.
-                await actions.run_action(app, opsgenie_tokens, channel, config, config_name, context={'channel_id': channel_id})
-            except Exception as e:
-                log_error(f"Cron config '{config_name}' action failed:", e)
+            with log_origin(f"cron config '{config_name}' in {channel_label(channel_id, channel.name)}"):
+                try:
+                    # A cron config fires again on its own schedule, so a failed run is not retried
+                    # here: the next occurrence is the retry, and repeating a missed 09:00 reminder
+                    # at 09:02 is rarely what the schedule meant.
+                    await actions.run_action(app, opsgenie_tokens, channel, config, config_name, context={'channel_id': channel_id})
+                except Exception as e:
+                    log_error(f"Cron config '{config_name}' action failed:", e)
 
 
 async def restore_scheduled_replies(app: AsyncApp, opsgenie_tokens: OpsGenieTokens) -> None:

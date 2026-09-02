@@ -7,7 +7,7 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
-from logutil import log
+from logutil import log, log_origin, set_log_origin
 
 from . import state
 from . import slackcache
@@ -27,7 +27,7 @@ from .constants import (
     TRIGGER_MESSAGE,
 )
 from .models import OpsGenieTokens, ScheduledReply
-from .textutil import extract_message_text, log_debug
+from .textutil import channel_label, describe_message_event, extract_message_text, log_debug
 
 
 def is_command(text: str) -> bool:
@@ -45,6 +45,8 @@ async def route_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, event: d
     text = extract_message_text(event)
 
     channel = await slackcache.get_channel_by_id(app, channel_id)
+    # The handler tagged this task with the channel id; now that the name is known, say it.
+    set_log_origin(describe_message_event(event, channel.name))
     log_debug(channel, f"Received message event from #{channel.name}: {json.dumps(event)}")
 
     # Ignore messages from the bot itself
@@ -207,12 +209,22 @@ async def handle_channel_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens,
         await persistence.flush_replies_cache()
 
 
+def describe_reaction_event(event: dict, channel_name: str = "") -> str:
+    """Where a `reaction_added` event came from, as a log-line origin."""
+    item = event.get('item', {})
+    where = channel_label(item.get('channel', ''), channel_name)
+    reaction = event.get('reaction', '')
+    actor = event.get('user', '') or 'unknown sender'
+    return f"reaction :{reaction}: on message {item.get('ts', '')} in {where} from {actor}"
+
+
 async def handle_reaction_added(app: AsyncApp, event):
     item = event.get('item', {})
     channel_id = item.get('channel', '')
     user_id = event.get('user', '')
     ts = item.get('ts')
     channel = await slackcache.get_channel_by_id(app, channel_id)
+    set_log_origin(describe_reaction_event(event, channel.name))
     reaction_user = await slackcache.get_user_by_id(app, user_id)
 
     keys_to_cancel = []
@@ -342,38 +354,56 @@ async def handle_command_event(app: AsyncApp, command: dict, opsgenie_tokens: Op
     user_id = command.get('user_id', '')
 
     channel = await slackcache.get_channel_by_id(app, channel_id)
+    set_log_origin(f"slash command in {channel_label(channel_id, channel.name)} from {user_id or 'unknown sender'}")
     user = await slackcache.get_user_by_id(app, user_id)
     await commands.process_command(app, text, channel, user, opsgenie_tokens=opsgenie_tokens)
 
 
 def register_app_handlers(app: AsyncApp, opsgenie_tokens: OpsGenieTokens = OpsGenieTokens()) -> None:
 
+    # Every handler runs inside a `log_origin` block, so a warning or an error raised
+    # anywhere below it says which event it came from without the channel's debug flag
+    # being on — see `logutil.log_origin`.
+
     @app.event("message")
     async def handle_message_events(body, logger):
-        await route_message(app, opsgenie_tokens, body.get('event', {}) if body else {})
+        event = body.get('event', {}) if body else {}
+        with log_origin(describe_message_event(event)):
+            await route_message(app, opsgenie_tokens, event)
 
     @app.event("reaction_added")
     async def handle_reaction_added_events(body, logger):
-        await handle_reaction_added(app, body.get('event', {}) if body else {})
+        event = body.get('event', {}) if body else {}
+        with log_origin(describe_reaction_event(event)):
+            await handle_reaction_added(app, event)
 
     @app.event("member_left_channel")
     async def handle_member_left_channel_events(body, logger):
         event = body.get('event', {}) if body else {}
         if is_bot_membership_event(event):
-            await handle_bot_removed_from_channel(app, event.get('channel', ''))
+            channel_id = event.get('channel', '')
+            with log_origin(f"member_left_channel in {channel_label(channel_id)}"):
+                await handle_bot_removed_from_channel(app, channel_id)
 
     @app.event("member_joined_channel")
     async def handle_member_joined_channel_events(body, logger):
         event = body.get('event', {}) if body else {}
         if is_bot_membership_event(event):
-            await handle_bot_added_to_channel(app, event.get('channel', ''))
+            channel_id = event.get('channel', '')
+            with log_origin(f"member_joined_channel in {channel_label(channel_id)}"):
+                await handle_bot_added_to_channel(app, channel_id)
 
     @app.command(state.slash_command)
     async def handle_command(ack, body, logger):
         await ack()
-        await handle_command_event(app, body, opsgenie_tokens)
+        body = body or {}
+        origin = (f"slash command in {channel_label(body.get('channel_id', ''))} "
+                  f"from {body.get('user_id', '') or 'unknown sender'}")
+        with log_origin(origin):
+            await handle_command_event(app, body, opsgenie_tokens)
 
     @app.action(re.compile(rf"^{BUTTON_ACTION_PREFIX}:"))
     async def handle_button_action(ack, body, action, logger):
         await ack()
-        await buttons.handle_button_press(app, opsgenie_tokens, body, action)
+        with log_origin(buttons.describe_button_press(body or {}, action or {})):
+            await buttons.handle_button_press(app, opsgenie_tokens, body, action)

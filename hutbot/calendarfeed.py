@@ -24,7 +24,7 @@ import icalendar
 import recurring_ical_events
 
 from employee_list import get_env_var
-from logutil import log, log_error, log_warning
+from logutil import log, log_error, log_origin, log_warning
 import retryutil
 
 from . import conditionutil
@@ -1005,12 +1005,15 @@ async def run_bridge_refresh_loop() -> None:
     minutes = calendar_bridge_refresh_minutes()
     log(f"Calendar bridge refresh started ({f'every {minutes}min' if minutes else 'once'}).")
     while True:
-        try:
-            await refresh_bridge_calendars()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log_error("Failed to refresh the built-in calendars from the bridge:", e)
+        # A background task with no inbound event behind it, so it names itself for the log
+        # lines its refresh writes (see `logutil.log_origin`).
+        with log_origin("calendar bridge refresh"):
+            try:
+                await refresh_bridge_calendars()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log_error("Failed to refresh the built-in calendars from the bridge:", e)
         # Re-read every turn, so a value that was unusable at startup is not held against the
         # instance for the life of the process.
         minutes = calendar_bridge_refresh_minutes()

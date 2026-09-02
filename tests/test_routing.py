@@ -513,3 +513,76 @@ def test_build_user_ignores_users_mapped_to_the_ignore_sentinel():
     assert mock_log_warning.call_count == 1
     assert "@e.binek" in mock_log_warning.call_args.args[0]
     assert unmapped.team == TEAM_UNKNOWN
+
+
+# ----- Where a log line came from (see `logutil.log_origin`) -----
+
+def test_a_message_event_is_described_by_the_ids_it_carries():
+    event = {"channel": "C1", "bot_id": "B08BSKV9CMB", "ts": "1756.1", "subtype": "bot_message"}
+
+    # No name yet: what the handler has before the channel has been looked up.
+    assert describe_message_event(event) == "message 1756.1 in C1 from B08BSKV9CMB, subtype bot_message"
+    assert describe_message_event(event, "general") == "message 1756.1 in #general from B08BSKV9CMB, subtype bot_message"
+    # A human sender is named by its own id, and a message without either says so.
+    assert describe_message_event({"channel": "C1", "user": "U1", "ts": "1756.1"}) == "message 1756.1 in C1 from U1"
+    assert describe_message_event({}) == "message in unknown channel from unknown sender"
+
+
+@pytest.mark.asyncio
+async def test_an_error_while_routing_a_message_says_which_message(capsys):
+    app = MagicMock()
+    channel = Channel(id="C1", name="general", configs={})
+    # A bot's reply in a thread: the bot id is looked up, and `users.info` does not know it.
+    event = {"channel": "C1", "bot_id": "B08BSKV9CMB", "ts": "1756.2", "thread_ts": "1756.1",
+             "text": "hi", "channel_type": "channel"}
+    handlers = {}
+
+    def event_decorator(name):
+        def register(fn):
+            handlers[name] = fn
+            return fn
+        return register
+
+    def failing_lookup(_app, user_id, *_args, **_kwargs):
+        # What a `Bxxxx` id does to `users.info`: the id is not a user, so nothing comes back.
+        logutil.log_error(f"Failed to fetch user `{user_id}`:", ValueError("user_not_found"))
+        return User(id=user_id, name=user_id, real_name="", team=TEAM_UNKNOWN)
+
+    app.event = MagicMock(side_effect=event_decorator)
+    register_app_handlers(app)
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=failing_lookup)):
+        await handlers["message"]({"event": event}, None)
+
+    # The channel name is in it because `route_message` sharpens the origin once it knows it.
+    assert "ERROR [message 1756.2 in #general from B08BSKV9CMB]: Failed to fetch user `B08BSKV9CMB`:" \
+        in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_an_error_while_handling_a_reaction_says_which_reaction(capsys):
+    app = MagicMock()
+    channel = Channel(id="C1", name="general", configs={})
+    event = {"user": "U1", "reaction": "eyes", "item": {"channel": "C1", "ts": "1756.1"}}
+    handlers = {}
+
+    def event_decorator(name):
+        def register(fn):
+            handlers[name] = fn
+            return fn
+        return register
+
+    def failing_lookup(_app, user_id, *_args, **_kwargs):
+        logutil.log_error(f"Failed to fetch user `{user_id}`:", ValueError("user_not_found"))
+        return User(id=user_id, name=user_id, real_name="", team=TEAM_UNKNOWN)
+
+    app.event = MagicMock(side_effect=event_decorator)
+    register_app_handlers(app)
+
+    with patch('hutbot.slackcache.get_channel_by_id', new=AsyncMock(return_value=channel)), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=failing_lookup)):
+        await handlers["reaction_added"]({"event": event}, None)
+
+    assert "ERROR [reaction :eyes: on message 1756.1 in #general from U1]: Failed to fetch user `U1`:" \
+        in capsys.readouterr().err
