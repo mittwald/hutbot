@@ -31,6 +31,7 @@ def _slack(member=True):
     """Every Slack lookup the handlers make, answered from memory."""
     with patch('hutbot.slackcache.is_user_in_channel', new=AsyncMock(return_value=member)), \
          patch('hutbot.slackcache.get_channel_name', new=AsyncMock(return_value="general")), \
+         patch('hutbot.slackcache.is_configurable_channel', new=AsyncMock(return_value=True)), \
          patch('hutbot.slackcache.get_user_by_id',
                new=AsyncMock(return_value=User(id=USER, name="someuser", real_name="X",
                                                team="Platform"))), \

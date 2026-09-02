@@ -134,7 +134,7 @@ async def test_list_user_config_channels_filters_by_membership():
         return {"members": members, "response_metadata": {"next_cursor": ""}}
 
     async def info_side_effect(channel=None):
-        return {"channel": {"name": f"name-{channel}"}}
+        return {"channel": _channel_info(f"name-{channel}")}
 
     app.client.conversations_members = AsyncMock(side_effect=members_side_effect)
     app.client.conversations_info = AsyncMock(side_effect=info_side_effect)
@@ -143,6 +143,44 @@ async def test_list_user_config_channels_filters_by_membership():
     channels = await list_user_config_channels(app, user)
 
     assert channels == [{"id": "C1", "name": "name-C1"}]
+
+
+@pytest.mark.asyncio
+async def test_list_user_config_channels_lists_only_conversations_a_rule_can_live_in():
+    """`channel_config` holds an entry for every conversation the bot has seen a message in,
+    so without this the picker offers DMs, group DMs, and channels the bot has been removed
+    from — the last of which have no readable name and showed as a bare `C…` id."""
+    hutbot.state._channel_members_cache = {}
+    hutbot.state.channel_config = {
+        "C_OK": {"default": {}},
+        "C_EMPTY": {},                 # no rules yet, but a real channel: still listed
+        "C_MPIM": {},                  # a group DM reports is_channel *and* is_mpim
+        "D_DM": {},
+        "C_LEFT": {},                  # the bot is no longer a member
+        "C_GONE": {},                  # private and the bot is out: channel_not_found
+    }
+    app = _ui_app()
+
+    async def members_side_effect(channel=None, cursor=None, limit=None):
+        return {"members": ["U1"], "response_metadata": {"next_cursor": ""}}
+
+    async def info_side_effect(channel=None):
+        if channel == "C_GONE":
+            raise SlackApiError("no", {"ok": False, "error": "channel_not_found"})
+        overrides = {
+            "C_MPIM": {"is_mpim": True, "name": "mpdm-hutbot--a--b-1"},
+            "D_DM": {"is_im": True, "is_channel": False, "is_member": None, "name": ""},
+            "C_LEFT": {"is_member": False},
+        }.get(channel, {})
+        return {"channel": _channel_info(channel, **overrides)}
+
+    app.client.conversations_members = AsyncMock(side_effect=members_side_effect)
+    app.client.conversations_info = AsyncMock(side_effect=info_side_effect)
+
+    user = hutbot.models.User(id="U1", name="someuser", real_name="X", team="Platform")
+    channels = await list_user_config_channels(app, user)
+
+    assert [channel['id'] for channel in channels] == ["C_EMPTY", "C_OK"]
 
 
 
