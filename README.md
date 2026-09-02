@@ -1495,12 +1495,13 @@ the libraries (Bolt, `slack_sdk`, aiohttp) are given the same shape. `WARN`, `ER
 ```
 
 The part in brackets is the inbound event, timer or background task the work belongs to — a
-message, a reaction, a slash command, a button press, a scheduled reply, a reply being restored
-at startup, a cron config, the scheduler's own tick, the calendar bridge refresh. It is set
-once by the handler or task that owns the work (the handlers in `hutbot/routing.py`, and each
-background task for itself — see `logutil.log_origin`) and carried down through the whole call
-chain, so a failure deep in a lookup can be traced back to what caused it without turning on a
-channel's `debug` flag.
+message, a reaction, a slash command, a button press, an App Home open or one of the
+[configuration UI's](#configuring-hutbot-from-slack-the-app-home) own interactions, a scheduled
+reply, a reply being restored at startup, a cron config, the scheduler's own tick, the calendar
+bridge refresh. It is set once by the handler or task that owns the work (the handlers in
+`hutbot/routing.py`, and each background task for itself — see `logutil.log_origin`) and
+carried down through the whole call chain, so a failure deep in a lookup can be traced back to
+what caused it without turning on a channel's `debug` flag.
 
 ### Running tests
 

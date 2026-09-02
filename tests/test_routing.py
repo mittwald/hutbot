@@ -679,3 +679,54 @@ async def test_an_error_while_handling_a_reaction_says_which_reaction(capsys):
 
     assert "ERROR [reaction :eyes: on message 1756.1 in #general from U1]: Failed to fetch user `U1`:" \
         in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_an_error_while_handling_a_config_ui_action_says_which_interaction(capsys):
+    app, captured = _captured_listeners()
+    app.client = AsyncMock()
+    app.client.views_open = AsyncMock(side_effect=SlackApiError("no", {"error": "expired_trigger_id"}))
+    hutbot.state.channel_config["C1"] = {"default": dict(DEFAULT_CONFIG)}
+    _, listener = [(pattern, fn) for pattern, fn in captured["action"]
+                   if pattern.pattern.startswith("^hutbot_cfg")][0]
+    action = {"action_id": "hutbot_cfg:pick_rule",
+              "value": hutbot.apphome.fields.encode_meta("C1")}
+
+    with patch('hutbot.slackcache.is_user_in_channel', new=AsyncMock(return_value=True)):
+        await listener(AsyncMock(), {"user": {"id": "U1"}, "trigger_id": "T1"}, action, None)
+
+    assert "ERROR [config UI hutbot_cfg:pick_rule on C1 from U1]: " \
+        "Could not open a configuration modal:" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_a_refused_config_ui_action_says_who_was_refused(capsys):
+    # A modal, and the ephemeral `show config` its button sits on, outlive the membership they
+    # were opened with — so this warning is one an operator actually sees.
+    app, captured = _captured_listeners()
+    app.client = AsyncMock()
+    _, listener = [(pattern, fn) for pattern, fn in captured["action"]
+                   if pattern.pattern.startswith("^hutbot_cfg")][0]
+    action = {"action_id": "hutbot_cfg:open:trigger",
+              "value": hutbot.apphome.fields.encode_meta("C1", "nightly")}
+
+    with patch('hutbot.slackcache.is_user_in_channel', new=AsyncMock(return_value=False)):
+        await listener(AsyncMock(), {"user": {"id": "U9"}, "trigger_id": "T1"}, action, None)
+
+    assert "WARN [config UI hutbot_cfg:open:trigger on rule 'nightly' in C1 from U9]:" \
+        in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_an_error_while_publishing_the_home_tab_says_whose_it_was(capsys):
+    app, captured = _captured_listeners()
+    app.client = AsyncMock()
+    app.client.views_publish = AsyncMock(side_effect=SlackApiError("no", {"error": "internal_error"}))
+
+    with patch('hutbot.slackcache.get_user_by_id',
+               new=AsyncMock(return_value=User(id="U1", name="someuser", real_name="X",
+                                               team=TEAM_UNKNOWN))):
+        await captured["event"]["app_home_opened"]({"event": {"tab": "home", "user": "U1"}}, None)
+
+    assert "ERROR [App Home home opened by U1]: Could not publish the App Home tab:" \
+        in capsys.readouterr().err
