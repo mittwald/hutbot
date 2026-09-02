@@ -14,6 +14,8 @@ from employee_list import (
     normalize_real_name_with_diagraphs,
     normalize_user_name,
 )
+from slack_sdk.errors import SlackApiError
+
 from logutil import log, log_error, log_warning
 import retryutil
 
@@ -30,6 +32,12 @@ _CHANNEL_MEMBERS_TTL = 300.0
 # lookup per conversation, and neither a rename nor a channel the bot just joined is urgent, so
 # serving a slightly stale answer costs nothing.
 _CHANNEL_INFO_TTL = 300.0
+
+# Slack's way of saying a conversation is not visible to this bot, rather than that the call
+# went wrong. Both are definite answers — a bot does not get back into a channel or unarchive
+# one by asking again — so they are cached like a successful lookup. Anything else is a fault
+# and stays uncached, so a rate limit or a network blip is not written off for a whole TTL.
+_CHANNEL_ABSENT_ERRORS = frozenset({'channel_not_found', 'is_archived'})
 
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
@@ -64,6 +72,17 @@ async def get_channel_info(app: AsyncApp, channel_id: str) -> dict:
             # rather than a failed lookup.
             state._channel_info_cache[channel_id] = (now, info)
             return info
+    except SlackApiError as e:
+        error = ((e.response or {}) if not isinstance(e.response, str) else {}).get('error', '')
+        if error in _CHANNEL_ABSENT_ERRORS:
+            # Cached, and a warning rather than an error: every rule list asks about every
+            # conversation it knows, so without this a channel the bot has left logs a stack
+            # of failures on every render for as long as its entry survives.
+            state._channel_info_cache[channel_id] = (now, {})
+            log_warning(f"Channel {channel_id} is not visible to the bot ({error}); "
+                        f"leaving it out of the configurable channels.")
+            return {}
+        log_error(f"Failed to get channel details for {channel_id}", e)
     except Exception as e:
         log_error(f"Failed to get channel details for {channel_id}", e)
 
