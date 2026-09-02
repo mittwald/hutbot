@@ -11,6 +11,14 @@ blocks needs a submit button, and the Home tab has none. So the Home tab, the ru
 two row lists carry no inputs at all and apply every change immediately; the section forms and
 the row forms carry inputs and apply on submit. A list view holding no inputs is also what
 makes `views.update` on it lossless — there is nothing typed to throw away.
+
+Every one of them is the *same* modal: one `views.open`, and every move after that is a
+`views.update`. Nothing is ever pushed. Slack caps a modal stack at three, and a form that
+saves has to land somewhere — answering with the view to land on replaces the form rather
+than popping it, so pushing a form and then landing on its parent grows the stack by one
+every time and reaches `push_limit_reached` on the third edit. Staying flat cannot. The price
+is that Slack draws no back arrow of its own, so every view that is not the hub carries its
+own Back button.
 """
 
 from . import fields
@@ -304,6 +312,16 @@ def _overflow(options: list[dict], *parts, confirm: dict | None = None) -> dict:
     return element
 
 
+def _back_block(rule_meta: str, label: str = "Back to the rule", *parts) -> dict:
+    """The way out of any view that is not the hub.
+
+    Its own button rather than Slack's back arrow: nothing is ever pushed, so there is no
+    stack for Slack to draw one from. On a form it also means "leave without saving", which is
+    what a back arrow would have meant anyway.
+    """
+    return _actions([_button(label, "nav", *(parts or ("hub",)), value=rule_meta)])
+
+
 def _modal(kind: str, title: str, blocks: list[dict], meta: str, submit: str = "",
            close: str = "Close") -> dict:
     view = {
@@ -592,6 +610,7 @@ def export_view(meta: dict, channel_id: str, config_name: str, config: dict) -> 
         blocks.append(_context(
             "The calendar feed URL is a secret and is *not* included; set it again with "
             f"`{command} [config] set calendar <url>` after importing."))
+    blocks.append(_back_block(fields.encode_meta(channel_id, config_name)))
     return _modal(VIEW_EXPORT, "Export rule", blocks,
                   fields.encode_meta(channel_id, config_name))
 
@@ -613,6 +632,7 @@ def import_view(meta: dict, channel_id: str, config_name: str) -> dict:
                label="Exported JSON", optional=False),
         _context("Anything the export leaves out goes back to its default — including the "
                  "calendar feed URL, which is never exported."),
+        _back_block(fields.encode_meta(channel_id, config_name)),
     ]
     return _modal(VIEW_IMPORT, "Import rule", blocks,
                   fields.encode_meta(channel_id, config_name), submit="Import")
@@ -812,7 +832,14 @@ _SECTION_BLOCKS = {
 def section_view(meta: dict, channel_id: str, config_name: str, section: str,
                  config: dict) -> dict:
     """One section's form. Applies on submit, as a whole config document."""
-    blocks = _SECTION_BLOCKS[section](meta, config)
+    blocks = list(_SECTION_BLOCKS[section](meta, config))
+    rule_meta = fields.encode_meta(channel_id, config_name)
+    # Escalation is reached from the button list, because the two cross-check each other, so
+    # that is where leaving it goes back to.
+    if section == "escalation":
+        blocks.append(_back_block(rule_meta, "Back to the buttons", "list", "buttons"))
+    else:
+        blocks.append(_back_block(rule_meta))
     return _modal(VIEW_SECTION, SECTION_TITLES[section], blocks,
                   fields.encode_meta(channel_id, config_name, section), submit="Save")
 
@@ -865,7 +892,7 @@ def conditions_view(meta: dict, channel_id: str, config_name: str, config: dict)
         blocks.append(_context(f"…and {len(conditions) - ROW_LIMIT} more. "
                                f"The web UI shows them all."))
     blocks.append(_divider())
-    blocks.append(_actions([_button("Back to the rule", "nav", "hub", value=rule_meta)]))
+    blocks.append(_back_block(rule_meta))
     return _modal(VIEW_LIST, "Conditions", blocks,
                   fields.encode_meta(channel_id, config_name, "conditions"))
 
@@ -896,7 +923,7 @@ def buttons_view(meta: dict, channel_id: str, config_name: str, config: dict) ->
         blocks.append(_context(f"…and {len(buttons) - ROW_LIMIT} more. "
                                f"The web UI shows them all."))
     blocks.append(_divider())
-    blocks.append(_actions([_button("Back to the rule", "nav", "hub", value=rule_meta)]))
+    blocks.append(_back_block(rule_meta))
     return _modal(VIEW_LIST, "Buttons", blocks,
                   fields.encode_meta(channel_id, config_name, "buttons"))
 
@@ -931,6 +958,8 @@ def condition_row_view(meta: dict, channel_id: str, config_name: str, row: int,
         blocks.append(_input("offset", _text_input("offset", offset, placeholder="+1"),
                              hint="Which event, counted from the one at that moment."))
     blocks.append(_context(f"Reads as: {_condition_summary({'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive, 'at': at, 'offset': offset})}"))
+    blocks.append(_back_block(fields.encode_meta(channel_id, config_name),
+                              "Back to the conditions", "list", "conditions"))
     title = "Condition" if condition else "New condition"
     return _modal(VIEW_CONDITION_ROW, title, blocks,
                   fields.encode_meta(channel_id, config_name, "conditions", row), submit="Save")
@@ -966,6 +995,8 @@ def button_row_view(meta: dict, channel_id: str, config_name: str, row: int,
     else:
         blocks.append(_input("value", _text_input("value", value, multiline=True),
                              label="Text to post", hint="Empty just dismisses the message."))
+    blocks.append(_back_block(fields.encode_meta(channel_id, config_name),
+                              "Back to the buttons", "list", "buttons"))
     title = "Button" if label else "New button"
     return _modal(VIEW_BUTTON_ROW, title, blocks,
                   fields.encode_meta(channel_id, config_name, "buttons", row), submit="Save")
