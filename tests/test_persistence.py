@@ -173,3 +173,29 @@ async def test_migration_warns_when_a_config_names_a_builtin_calendar_and_a_url(
     warning = mock_log_warning.call_args.args[0]
     assert "names both the built-in calendar 'rota'" in warning and "the built-in wins" in warning
     assert "cal.example.com/…" in warning and "SECRETTOKEN" not in warning
+
+
+@pytest.mark.asyncio
+async def test_saving_skips_a_conversation_with_no_rules():
+    """`slackcache.get_channel_by_id` adds an empty entry for any conversation the bot sees a
+    message in — every DM and group DM among them. Persisting those grew the file by a key per
+    conversation forever, and put DMs in both UIs' channel pickers."""
+    hutbot.state.channel_config = {
+        "C_RULES": {"default": {"wait_time": 600}},
+        "C_SEEN": {},
+        "D_DM": {},
+    }
+    with patch('fileutil.write_json_file', new=AsyncMock(return_value=True)) as written:
+        await hutbot.persistence.save_configuration()
+    assert written.await_args.args[1] == {"C_RULES": {"default": {"wait_time": 600}}}
+
+
+@pytest.mark.asyncio
+async def test_saving_a_disabled_rule_still_writes_its_channel():
+    # Removing the bot from a channel disables that channel's rules and keeps them, so the
+    # channel still carries information and has to survive a save.
+    hutbot.state.channel_config = {
+        "C1": {"default": {"enabled": False, "disabled_reason": DISABLED_REASON_REMOVED}}}
+    with patch('fileutil.write_json_file', new=AsyncMock(return_value=True)) as written:
+        await hutbot.persistence.save_configuration()
+    assert "C1" in written.await_args.args[1]
