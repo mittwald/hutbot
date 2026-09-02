@@ -88,3 +88,37 @@ async def test_a_private_channel_the_bot_is_out_of_is_not_configurable():
     # Slack answers `channel_not_found` rather than a channel with `is_member: false`.
     app = _info_app(error="channel_not_found")
     assert await hutbot.slackcache.is_configurable_channel(app, "C0BASJXHX2T") is False
+
+
+@pytest.mark.asyncio
+async def test_an_invisible_channel_is_asked_about_once_per_ttl_not_once_per_render():
+    # Every rule list asks about every conversation it knows, so an uncached not-found logged
+    # a failure per entry on every render for as long as the entry survived.
+    app = _info_app(error="channel_not_found")
+    with patch('hutbot.slackcache.log_error') as errored, \
+         patch('hutbot.slackcache.log_warning') as warned:
+        for _ in range(3):
+            assert await hutbot.slackcache.is_configurable_channel(app, "C0BASJXHX2T") is False
+    assert app.client.conversations_info.await_count == 1
+    # A state of the world, not a fault: warned about once, never logged as an error.
+    assert warned.call_count == 1
+    errored.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_archived_channel_is_not_configurable():
+    app = _info_app(error="is_archived")
+    assert await hutbot.slackcache.is_configurable_channel(app, "C12345") is False
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_lookup_is_still_asked_again():
+    # The counterpart: a fault has to stay uncached, or a blip writes a real channel off for
+    # a whole TTL. (`ratelimited` is retried inside one call, so only the cache is asserted.)
+    app = _info_app(error="ratelimited")
+    with patch('hutbot.slackcache.log_error'):
+        await hutbot.slackcache.is_configurable_channel(app, "C12345")
+        first = app.client.conversations_info.await_count
+        await hutbot.slackcache.is_configurable_channel(app, "C12345")
+    assert "C12345" not in hutbot.state._channel_info_cache
+    assert app.client.conversations_info.await_count > first
