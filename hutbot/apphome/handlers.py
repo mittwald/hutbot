@@ -321,8 +321,8 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
         return
 
     if not await _may_edit(app, channel_id, user_id):
-        log_warning(f"Config UI: refused {action.get('action_id')} from {user_id} "
-                    f"for channel {channel_id or '(none)'}.")
+        # The action, the channel and the user are all in the line's origin already.
+        log_warning("Config UI: refused, the user is not a member of the channel.")
         return
 
     if kind == 'pick_rule':
@@ -389,7 +389,7 @@ async def _toggle_enabled(app: AsyncApp, body: dict, channel_id: str, config_nam
     ok, errors = await _apply(app, channel_id, config_name,
                               {'enabled': not config.get('enabled', True)})
     if not ok:
-        log_warning(f"Config UI: could not toggle `{config_name}`: {errors}")
+        log_warning(f"Config UI: could not toggle the rule: {errors}")
     await _update(app, body, _hub(channel_id, config_name))
     await _refresh_home_if_open(app, user_id)
 

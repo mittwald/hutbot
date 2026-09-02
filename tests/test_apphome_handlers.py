@@ -967,3 +967,43 @@ async def test_saving_any_other_section_goes_back_to_the_hub():
             values={**_element("trigger", _option(TRIGGER_MESSAGE)),
                     **_element("wait_time", _plain("45"))}))
     assert ack.await_args.kwargs["view"]["title"]["text"] == "Rule"
+
+
+# --- Where a log line came from (see `logutil.log_origin`) ----------------------------
+
+def test_a_home_tab_open_is_described_by_the_ids_it_carries():
+    assert handlers.describe_home_opened({"tab": "home", "user": "U1"}) == \
+        "App Home home opened by U1"
+    assert handlers.describe_home_opened({}) == "App Home tab opened by unknown viewer"
+
+
+def test_a_config_ui_action_is_described_by_what_it_acts_on():
+    body = {"user": {"id": "U1"}}
+    action = _action("hutbot_cfg:open:trigger", value=fields.encode_meta(CHANNEL, "nightly"))
+    assert handlers.describe_action(body, action) == \
+        "config UI hutbot_cfg:open:trigger on rule 'nightly' in C12345 from U1"
+
+
+def test_a_config_ui_action_on_a_whole_channel_names_only_the_channel():
+    body = {"user": {"id": "U1"}, "view": {"private_metadata": fields.encode_meta(CHANNEL)}}
+    assert handlers.describe_action(body, _action("hutbot_cfg:refresh")) == \
+        "config UI hutbot_cfg:refresh on C12345 from U1"
+
+
+def test_an_action_carrying_nothing_still_describes_itself():
+    assert handlers.describe_action({}, {}) == "config UI ? on unknown channel from unknown user"
+
+
+def test_a_config_ui_save_is_described_by_the_form_it_came_from():
+    body = {"user": {"id": "U1"},
+            "view": {"callback_id": "hutbot_cfg_view:section",
+                     "private_metadata": fields.encode_meta(CHANNEL, "nightly", "trigger")}}
+    assert handlers.describe_submission(body) == \
+        "config UI save hutbot_cfg_view:section on rule 'nightly' in C12345 from U1"
+
+
+def test_a_typeahead_lookup_is_described_by_its_action():
+    body = {"user": {"id": "U1"}, "action_id": "hutbot_cfg:options:teams",
+            "view": {"private_metadata": fields.encode_meta(CHANNEL, "nightly")}}
+    assert handlers.describe_options(body) == \
+        "config UI options hutbot_cfg:options:teams on rule 'nightly' in C12345 from U1"
