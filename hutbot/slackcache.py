@@ -202,6 +202,53 @@ async def fetch_user_by_id(app: AsyncApp, id: str, channel: Channel | None = Non
     return user
 
 
+def is_bot_id(id: str) -> bool:
+    """Whether an id is an app's bot id (`Bxxxx`) rather than a user id (`Uxxxx`/`Wxxxx`)."""
+    return bool(id) and id[0] == 'B'
+
+
+async def fetch_bot_by_id(app: AsyncApp, bot_id: str, channel: Channel | None = None) -> User | None:
+    """Resolve a `Bxxxx` bot id, which `users.info` does not accept.
+
+    A message posted by an app carries `bot_id`, and — unless the app posts through a bot user
+    — no `user` field at all. That id reaches every lookup that a human sender's would, and
+    `users.info` answers `user_not_found` for it, because a bot id is not a user id. `bots.info`
+    is the endpoint that takes it.
+
+    An app that *does* have a bot user is resolved to that user, which carries the profile and
+    the `is_bot` flag the rest of the code already understands; the answer is then filed under
+    the bot id as well, so the next message from the same app is a cache hit either way. An app
+    without one (an incoming webhook, a workflow) has nothing but a name, so a user is built
+    from it: no email, no employee, no team — the same shape `build_user` gives any bot.
+    """
+    try:
+        response = await retryutil.retry_async(
+            lambda: app.client.bots_info(bot=bot_id),
+            what=f"Fetching Slack bot {bot_id}")
+    except Exception as e:
+        log_error(f"Failed to fetch bot `{bot_id}`:", e)
+        return None
+    bot = response.get('bot') or {}
+    log_debug(channel, f"Retrieved bot not in cache from Slack API: {json.dumps(bot)}")
+
+    bot_user_id = bot.get('user_id', '')
+    if bot_user_id:
+        user = state.id_user_cache.get(bot_user_id) or await fetch_user_by_id(app, bot_user_id, channel)
+        if user:
+            state.id_user_cache[bot_id] = user
+            return user
+
+    bot_name = (bot.get('name') or '').strip()
+    if not bot_name:
+        log_warning(f"Slack knows bot `{bot_id}` but gave it no name.")
+        return None
+    # `name` is what `@mentions` and `{{user_name}}` fall back to, so it gets the same
+    # normalization a user's handle gets; `real_name` keeps the app's name as it is written.
+    user = User(id=bot_id, name=normalize_id(bot_name), real_name=bot_name, team=TEAM_UNKNOWN, is_bot=True)
+    cache_user('', user)
+    return user
+
+
 async def fetch_bot_handle(app: AsyncApp, bot_user_id: str) -> str:
     """The handle people actually type to mention the bot, e.g. "Hutbot_DEV".
 
@@ -240,7 +287,9 @@ async def get_user_by_id(app: AsyncApp, id: str, channel: Channel | None = None)
     await update_user_cache(app)
     user = state.id_user_cache.get(id, None)
     if not user:
-        user = await fetch_user_by_id(app, id, channel)
+        # `users.list` carries no bot ids, so a bot is always a miss here on the first message
+        # from it — and asking `users.info` about one only ever answers `user_not_found`.
+        user = await fetch_bot_by_id(app, id, channel) if is_bot_id(id) else await fetch_user_by_id(app, id, channel)
     if not user:
         user = User(id=id, name=id, team=TEAM_UNKNOWN, real_name='')
     return user

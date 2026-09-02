@@ -186,10 +186,13 @@ async def run_scheduler(app: AsyncApp, opsgenie_tokens: OpsGenieTokens) -> None:
     log(f"Scheduler started (interval {SCHEDULER_INTERVAL}s).")
     while True:
         await asyncio.sleep(SCHEDULER_INTERVAL)
-        try:
-            await scheduler_tick(app, opsgenie_tokens)
-        except Exception as e:
-            log_error("Scheduler tick failed:", e)
+        # A loop of its own, with no inbound event behind it, so it names itself; a config it
+        # fires tightens that to the config and channel (see `logutil.log_origin`).
+        with log_origin("scheduler tick"):
+            try:
+                await scheduler_tick(app, opsgenie_tokens)
+            except Exception as e:
+                log_error("Scheduler tick failed:", e)
 
 
 async def scheduler_tick(app: AsyncApp, opsgenie_tokens: OpsGenieTokens) -> None:
@@ -233,27 +236,31 @@ async def restore_scheduled_replies(app: AsyncApp, opsgenie_tokens: OpsGenieToke
         channel_id = entry['channel_id']
         ts = entry['ts']
         config_name = entry['config_name']
-        if channel_id not in state.channel_config or config_name not in state.channel_config[channel_id]:
-            log_warning(f"Skipping cached reply for message {ts}: channel {channel_id} / config '{config_name}' no longer configured.")
-            invalid_keys.append(key)
-            continue
-        config = state.channel_config[channel_id][config_name]
-        channel = await slackcache.get_channel_by_id(app, channel_id)
-        user = await slackcache.get_user_by_id(app, entry['user_id'])
-        send_at = datetime.datetime.fromisoformat(entry['send_at'])
-        remaining = max(0.0, (send_at - datetime.datetime.now()).total_seconds())
-        # Written since the cache gained the field; older entries have no original.
-        original_wait_time = entry.get('wait_time')
-        # Written since the cache gained the conditions snapshot; older entries fall back
-        # to the config as it is now, which is the best that can be reconstructed.
-        cached_conditions = (
-            {'conditions': entry['conditions'], 'conditions_mode': entry.get('conditions_mode') or CONDITION_MODE_ALL}
-            if isinstance(entry.get('conditions'), list) else None
-        )
-        log(f"Restoring reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, due {send_at.isoformat(timespec='seconds')}.")
-        task = asyncio.create_task(schedule_reply(app, opsgenie_tokens, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining, original_wait_time=original_wait_time, conditions_snapshot=cached_conditions))
-        state.scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
-        restored += 1
+        # Startup, with no event behind it: without this every line a restore writes — the
+        # sender lookup above all — would name only the id it could not resolve.
+        with log_origin(f"restoring the cached reply for message {ts} in {channel_label(channel_id)}, "
+                        f"config '{config_name}', user {entry.get('user_id', '') or 'unknown sender'}"):
+            if channel_id not in state.channel_config or config_name not in state.channel_config[channel_id]:
+                log_warning(f"Skipping cached reply for message {ts}: channel {channel_id} / config '{config_name}' no longer configured.")
+                invalid_keys.append(key)
+                continue
+            config = state.channel_config[channel_id][config_name]
+            channel = await slackcache.get_channel_by_id(app, channel_id)
+            user = await slackcache.get_user_by_id(app, entry['user_id'])
+            send_at = datetime.datetime.fromisoformat(entry['send_at'])
+            remaining = max(0.0, (send_at - datetime.datetime.now()).total_seconds())
+            # Written since the cache gained the field; older entries have no original.
+            original_wait_time = entry.get('wait_time')
+            # Written since the cache gained the conditions snapshot; older entries fall back
+            # to the config as it is now, which is the best that can be reconstructed.
+            cached_conditions = (
+                {'conditions': entry['conditions'], 'conditions_mode': entry.get('conditions_mode') or CONDITION_MODE_ALL}
+                if isinstance(entry.get('conditions'), list) else None
+            )
+            log(f"Restoring reply for message {ts} in channel #{channel.name} for config '{config_name}', user @{user.name}, due {send_at.isoformat(timespec='seconds')}.")
+            task = asyncio.create_task(schedule_reply(app, opsgenie_tokens, channel, config, config_name, user, entry['text'], ts, wait_time_override=remaining, original_wait_time=original_wait_time, conditions_snapshot=cached_conditions))
+            state.scheduled_messages[(channel.id, ts, config_name)] = ScheduledReply(task, user.id)
+            restored += 1
     for key in invalid_keys:
         state._scheduled_replies_cache.pop(key, None)
     if invalid_keys:

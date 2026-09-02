@@ -726,6 +726,10 @@ is the operator's responsibility — Hutbot only consumes the resulting header.
      - `users:read.email`
      - `commands`
 
+   `users:read` also covers `bots.info`, which is what resolves a message from an app that
+   posts without a bot user: such a message carries only a `Bxxxx` bot id, which `users.info`
+   answers `user_not_found` for, and the app's name comes from `bots.info` instead.
+
    `users:read.email` is what puts `profile.email` in the `users.list` response, and without
    it the bot has no address for anyone: the web UI rejects every request as unauthenticated,
    and mapping an Opsgenie recipient or a calendar attendee to a Slack user falls back to
@@ -1401,11 +1405,12 @@ the libraries (Bolt, `slack_sdk`, aiohttp) are given the same shape. `WARN`, `ER
 ```
 
 The part in brackets is the inbound event, timer or background task the work belongs to — a
-message, a reaction, a slash command, a button press, a scheduled reply, a cron config, the
-calendar bridge refresh. It is set once per event by the handlers in `hutbot/routing.py` (see
-`logutil.log_origin`) and carried down through the whole call chain, so a failure deep in a
-lookup can be traced back to the message that caused it without turning on a channel's `debug`
-flag.
+message, a reaction, a slash command, a button press, a scheduled reply, a reply being restored
+at startup, a cron config, the scheduler's own tick, the calendar bridge refresh. It is set
+once by the handler or task that owns the work (the handlers in `hutbot/routing.py`, and each
+background task for itself — see `logutil.log_origin`) and carried down through the whole call
+chain, so a failure deep in a lookup can be traced back to what caused it without turning on a
+channel's `debug` flag.
 
 ### Running tests
 

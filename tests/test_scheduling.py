@@ -524,3 +524,34 @@ async def test_a_scheduled_reply_names_itself_rather_than_whatever_scheduled_it(
 
     assert "ERROR [scheduled reply for message 1756.1 in #general, config 'default']: " \
            "Failed to send scheduled reply for message 1756.1" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_restoring_a_cached_reply_says_which_reply_the_lookup_was_for(capsys):
+    # The startup path that produced a bare `Failed to fetch user \`B08BSKV9CMB\`` line: no
+    # inbound event, and the only id in the record is one `users.info` does not know.
+    future = datetime.datetime.now() + datetime.timedelta(seconds=537)
+    hutbot.state._scheduled_replies_cache[('C123', '1788345344.650599', 'default')] = {
+        'channel_id': 'C123',
+        'ts': '1788345344.650599',
+        'config_name': 'default',
+        'user_id': 'B08BSKV9CMB',
+        'text': 'alert',
+        'send_at': future.isoformat(),
+    }
+    hutbot.state.channel_config['C123'] = {'default': {**DEFAULT_CONFIG.copy(), 'wait_time': 1800}}
+    app = AsyncMock()
+
+    def failing_lookup(_app, user_id, *_args, **_kwargs):
+        logutil.log_error(f"Failed to fetch user `{user_id}`:", ValueError("user_not_found"))
+        return User(id=user_id, name=user_id, real_name="", team=TEAM_UNKNOWN)
+
+    with patch('hutbot.slackcache.get_channel_by_id',
+               new=AsyncMock(return_value=Channel(id='C123', name='pe-alerting-warning', configs={}))), \
+         patch('hutbot.slackcache.get_user_by_id', new=AsyncMock(side_effect=failing_lookup)), \
+         patch('hutbot.scheduling.schedule_reply', new=AsyncMock()), \
+         patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
+        await restore_scheduled_replies(app, OPSGENIE_TOKENS)
+
+    assert "ERROR [restoring the cached reply for message 1788345344.650599 in C123, config 'default', " \
+           "user B08BSKV9CMB]: Failed to fetch user `B08BSKV9CMB`:" in capsys.readouterr().err
