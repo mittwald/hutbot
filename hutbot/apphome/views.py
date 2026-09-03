@@ -371,11 +371,12 @@ def _overflow(options: list[dict], *parts, confirm: dict | None = None) -> dict:
 
 
 def _back_block(rule_meta: str, label: str = "Back to the rule", *parts) -> dict:
-    """The way out of any view that is not the hub.
+    """A Back button in the body, for the one view Slack draws none for.
 
-    Its own button rather than Slack's back arrow: nothing is ever pushed, so there is no
-    stack for Slack to draw one from. On a form it also means "leave without saving", which is
-    what a back arrow would have meant anyway.
+    Every other view is pushed, and Slack gives a pushed view its own way back — which is
+    both tidier and in the chrome where people look for it. A row form is the exception: it
+    takes its list's place rather than being pushed onto it (see `handlers`), so Slack's back
+    would skip the list and land on the hub.
     """
     return _actions([_button(label, "nav", *(parts or ("hub",)), value=rule_meta)])
 
@@ -695,7 +696,6 @@ def export_view(meta: dict, channel_id: str, config_name: str, config: dict) -> 
         blocks.append(_context(
             "The calendar feed URL is a secret and is *not* included; set it again with "
             f"`{command} [config] set calendar <url>` after importing."))
-    blocks.append(_back_block(fields.encode_meta(channel_id, config_name)))
     return _modal(VIEW_EXPORT, "Export rule", blocks,
                   fields.encode_meta(channel_id, config_name))
 
@@ -717,7 +717,6 @@ def import_view(meta: dict, channel_id: str, config_name: str) -> dict:
                label="Exported JSON", optional=False),
         _context("Anything the export leaves out goes back to its default — including the "
                  "calendar feed URL, which is never exported."),
-        _back_block(fields.encode_meta(channel_id, config_name)),
     ]
     return _modal(VIEW_IMPORT, "Import rule", blocks,
                   fields.encode_meta(channel_id, config_name), submit="Import")
@@ -942,14 +941,9 @@ def section_view(meta: dict, channel_id: str, config_name: str, section: str,
     """One section's form. Applies on submit, as a whole config document."""
     rule_meta = fields.encode_meta(channel_id, config_name)
     builder = _SECTION_BLOCKS[section]
+    # Pushed, so Slack's own back arrow is the way out of it — no Back button in the body.
     blocks = list(builder(meta, config, rule_meta) if section in _SECTIONS_WITH_VARIABLES
                   else builder(meta, config))
-    # Escalation is reached from the button list, because the two cross-check each other, so
-    # that is where leaving it goes back to.
-    if section == "escalation":
-        blocks.append(_back_block(rule_meta, "Back to the buttons", "list", "buttons"))
-    else:
-        blocks.append(_back_block(rule_meta))
     return _modal(VIEW_SECTION, SECTION_TITLES[section], blocks,
                   fields.encode_meta(channel_id, config_name, section), submit="Save")
 
@@ -1001,8 +995,6 @@ def conditions_view(meta: dict, channel_id: str, config_name: str, config: dict)
     if len(conditions) > ROW_LIMIT:
         blocks.append(_context(f"…and {len(conditions) - ROW_LIMIT} more. "
                                f"The web UI shows them all."))
-    blocks.append(_divider())
-    blocks.append(_back_block(rule_meta))
     return _modal(VIEW_LIST, "Conditions", blocks,
                   fields.encode_meta(channel_id, config_name, "conditions"))
 
@@ -1032,8 +1024,6 @@ def buttons_view(meta: dict, channel_id: str, config_name: str, config: dict) ->
     if len(buttons) > ROW_LIMIT:
         blocks.append(_context(f"…and {len(buttons) - ROW_LIMIT} more. "
                                f"The web UI shows them all."))
-    blocks.append(_divider())
-    blocks.append(_back_block(rule_meta))
     return _modal(VIEW_LIST, "Buttons", blocks,
                   fields.encode_meta(channel_id, config_name, "buttons"))
 

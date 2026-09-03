@@ -620,7 +620,8 @@ A few things are worth knowing:
 
 - **A form saves when you press Save; a list saves immediately.** The hub, the condition list
   and the button list have no Save button because Slack gives a tab and a list none — the
-  controls on them apply the moment you use them. The forms behind **Edit** apply on **Save**.
+  controls on them apply the moment you use them. The forms behind **Edit** apply on **Save**,
+  and Slack's own **Back** leaves one without saving.
 - **Delays are in minutes**, as in `set wait time` and `set escalation`, not in the seconds the
   stored file uses.
 - **Conditions and buttons can be edited and deleted one at a time**, which the slash commands

@@ -17,12 +17,24 @@ Two rules hold the design together:
   live config every time it is rendered. Nothing to persist across a restart, nothing to
   expire, and no way for the screen to disagree with `bot.json`.
 
-And one rule about the modal itself: **nothing is ever pushed.** There is one `views.open`, and
-every move after it — into a section, into a row, back out again — is a `views.update` on that
-same view. Slack caps a modal stack at three, and a form that saves has to answer with the
-view to land on, which *replaces* the form rather than popping it. Pushing a form and then
-landing on its parent therefore grows the stack by one on every save, and the third edit gets
-`push_limit_reached`. Staying flat cannot.
+And one rule about the modal itself: **a view that was pushed is left by popping it, never by
+replacing it.** Slack caps a modal stack at three, and `response_action: "update"` replaces
+the current view rather than popping it — so answering a pushed form's save with the view to
+land on leaves a second copy of that view on the stack, and the third edit in one sitting gets
+`push_limit_reached`. A plain `ack()` pops instead, and the view underneath is then refreshed
+in place with `previous_view_id`. Pushing is what buys Slack's own back affordance, which
+beats a Back button in the body of every form.
+
+The budget, which nothing may exceed:
+
+* 1 — the rule hub, the only `views.open`.
+* 2 — a section form, a row list, an export or an import, all pushed from the hub.
+* 3 — the variable reference, pushed from a section form; the escalation form, pushed from the
+  button list.
+
+A row form is the one thing reached by replacing rather than pushing: it takes its list's place
+at depth 2, so that the variable reference an acknowledgement text needs still fits above it.
+That is why it, alone, carries a Back button of its own.
 """
 
 import json
@@ -235,18 +247,38 @@ async def _update(app: AsyncApp, body: dict, view: dict) -> None:
 
 
 async def _push(app: AsyncApp, body: dict, view: dict) -> None:
-    """Open a view *on top of* the current one, for the reference modal alone.
+    """Open a view on top of the current one, so Slack draws its own way back to it.
 
-    The rule above — nothing is pushed — is about views that save: answering their submit with
-    the view to land on replaces the form instead of popping it, so the stack grows by one
-    every time. A read-only view has no submit, so the only way out is Slack's own back
-    arrow, which pops. The stack goes one deep and comes back, and the form underneath keeps
-    everything that was typed into it, which is the whole point of not navigating away.
+    Safe only because every pushed view is popped and never replaced — see the depth budget in
+    this module's docstring. It also means the view underneath keeps whatever was typed into
+    it, which is what lets the variable reference be read without losing a half-written
+    message.
     """
     try:
         await app.client.views_push(trigger_id=body.get('trigger_id'), view=view)
     except SlackApiError as e:
-        log_error("Could not open the variable reference:", e)
+        log_error("Could not open a configuration modal:", e)
+
+
+async def _pop_to(app: AsyncApp, ack, view: dict, landing: dict) -> None:
+    """Close the pushed view that was just submitted, and refresh the one underneath.
+
+    The plain `ack()` is the pop. `response_action: "update"` would put `landing` *in the
+    submitted view's place* instead, leaving the stack one deeper after every save until
+    Slack refuses the next push.
+    """
+    parent_id = (view or {}).get('previous_view_id') or ""
+    if not parent_id:
+        # Nothing underneath, so there is nothing to pop back to: this view is the modal.
+        await ack(response_action="update", view=landing)
+        return
+    await ack()
+    try:
+        await app.client.views_update(view_id=parent_id, view=landing)
+    except SlackApiError as e:
+        # The form is already closed and the write is already done; all that is lost is the
+        # refreshed summary underneath, which the next open rebuilds anyway.
+        log_error("Could not refresh the view under a saved form:", e)
 
 
 def _hub(channel_id: str, config_name: str, configs: dict | None = None) -> dict:
@@ -365,7 +397,7 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
     elif kind == 'new_rule':
         await _open_or_update(app, body, views.name_view(_meta(), channel_id))
     elif kind == 'rename':
-        await _update(app, body, views.name_view(_meta(), channel_id, config_name))
+        await _push(app, body, views.name_view(_meta(), channel_id, config_name))
     elif kind == 'nav':
         await _update(app, body, _landing(channel_id, config_name, parts[1:]))
     elif kind == 'open':
@@ -373,7 +405,7 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
         view = (_list_view(channel_id, config_name, section)
                 if section in fields.LIST_SECTIONS
                 else _section_view(channel_id, config_name, section))
-        await _update(app, body, view)
+        await _push(app, body, view)
     elif kind == 'toggle_enabled':
         await _toggle_enabled(app, body, channel_id, config_name, user_id)
     elif kind == 'delete':
@@ -383,12 +415,12 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
     elif kind == 'export':
         configs = _configs(channel_id)
         config = configs.get(config_name)
-        await _update(app, body, views.export_view(_meta(configs), channel_id, config_name,
-                                                   config) if config is not None
-                      else views.notice_view("Gone", f"`{config_name}` no longer exists."))
+        await _push(app, body, views.export_view(_meta(configs), channel_id, config_name,
+                                                 config) if config is not None
+                    else views.notice_view("Gone", f"`{config_name}` no longer exists."))
     elif kind == 'import':
-        await _update(app, body, views.import_view(_meta(_configs(channel_id)), channel_id,
-                                                   config_name))
+        await _push(app, body, views.import_view(_meta(_configs(channel_id)), channel_id,
+                                                 config_name))
     elif kind == 'row':
         await _row_action(app, body, target, parts, action, user_id)
     elif kind == 'field':
@@ -614,12 +646,10 @@ async def _submit_section(app: AsyncApp, ack, view: dict, values: dict, target: 
     if not ok:
         await ack(response_action="errors", errors=_errors_for(view, errors))
         return
-    # Rebuilt from what was just stored, so the summary the user reads is the saved one
-    # rather than the one the form was opened with. Escalation goes back to the button list it
-    # was opened from; every other section to the hub.
+    # Popped, and the view underneath rebuilt from what was just stored — so the summary the
+    # user lands back on is the saved one rather than the one the form was opened with.
     landing = ("list", "buttons") if section == "escalation" else ()
-    await ack(response_action="update",
-              view=_landing(channel_id, config_name, landing))
+    await _pop_to(app, ack, view, _landing(channel_id, config_name, landing))
 
 
 async def _submit_row(app: AsyncApp, ack, view: dict, values: dict, target: dict,
@@ -640,6 +670,7 @@ async def _submit_row(app: AsyncApp, ack, view: dict, values: dict, target: dict
         await ack(response_action="errors",
                   errors=_errors_for(view, errors, f"{section}.{index}", landing))
         return
+    # Replaced its list rather than being pushed onto it, so it hands the place back.
     await ack(response_action="update", view=_list_view(channel_id, config_name, section))
 
 
@@ -656,7 +687,9 @@ async def _submit_name(app: AsyncApp, ack, view: dict, values: dict, target: dic
         await ack(response_action="errors",
                   errors={fields.block_id(fields.BLOCK_NAME): message})
         return
-    await ack(response_action="update", view=_hub(channel_id, name))
+    # A rename was pushed onto the hub and pops back onto it; a new rule opened the modal in
+    # the first place, so there is nothing under it and `_pop_to` updates it in place.
+    await _pop_to(app, ack, view, _hub(channel_id, name))
 
 
 async def _submit_import(app: AsyncApp, ack, view: dict, values: dict, target: dict) -> None:
@@ -702,7 +735,7 @@ async def _submit_import(app: AsyncApp, ack, view: dict, values: dict, target: d
                   errors=fields.map_errors(errors, [name_block, json_block], json_block))
         return
     log(f"Config UI: imported rule `{name}` in channel {channel_id}.")
-    await ack(response_action="update", view=_hub(channel_id, name))
+    await _pop_to(app, ack, view, _hub(channel_id, name))
 
 
 # --- block_suggestion -----------------------------------------------------------------
