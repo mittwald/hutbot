@@ -718,7 +718,7 @@ async def test_the_export_button_opens_the_payload_without_writing():
     with _slack():
         await handlers.handle_action(app, _body(), _action(
             "hutbot_cfg:export", value=fields.encode_meta(CHANNEL, "default")))
-    view = app.client.views_update.await_args.kwargs["view"]
+    view = app.client.views_push.await_args.kwargs["view"]
     assert view["title"]["text"] == "Export rule"
     assert configs["default"]["wait_time"] == 600
 
@@ -730,7 +730,7 @@ async def test_exporting_a_rule_that_vanished_says_so():
     with _slack():
         await handlers.handle_action(app, _body(), _action(
             "hutbot_cfg:export", value=fields.encode_meta(CHANNEL, "gone")))
-    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Gone"
+    assert app.client.views_push.await_args.kwargs["view"]["title"]["text"] == "Gone"
 
 
 @pytest.mark.asyncio
@@ -740,7 +740,7 @@ async def test_the_import_button_opens_the_paste_form():
     with _slack():
         await handlers.handle_action(app, _body(), _action(
             "hutbot_cfg:import", value=fields.encode_meta(CHANNEL, "default")))
-    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Import rule"
+    assert app.client.views_push.await_args.kwargs["view"]["title"]["text"] == "Import rule"
 
 
 def _import_values(name, pasted):
@@ -895,33 +895,93 @@ async def test_a_non_member_cannot_import():
 
 # --- the modal stack ------------------------------------------------------------------
 
+def _pushed_body(view_meta="", values=None, callback_id="", parent="VHUB"):
+    """A submission from a view that was pushed onto another."""
+    body = _body(view_meta, values=values, callback_id=callback_id)
+    body["view"]["previous_view_id"] = parent
+    body["view"]["root_view_id"] = "VHUB"
+    return body
+
+
 @pytest.mark.asyncio
-async def test_nothing_is_ever_pushed_onto_the_modal_stack():
-    """Slack caps a modal stack at three, and answering a save with the view to land on
-    replaces the form rather than popping it — so pushing a form and then landing on its
-    parent grew the stack by one on every save and hit `push_limit_reached` on the third
-    edit. Every move is a `views.update` on the one open modal instead."""
+async def test_a_saved_section_pops_rather_than_replacing_itself():
+    """Slack caps the stack at three, and `response_action: "update"` puts the landing view in
+    the *submitted* view's place instead of popping it — so a pushed form that answered its
+    save that way left a second hub on the stack, and the third edit in one sitting got
+    `push_limit_reached`. A plain ack pops; the view underneath is refreshed in place."""
     app = _app()
-    _seed({"default": copy.deepcopy(DEFAULT_CONFIG), "oncall": copy.deepcopy(DEFAULT_CONFIG)})
+    configs = _seed()
     ack = AsyncMock()
-    rule = fields.encode_meta(CHANNEL, "default")
     with _slack():
-        # Three save-then-edit cycles: the third is the one that used to fail.
-        for _ in range(3):
-            await handlers.handle_action(app, _body(), _action(
-                "hutbot_cfg:open:trigger", value=rule))
-            await handlers.handle_view_submission(app, ack, _body(
-                fields.encode_meta(CHANNEL, "default", "trigger"),
-                callback_id=views.VIEW_SECTION,
-                values={**_element("trigger", _option(TRIGGER_MESSAGE)),
-                        **_element("wait_time", _plain("45"))}))
-        for action_id in ("hutbot_cfg:open:conditions", "hutbot_cfg:open:buttons",
-                          "hutbot_cfg:open:escalation", "hutbot_cfg:export",
-                          "hutbot_cfg:import", "hutbot_cfg:nav:hub",
-                          "hutbot_cfg:nav:list:buttons", "hutbot_cfg:rename"):
-            await handlers.handle_action(app, _body(), _action(action_id, value=rule))
+        await handlers.handle_view_submission(app, ack, _pushed_body(
+            fields.encode_meta(CHANNEL, "default", "trigger"),
+            callback_id=views.VIEW_SECTION,
+            values={**_element("trigger", _option(TRIGGER_MESSAGE)),
+                    **_element("wait_time", _plain("45"))}))
+    assert configs["default"]["wait_time"] == 2700
+    # The pop: no response_action at all.
+    assert ack.await_args.kwargs == {}
+    # And the hub underneath now shows what was saved.
+    assert app.client.views_update.await_args.kwargs["view_id"] == "VHUB"
+    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Rule"
+
+
+@pytest.mark.asyncio
+async def test_a_saved_escalation_pops_back_onto_the_buttons_it_cross_checks_with():
+    app = _app()
+    configs = _seed({"default": {**copy.deepcopy(DEFAULT_CONFIG),
+                                 "buttons": [{"label": "Ack", "action": "ack", "value": ""}]}})
+    ack = AsyncMock()
+    values = {**_element("escalation_kind", _option("button")),
+              **_element("escalation_timeout", _plain("15")),
+              **_element("escalation_target", _option("Ack"))}
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _pushed_body(
+            fields.encode_meta(CHANNEL, "default", "escalation"),
+            callback_id=views.VIEW_SECTION, values=values, parent="VBUTTONS"))
+    assert configs["default"]["escalation_timeout"] == 900
+    assert app.client.views_update.await_args.kwargs["view_id"] == "VBUTTONS"
+    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Buttons"
+
+
+@pytest.mark.asyncio
+async def test_a_form_with_nothing_under_it_is_updated_in_place_instead():
+    # "New rule" from the Home tab opens the modal, so there is nothing to pop back to.
+    app = _app()
+    configs = _seed()
+    ack = AsyncMock()
+    with _slack():
+        await handlers.handle_view_submission(app, ack, _body(
+            fields.encode_meta(CHANNEL), callback_id=views.VIEW_NEW_RULE,
+            values=_element(fields.BLOCK_NAME, _plain("nightly"))))
+    assert "nightly" in configs
+    assert ack.await_args.kwargs["response_action"] == "update"
+    app.client.views_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_section_is_pushed_so_slack_draws_the_way_back():
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(app, _body(), _action(
+            "hutbot_cfg:open:trigger", value=fields.encode_meta(CHANNEL, "default")))
+    app.client.views_update.assert_not_awaited()
+    assert app.client.views_push.await_args.kwargs["view"]["title"]["text"] == "Trigger"
+
+
+@pytest.mark.asyncio
+async def test_a_row_form_replaces_its_list_so_the_reference_still_fits_above_it():
+    # The one exception to pushing: pushed, an acknowledgement text's variable reference
+    # would be a fourth view and Slack allows three.
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "buttons")),
+            _action("hutbot_cfg:row:buttons:add", value=fields.encode_meta(CHANNEL, "default")))
     app.client.views_push.assert_not_awaited()
-    assert app.client.views_open.await_count == 0  # a view was already open throughout
+    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "New button"
 
 
 @pytest.mark.asyncio
@@ -947,35 +1007,6 @@ async def test_leaving_a_row_form_goes_back_to_its_list_not_to_the_hub():
     assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Conditions"
 
 
-@pytest.mark.asyncio
-async def test_saving_the_escalation_goes_back_to_the_buttons_it_cross_checks_with():
-    app = _app()
-    configs = _seed({"default": {**copy.deepcopy(DEFAULT_CONFIG),
-                                 "buttons": [{"label": "Ack", "action": "ack", "value": ""}]}})
-    ack = AsyncMock()
-    values = {**_element("escalation_kind", _option("button")),
-              **_element("escalation_timeout", _plain("15")),
-              **_element("escalation_target", _option("Ack"))}
-    with _slack():
-        await handlers.handle_view_submission(app, ack, _body(
-            fields.encode_meta(CHANNEL, "default", "escalation"),
-            callback_id=views.VIEW_SECTION, values=values))
-    assert configs["default"]["escalation_timeout"] == 900
-    assert ack.await_args.kwargs["view"]["title"]["text"] == "Buttons"
-
-
-@pytest.mark.asyncio
-async def test_saving_any_other_section_goes_back_to_the_hub():
-    app = _app()
-    _seed()
-    ack = AsyncMock()
-    with _slack():
-        await handlers.handle_view_submission(app, ack, _body(
-            fields.encode_meta(CHANNEL, "default", "trigger"),
-            callback_id=views.VIEW_SECTION,
-            values={**_element("trigger", _option(TRIGGER_MESSAGE)),
-                    **_element("wait_time", _plain("45"))}))
-    assert ack.await_args.kwargs["view"]["title"]["text"] == "Rule"
 
 
 # --- Where a log line came from (see `logutil.log_origin`) ----------------------------
@@ -1064,10 +1095,11 @@ async def test_the_home_tab_is_never_the_target_of_a_modal_update():
     app = _app()
     _seed()
     with _slack(), patch('hutbot.apphome.handlers.log_error') as errored:
-        # A section form is only ever reachable from inside a modal; asking for one from the
-        # tab must refuse rather than write a form into the tab.
+        # Every navigation that replaces a view is only reachable from inside a modal. Asking
+        # for one from the tab must refuse, rather than write a modal's blocks into the tab —
+        # where Slack renders them and drops the submit and close buttons.
         await handlers.handle_action(app, _home_body(), _action(
-            "hutbot_cfg:open:trigger", value=fields.encode_meta(CHANNEL, "default")))
+            "hutbot_cfg:nav:hub", value=fields.encode_meta(CHANNEL, "default")))
     app.client.views_update.assert_not_awaited()
     assert "has none" in errored.call_args.args[0]
 
@@ -1079,10 +1111,10 @@ async def test_every_form_a_section_opens_can_be_saved():
     _seed()
     with _slack():
         for section in views.SECTION_ORDER:
-            app.client.views_update.reset_mock()
+            app.client.views_push.reset_mock()
             await handlers.handle_action(app, _body(), _action(
                 f"hutbot_cfg:open:{section}", value=fields.encode_meta(CHANNEL, "default")))
-            view = app.client.views_update.await_args.kwargs["view"]
+            view = app.client.views_push.await_args.kwargs["view"]
             has_inputs = any(block.get("type") == "input" for block in view["blocks"])
             assert has_inputs == ("submit" in view), (section, view.get("submit"))
 
@@ -1206,3 +1238,71 @@ async def test_opsgenie_schedules_that_cannot_be_listed_are_logged_not_faked():
             "action_id": "hutbot_cfg:options:opsgenie_schedule_name"})
     assert ack.await_args.kwargs["options"] == []
     assert "not configured" in warned.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_a_saved_form_never_leaves_a_second_view_on_the_stack():
+    """The regression that produced `push_limit_reached`: three save-then-edit cycles used to
+    leave three hubs stacked up, and the fourth push was refused. Each cycle must push once
+    and pop once, so the depth after any number of them is the same as before."""
+    app = _app()
+    _seed()
+    ack = AsyncMock()
+    rule = fields.encode_meta(CHANNEL, "default")
+    depth, worst = 1, 1  # the hub is already open
+
+    with _slack():
+        for _ in range(5):
+            app.client.views_push.reset_mock()
+            await handlers.handle_action(app, _body(), _action("hutbot_cfg:open:trigger",
+                                                               value=rule))
+            depth += app.client.views_push.await_count
+            worst = max(worst, depth)
+
+            ack.reset_mock()
+            await handlers.handle_view_submission(app, ack, _pushed_body(
+                fields.encode_meta(CHANNEL, "default", "trigger"),
+                callback_id=views.VIEW_SECTION,
+                values={**_element("trigger", _option(TRIGGER_MESSAGE)),
+                        **_element("wait_time", _plain("45"))}))
+            # A plain ack pops; a `response_action` of "update" would not.
+            assert ack.await_args.kwargs == {}
+            depth -= 1
+
+    assert depth == 1, "the stack grew across save-then-edit cycles"
+    assert worst <= 3, "Slack allows three views in a stack"
+
+
+@pytest.mark.asyncio
+async def test_the_deepest_route_through_the_ui_stays_within_slacks_three():
+    """The route that decides the budget: an acknowledgement text's variable reference. Its
+    row form takes the button list's place rather than being pushed onto it, which is what
+    leaves room for the reference above it."""
+    app = _app()
+    _seed()
+    rule = fields.encode_meta(CHANNEL, "default")
+    depth = 1  # the hub
+
+    with _slack():
+        # 1 -> 2: the button list.
+        app.client.views_push.reset_mock()
+        await handlers.handle_action(app, _body(), _action("hutbot_cfg:open:buttons", value=rule))
+        depth += app.client.views_push.await_count
+        assert depth == 2
+
+        # Still 2: the row form replaces the list.
+        app.client.views_push.reset_mock()
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "buttons")),
+            _action("hutbot_cfg:row:buttons:add", value=rule))
+        depth += app.client.views_push.await_count
+        assert depth == 2
+
+        # 2 -> 3: the reference, on top of the row form so the typed text survives.
+        app.client.views_push.reset_mock()
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "buttons", 0)),
+            _action("hutbot_cfg:variables:value", value=rule))
+        depth += app.client.views_push.await_count
+
+    assert depth == 3

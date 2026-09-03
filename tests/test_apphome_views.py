@@ -478,14 +478,13 @@ def test_the_hub_offers_export_and_import():
 # --- the modal stack ------------------------------------------------------------------
 
 @pytest.mark.parametrize("label,config,name", CONFIGS)
-def test_every_view_but_the_hub_and_the_home_tab_carries_its_own_way_back(label, config, name):
-    # Nothing is ever pushed, so Slack draws no back arrow: a view without a Back button of
-    # its own would be a dead end with only Close to get out of.
-    exempt = {"home", "hub", "picker", "new_rule", "rename_rule", "notice"}
+def test_only_a_row_form_carries_a_back_button_in_its_body(label, config, name):
+    # Every other view is pushed, and Slack gives a pushed view its own way back — tidier,
+    # and in the chrome where people look for it. A row form takes its list's place instead
+    # of being pushed onto it, so Slack's back would skip the list and land on the hub.
     for view_name, view in _every_view(config, name):
-        if view_name in exempt:
-            continue
-        assert "hutbot_cfg:nav:" in json.dumps(view), view_name
+        has_body_back = "hutbot_cfg:nav:" in json.dumps(view)
+        assert has_body_back == view_name.endswith("_row"), view_name
 
 
 def test_a_row_form_goes_back_to_its_own_list():
@@ -494,17 +493,6 @@ def test_a_row_form_goes_back_to_its_own_list():
     button = views.button_row_view(meta, "C1", "default", 0, {})
     assert "hutbot_cfg:nav:list:conditions" in json.dumps(condition)
     assert "hutbot_cfg:nav:list:buttons" in json.dumps(button)
-
-
-def test_the_escalation_form_goes_back_to_the_buttons_it_cross_checks_with():
-    view = views.section_view(_meta(), "C1", "default", "escalation", DEFAULT_CONFIG)
-    assert "hutbot_cfg:nav:list:buttons" in json.dumps(view)
-
-
-@pytest.mark.parametrize("section", sorted(set(views._SECTION_BLOCKS) - {"escalation"}))
-def test_every_other_section_form_goes_back_to_the_hub(section):
-    view = views.section_view(_meta(), "C1", "default", section, DEFAULT_CONFIG)
-    assert "hutbot_cfg:nav:hub" in json.dumps(view)
 
 
 # --- what Slack refuses outright ------------------------------------------------------
