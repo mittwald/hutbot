@@ -35,6 +35,7 @@ from logutil import log, log_error, log_warning
 from . import fields
 from . import views
 from .. import configexport
+from .. import opsgenie
 from .. import slackcache
 from .. import state
 from .. import webui_backend
@@ -115,8 +116,17 @@ def _values(body: dict) -> dict:
     return ((body.get('view') or {}).get('state') or {}).get('values') or {}
 
 
-def _view_id(body: dict) -> str:
-    return (body.get('view') or {}).get('id') or ""
+def _modal_view_id(body: dict) -> str:
+    """The id of the open *modal* this interaction came from, or `""` for anything else.
+
+    The Home tab is a view too, and its `block_actions` carry it — so testing merely for a
+    view id would treat a press on the tab as a press inside a modal and `views.update` the
+    tab itself. Slack accepts that: it renders the modal's blocks in the tab and silently
+    drops the submit and close buttons, which a home view has no chrome for. The result is a
+    form with no way to save it.
+    """
+    view = body.get('view') or {}
+    return (view.get('id') or "") if view.get('type') == 'modal' else ""
 
 
 def _meta(config_names=()) -> dict:
@@ -212,10 +222,31 @@ async def _update(app: AsyncApp, body: dict, view: dict) -> None:
 
     No `hash`: one user drives one modal, so a hash would only buy `hash_conflict` failures.
     """
+    view_id = _modal_view_id(body)
+    if not view_id:
+        # Never the Home tab: see `_modal_view_id`. Reaching here means a caller that should
+        # have opened a modal updated one instead, which would strip the form's buttons.
+        log_error("Config UI: asked to update a modal from an interaction that has none.")
+        return
     try:
-        await app.client.views_update(view_id=_view_id(body), view=view)
+        await app.client.views_update(view_id=view_id, view=view)
     except SlackApiError as e:
         log_error("Could not update a configuration modal:", e)
+
+
+async def _push(app: AsyncApp, body: dict, view: dict) -> None:
+    """Open a view *on top of* the current one, for the reference modal alone.
+
+    The rule above — nothing is pushed — is about views that save: answering their submit with
+    the view to land on replaces the form instead of popping it, so the stack grows by one
+    every time. A read-only view has no submit, so the only way out is Slack's own back
+    arrow, which pops. The stack goes one deep and comes back, and the form underneath keeps
+    everything that was typed into it, which is the whole point of not navigating away.
+    """
+    try:
+        await app.client.views_push(trigger_id=body.get('trigger_id'), view=view)
+    except SlackApiError as e:
+        log_error("Could not open the variable reference:", e)
 
 
 def _hub(channel_id: str, config_name: str, configs: dict | None = None) -> dict:
@@ -330,8 +361,7 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
         await _open(app, body, views.picker_view(_meta(configs), channel_id, configs))
     elif kind == 'rule':
         # From the Home tab there is no modal yet; from the picker there is one to replace.
-        view = _hub(channel_id, config_name)
-        await (_update(app, body, view) if _view_id(body) else _open(app, body, view))
+        await _open_or_update(app, body, _hub(channel_id, config_name))
     elif kind == 'new_rule':
         await _open_or_update(app, body, views.name_view(_meta(), channel_id))
     elif kind == 'rename':
@@ -369,12 +399,19 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
                          {'conditions_mode': str(_selected(action) or "")})
             await _update(app, body, _list_view(channel_id, config_name, "conditions"))
             await _refresh_home_if_open(app, user_id)
+    elif kind == 'variables':
+        await _push(app, body, views.variables_view(_meta(), channel_id, config_name))
     elif kind == 'render':
         await _rerender(app, body, target, parts[1] if len(parts) > 1 else "")
 
 
 async def _open_or_update(app: AsyncApp, body: dict, view: dict) -> None:
-    await (_update(app, body, view) if _view_id(body) else _open(app, body, view))
+    """Open the modal, or move the already-open one — for the two entry points that are both.
+
+    `rule` and `new_rule` are reachable from the Home tab, where there is no modal yet, and
+    from inside one, where there is.
+    """
+    await (_update(app, body, view) if _modal_view_id(body) else _open(app, body, view))
 
 
 async def _toggle_enabled(app: AsyncApp, body: dict, channel_id: str, config_name: str,
@@ -465,6 +502,26 @@ async def _row_action(app: AsyncApp, body: dict, target: dict, parts: list[str],
         await _refresh_home_if_open(app, user_id)
 
 
+def _with_variable_inserted(values: dict, pending: dict) -> dict:
+    """`pending`, with any variable just chosen appended to the field it belongs to.
+
+    Appended rather than inserted at the cursor: Slack tells us where nothing is, only what
+    the fields hold. Appending is the one placement that is never wrong about what the person
+    meant to keep, and moving it afterwards is a keystroke.
+    """
+    for block, entry in (values or {}).items():
+        field = fields.variable_pick_field(block)
+        if not field or field not in pending:
+            continue
+        chosen = fields.read_block(values, block)
+        if not chosen or chosen == fields.NO_OPTION_VALUE:
+            continue
+        current = str(pending.get(field) or "")
+        separator = "" if not current or current.endswith((" ", "\n")) else " "
+        pending[field] = f"{current}{separator}{{{{{chosen}}}}}"
+    return pending
+
+
 async def _rerender(app: AsyncApp, body: dict, target: dict, field: str) -> None:
     """Redraw a form after a value that decides which other fields it shows.
 
@@ -485,10 +542,13 @@ async def _rerender(app: AsyncApp, body: dict, target: dict, field: str) -> None
             view = views.condition_row_view(_meta(configs), channel_id, config_name, row,
                                             fields.read_condition_row(values))
         else:
-            view = views.button_row_view(_meta(configs), channel_id, config_name, row,
-                                         fields.read_button_row(values))
+            pending = _with_variable_inserted(values, fields.read_button_row(values))
+            view = views.button_row_view(_meta(configs), channel_id, config_name, row, pending)
     elif section in fields.SECTIONS:
         pending = {**config, **fields.read_section_values(values, section)}
+        # A redraw triggered by the variable picker is the insertion: the field grows by the
+        # variable that was chosen, and the redraw is what puts it on screen.
+        pending = _with_variable_inserted(values, pending)
         view = views.section_view(_meta(configs), channel_id, config_name, section, pending)
     else:
         return
@@ -655,9 +715,20 @@ async def handle_options(app: AsyncApp, ack, body: dict) -> None:
         await ack(options=[])
         return
     if parts[1] == 'teams':
-        teams = webui_backend.ui_meta()['teams']
-        matched = [team for team in teams if query in team.casefold()]
-        await ack(options=[{"text": {"type": "plain_text", "text": team[:75]}, "value": team}
-                           for team in matched[:views.SLACK_OPTION_LIMIT]])
+        await _ack_options(ack, webui_backend.ui_meta()['teams'], query)
+        return
+    if parts[1] == 'opsgenie_schedule_name':
+        names, error = await opsgenie.list_schedule_names(opsgenie.load_opsgenie_tokens().api)
+        if error:
+            # An empty list is all Slack accepts here; the reason belongs in the log, where
+            # an operator sees it, rather than dressed up as a schedule nobody can pick.
+            log_warning(f"Config UI: could not list the OpsGenie schedules: {error}")
+        await _ack_options(ack, names, query)
         return
     await ack(options=[])
+
+
+async def _ack_options(ack, values, query: str) -> None:
+    matched = [value for value in values if query in value.casefold()]
+    await ack(options=[{"text": {"type": "plain_text", "text": value[:75]}, "value": value}
+                       for value in matched[:views.SLACK_OPTION_LIMIT]])

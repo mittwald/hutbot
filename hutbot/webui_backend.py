@@ -78,9 +78,11 @@ async def list_user_config_channels(app: AsyncApp, user: User) -> list[dict]:
     """
     channels = []
     for channel_id in list(state.channel_config.keys()):
-        if not await slackcache.is_user_in_channel(app, channel_id, user.id):
-            continue
+        # Configurability first: it and the name come from one cached `conversations.info`,
+        # so a conversation that cannot be configured costs no membership lookup at all.
         if not await slackcache.is_configurable_channel(app, channel_id):
+            continue
+        if not await slackcache.is_user_in_channel(app, channel_id, user.id):
             continue
         channels.append({'id': channel_id, 'name': await slackcache.get_channel_name(app, channel_id)})
     channels.sort(key=lambda c: c['name'].lower())

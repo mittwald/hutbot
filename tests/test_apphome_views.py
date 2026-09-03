@@ -180,8 +180,16 @@ def test_a_section_form_only_carries_blocks_that_section_owns(section):
     view = views.section_view(meta, "C12345", "default", section, KITCHEN_SINK)
     allowed = set(fields.SECTIONS[section]) | set(fields.NON_FIELD_BLOCKS)
     for block in view["blocks"]:
-        if block.get("type") == "input":
-            assert fields.field_of(block["block_id"]) in allowed, (section, block["block_id"])
+        if block.get("type") != "input":
+            continue
+        field = fields.field_of(block["block_id"])
+        # An "insert a variable" select is not a config field, but it must name one the
+        # section owns — that name is how the handler knows where to append.
+        picked_for = fields.variable_pick_field(block["block_id"])
+        if picked_for:
+            assert picked_for in fields.SECTIONS[section], (section, block["block_id"])
+            continue
+        assert field in allowed, (section, block["block_id"])
 
 
 @pytest.mark.parametrize("section", sorted(views._SECTION_BLOCKS))
@@ -497,3 +505,200 @@ def test_the_escalation_form_goes_back_to_the_buttons_it_cross_checks_with():
 def test_every_other_section_form_goes_back_to_the_hub(section):
     view = views.section_view(_meta(), "C1", "default", section, DEFAULT_CONFIG)
     assert "hutbot_cfg:nav:hub" in json.dumps(view)
+
+
+# --- what Slack refuses outright ------------------------------------------------------
+
+# The configs that actually broke: a fresh rule has no calendars to offer, no buttons for an
+# escalation to point at, and a switched-off escalation whose stored zero is below the one
+# minute its own input allows.
+BREAKING_CONFIGS = [
+    ("fresh", DEFAULT_CONFIG),
+    ("escalates to a button it has not got",
+     {**DEFAULT_CONFIG, "escalation_kind": "button", "escalation_timeout": 0}),
+    ("escalates to a rule, switched off",
+     {**DEFAULT_CONFIG, "escalation_kind": "config", "escalation_timeout": 0}),
+    ("no calendars and no feed", {**DEFAULT_CONFIG, "calendar_builtin": "", "calendar_url": ""}),
+    ("kitchen sink", KITCHEN_SINK),
+]
+
+
+def _no_calendars_meta():
+    """`ui_meta` on an instance that offers no built-in calendars — the shipped default."""
+    _seed_user_caches()
+    meta = ui_meta()
+    meta['config_names'] = ["default"]
+    return meta
+
+
+def _all_views(meta, config):
+    built = [("home", views.home_view(meta, "C1", [{"id": "C1", "name": "general"}],
+                                      {"default": config})),
+             ("hub", views.hub_view(meta, "C1", "default", config)),
+             ("conditions", views.conditions_view(meta, "C1", "default", config)),
+             ("buttons", views.buttons_view(meta, "C1", "default", config)),
+             ("new_rule", views.name_view(meta, "C1")),
+             ("condition_row", views.condition_row_view(meta, "C1", "default", 0, {})),
+             ("button_row", views.button_row_view(meta, "C1", "default", 0, {}))]
+    for section in sorted(views._SECTION_BLOCKS):
+        built.append((f"section:{section}",
+                      views.section_view(meta, "C1", "default", section, config)))
+    return built
+
+
+@pytest.mark.parametrize("label,config", BREAKING_CONFIGS)
+def test_no_select_is_ever_built_without_an_option(label, config):
+    # Slack rejects a select with no options, and a view it rejects is a screen nobody sees.
+    for view_name, view in _all_views(_no_calendars_meta(), config):
+        for node in _walk(view):
+            if node.get("type", "").endswith("_select") and "options" in node:
+                assert node["options"], (view_name, node.get("action_id"))
+
+
+@pytest.mark.parametrize("label,config", BREAKING_CONFIGS)
+def test_no_option_carries_an_empty_value(label, config):
+    # `must be more than 0 characters` — an option's value cannot be the empty string, so
+    # "nothing chosen" needs a sentinel of its own.
+    for view_name, view in _all_views(_no_calendars_meta(), config):
+        for node in _walk(view):
+            if "value" in node and "text" in node and isinstance(node.get("value"), str):
+                assert node["value"], (view_name, node)
+
+
+@pytest.mark.parametrize("label,config", BREAKING_CONFIGS)
+def test_no_initial_option_carries_an_empty_value(label, config):
+    for view_name, view in _all_views(_no_calendars_meta(), config):
+        for node in _walk(view):
+            chosen = node.get("initial_option")
+            if isinstance(chosen, dict):
+                assert chosen.get("value"), (view_name, node.get("action_id"))
+
+
+@pytest.mark.parametrize("label,config", BREAKING_CONFIGS)
+def test_no_number_input_starts_below_its_own_minimum(label, config):
+    # `initial value must be greater than or equal to min value` — a stored zero is exactly
+    # that for a field that starts at one, which is an escalation switched off.
+    for view_name, view in _all_views(_no_calendars_meta(), config):
+        for node in _walk(view):
+            if node.get("type") == "number_input" and "initial_value" in node:
+                assert int(node["initial_value"]) >= int(node["min_value"]), \
+                    (view_name, node.get("action_id"))
+                assert int(node["initial_value"]) <= int(node["max_value"]), \
+                    (view_name, node.get("action_id"))
+
+
+@pytest.mark.parametrize("label,config", BREAKING_CONFIGS)
+def test_every_input_block_sits_in_a_view_that_can_be_submitted(label, config):
+    # An input with no submit button is a form with no way to save it.
+    for view_name, view in _all_views(_no_calendars_meta(), config):
+        if any(block.get("type") == "input" for block in view["blocks"]):
+            assert view.get("submit"), view_name
+
+
+def test_the_calendar_none_entry_reads_back_as_no_calendar():
+    view = views.section_view(_no_calendars_meta(), "C1", "default", "calendar", DEFAULT_CONFIG)
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("calendar_builtin")][0]
+    chosen = element["initial_option"]["value"]
+    assert chosen == fields.NO_OPTION_VALUE
+    submitted = fields.read_section_values(
+        {block_id("calendar_builtin"): {"a": {"selected_option": {"value": chosen}}},
+         block_id("calendar_url"): {"b": {"value": ""}}}, "calendar")
+    assert submitted == {"calendar_builtin": "", "calendar_url": ""}
+
+
+def test_an_escalation_with_no_buttons_says_so_instead_of_offering_nothing():
+    view = views.section_view(_no_calendars_meta(), "C1", "default", "escalation",
+                              {**DEFAULT_CONFIG, "escalation_kind": "button"})
+    assert block_id("escalation_target") not in views.view_block_ids(view)
+    assert "no buttons yet" in json.dumps(view)
+
+
+# --- variables ------------------------------------------------------------------------
+
+@pytest.mark.parametrize("section,field", [("message", "reply_message"),
+                                           ("opsgenie", "opsgenie_message")])
+def test_a_field_that_takes_variables_offers_them(section, field):
+    view = views.section_view(_meta(), "C1", "default", section, DEFAULT_CONFIG)
+    block_ids = views.view_block_ids(view)
+    assert block_id(f"{field}{fields.VARIABLE_PICK_SUFFIX}") in block_ids
+    assert "hutbot_cfg:variables:" in json.dumps(view)
+
+
+def test_an_acknowledgement_text_offers_them_too():
+    view = views.button_row_view(_meta(), "C1", "default", 0,
+                                 {"label": "Got it", "action": "ack", "value": ""})
+    assert block_id(f"value{fields.VARIABLE_PICK_SUFFIX}") in views.view_block_ids(view)
+
+
+def test_a_field_that_takes_no_variables_does_not_offer_them():
+    for section in ("trigger", "filters", "calendar", "formatting"):
+        view = views.section_view(_meta(), "C1", "default", section, DEFAULT_CONFIG)
+        assert fields.VARIABLE_PICK_SUFFIX not in json.dumps(view), section
+
+
+def test_every_variable_is_offered_with_what_it_takes():
+    options = views._variable_options()
+    offered = {option["value"] for option in options}
+    assert offered == set(SUPPORTED_TEMPLATE_VARIABLES)
+    for option in options:
+        assert option["text"]["text"] == "{{" + option["value"] + "}}"
+        # Slack truncates an option description silently past 75 characters.
+        assert 0 < len(option["description"]["text"]) <= 75, option["value"]
+
+
+def test_the_reference_is_the_same_text_the_command_prints():
+    # One source, so the modal cannot describe a variable the command does not.
+    view = views.variables_view(_meta(), "C1", "default")
+    texts = [block["text"]["text"] for block in view["blocks"] if block.get("text")]
+    rendered = "\n".join(texts)
+    for title, variables in hutbot.templatedocs.variable_groups():
+        assert title in rendered
+        for name in variables:
+            assert "{{" + name + "}}" in rendered
+    # Every note the command prints, verbatim and whole.
+    for note in hutbot.templatedocs.argument_notes("/hutbot"):
+        assert note in texts
+
+
+def test_the_reference_fits_in_one_view():
+    view = views.variables_view(_meta(), "C1", "default")
+    assert len(view["blocks"]) <= views.SLACK_VIEW_BLOCK_LIMIT
+    for block in view["blocks"]:
+        if block.get("text"):
+            assert len(block["text"]["text"]) <= views.SLACK_SECTION_TEXT_LIMIT
+
+
+def test_the_reference_has_nothing_to_submit():
+    # What makes it safe to push: it can only ever be popped, so the stack cannot grow.
+    assert "submit" not in views.variables_view(_meta(), "C1", "default")
+
+
+def test_the_opsgenie_schedule_is_a_list_when_there_are_credentials():
+    meta = _meta()
+    meta['opsgenie_configured'] = True
+    view = views.section_view(meta, "C1", "default", "opsgenie", DEFAULT_CONFIG)
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("opsgenie_schedule_name")][0]
+    assert element["type"] == "external_select"
+    assert element["action_id"] == "hutbot_cfg:options:opsgenie_schedule_name"
+
+
+def test_a_stored_schedule_is_shown_even_though_slack_cannot_know_it():
+    meta = _meta()
+    meta['opsgenie_configured'] = True
+    view = views.section_view(meta, "C1", "default", "opsgenie",
+                              {**DEFAULT_CONFIG, "opsgenie_schedule_name": "Platform on-call"})
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("opsgenie_schedule_name")][0]
+    assert element["initial_option"]["value"] == "Platform on-call"
+
+
+def test_the_schedule_stays_typeable_on_an_instance_with_no_credentials():
+    # Otherwise an instance that gets its token later could never have been configured for it.
+    meta = _meta()
+    meta['opsgenie_configured'] = False
+    view = views.section_view(meta, "C1", "default", "opsgenie", DEFAULT_CONFIG)
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("opsgenie_schedule_name")][0]
+    assert element["type"] == "plain_text_input"

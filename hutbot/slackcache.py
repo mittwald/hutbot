@@ -436,6 +436,19 @@ async def get_channel_members(app: AsyncApp, channel_id: str) -> set:
             cursor = response.get('response_metadata', {}).get('next_cursor')
             if not cursor:
                 break
+    except SlackApiError as e:
+        error = ((e.response or {}) if not isinstance(e.response, str) else {}).get('error', '')
+        if error in _CHANNEL_ABSENT_ERRORS:
+            # A channel the bot cannot see has no members it can name, and asking again will
+            # not change that — so the empty answer is cached and stated once, the same way
+            # `get_channel_info` treats it. Left uncached it was an error line per listed
+            # conversation on every render of a channel list.
+            state._channel_members_cache[channel_id] = (now, set())
+            log_warning(f"Channel {channel_id} is not visible to the bot ({error}); "
+                        f"treating it as having no members.")
+            return set()
+        log_error(f"Failed to fetch members for channel {channel_id}:", e)
+        return cached[1] if cached else set()
     except Exception as e:
         log_error(f"Failed to fetch members for channel {channel_id}:", e)
         return cached[1] if cached else set()

@@ -65,8 +65,16 @@ BLOCK_NAME = "name"
 # the same way and an error about it always has a block to sit on.
 BLOCK_TARGET_TEMPLATE = "action_target_template"
 BLOCK_IMPORT = "import_json"
+# A field's "insert a variable" select carries the field's own name plus this suffix, so the
+# handler knows which field to append to. Kept out of `SECTIONS`, so `read_section_values`
+# never mistakes the chosen variable for the field's value.
+VARIABLE_PICK_SUFFIX = ":pick"
 NON_FIELD_BLOCKS: tuple[str, ...] = (BLOCK_HOURS_END, BLOCK_TEAM_MODE, BLOCK_NAME,
                                      BLOCK_TARGET_TEMPLATE, BLOCK_IMPORT)
+
+# Slack refuses an option whose value is the empty string, so the "nothing chosen" entry of a
+# select carries this instead and `fields` maps it back to `""` on the way in.
+NO_OPTION_VALUE = "__none__"
 
 TEAM_MODE_ALL = "all"
 TEAM_MODE_ONLY = "only"
@@ -142,6 +150,12 @@ def field_of(block: str) -> str:
     """The field a block id belongs to, or `""` for a block outside the namespace."""
     prefix = f"{CONFIG_UI_BLOCK_PREFIX}:"
     return block[len(prefix):] if block.startswith(prefix) else ""
+
+
+def variable_pick_field(block: str) -> str:
+    """Which field an "insert a variable" block belongs to, or `""` for any other block."""
+    field = field_of(block)
+    return field[:-len(VARIABLE_PICK_SUFFIX)] if field.endswith(VARIABLE_PICK_SUFFIX) else ""
 
 
 def all_ui_fields() -> set[str]:
@@ -233,14 +247,20 @@ def read_block(values: dict, block: str):
 def _text(values: dict, block: str) -> str:
     """One block's value as the string the config stores.
 
+    `NO_OPTION_VALUE` reads back as `""`: a select's "None" entry cannot carry an empty value
+    of its own, because Slack rejects one.
+
     A multi-select answers with a list, and the two fields edited that way — an escalation's
     rules and a `config` button's — are stored as one comma-separated string. Joining it here
     with `format_config_list` keeps that spelling the same as the one the setters write.
     """
     raw = read_block(values, block)
     if isinstance(raw, list):
-        return format_config_list(str(item).strip() for item in raw if str(item).strip())
-    return "" if raw is None else str(raw).strip()
+        return format_config_list(str(item).strip() for item in raw
+                                  if str(item).strip() and item != NO_OPTION_VALUE)
+    if raw is None or raw == NO_OPTION_VALUE:
+        return ""
+    return str(raw).strip()
 
 
 def _flag(values: dict, block: str) -> bool:
