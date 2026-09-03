@@ -629,6 +629,14 @@ A few things are worth knowing:
   (`host/…`). Leaving the field as it is keeps the stored URL; clearing it removes the feed.
 - **A form only shows what applies.** No schedule under a message trigger, no value field for
   an operator that compares nothing, no OpsGenie details when the alert is off.
+- **Names that live somewhere else are picked, not typed.** The OpsGenie schedule is a list of
+  what that account actually has, the teams a typeahead, a channel or user target a Slack
+  picker, and a rule a `config` button runs is chosen from the channel's own rules.
+- **Every field that takes a `{{variable}}`** — the reply message, the OpsGenie message, an
+  acknowledgement text — has an **Insert a variable** list under it, which appends the one you
+  pick to the end of the field, and a **What can I use?** button that opens the full reference
+  (the same text `/hutbot help variables` prints) on top of the form, so nothing you have
+  typed is lost while you read it.
 - **The Home tab is a snapshot.** It refreshes on your own changes; use **Refresh** after
   someone else's, or after a slash command.
 - **The channel list is the channels a rule can live in** that you also belong to. A channel
@@ -1467,6 +1475,8 @@ split into cohesive modules; `bot.py` remains as a backward-compatible launcher:
 - `hutbot/persistence.py` — config and cache load/save
 - `hutbot/slackcache.py` — Slack user/channel/usergroup lookups
 - `hutbot/templating.py`, `hutbot/opsgenie.py` — reply templates and OpsGenie integration
+- `hutbot/templatedocs.py` — the `{{variable}}` reference, shared by `help variables` and the
+  config UI's own variable list
 - `hutbot/calendarfeed.py` — the ICS calendar feed (fetch, parse, current/next event) and the
   instance's built-in calendars (parse, look up, resolve to a URL)
 - `hutbot/conditionutil.py` — condition normalization and evaluation

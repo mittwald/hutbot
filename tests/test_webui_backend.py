@@ -181,6 +181,10 @@ async def test_list_user_config_channels_lists_only_conversations_a_rule_can_liv
     channels = await list_user_config_channels(app, user)
 
     assert [channel['id'] for channel in channels] == ["C_EMPTY", "C_OK"]
+    # The cached `conversations.info` decides first, so a conversation that cannot be
+    # configured costs no `conversations.members` call — and produces no failure line for one.
+    asked = {call.kwargs.get('channel') for call in app.client.conversations_members.await_args_list}
+    assert asked == {"C_OK", "C_EMPTY"}
 
 
 

@@ -53,39 +53,10 @@ async def list_teams(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
 
 
 async def list_opsgenie_schedules(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
-    opsgenie_api_token = opsgenie.load_opsgenie_tokens().api
-    if not opsgenie_api_token:
-        await messaging.send_message(app, channel, user, "OpsGenie on-call lookups are not configured. Missing `OPSGENIE_API_TOKEN`.", thread_ts)
+    schedule_names, error = await opsgenie.list_schedule_names(opsgenie.load_opsgenie_tokens().api)
+    if error:
+        await messaging.send_message(app, channel, user, error, thread_ts)
         return
-
-    url = "https://api.opsgenie.com/v2/schedules"
-    headers = {
-        "Authorization": f"GenieKey {opsgenie_api_token}",
-    }
-
-    try:
-        status, payload = await opsgenie._get_opsgenie_json(url, headers, None, "Listing the OpsGenie schedules")
-    except Exception as e:
-        log_error("Failed to list OpsGenie schedules:", e)
-        # A rate limit or a server error that survived its retries still has a status worth
-        # naming; a dropped connection has none, and the plain sentence is all there is to say.
-        detail = f": HTTP {e.status}" if isinstance(e, retryutil.TransientHTTPError) else ""
-        await messaging.send_message(app, channel, user, f"Failed to list OpsGenie schedules{detail}.", thread_ts)
-        return
-    if payload is None:
-        log_error(f"Failed to list OpsGenie schedules: {status}")
-        await messaging.send_message(app, channel, user, f"Failed to list OpsGenie schedules: HTTP {status}.", thread_ts)
-        return
-
-    schedules = payload.get("data", [])
-    if not schedules:
-        await messaging.send_message(app, channel, user, "No OpsGenie schedules found.", thread_ts)
-        return
-
-    schedule_names = sorted(
-        (schedule.get("name", "").strip() for schedule in schedules if schedule.get("name")),
-        key=str.casefold
-    )
     if not schedule_names:
         await messaging.send_message(app, channel, user, "No OpsGenie schedules found.", thread_ts)
         return

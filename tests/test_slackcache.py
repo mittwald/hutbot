@@ -218,3 +218,34 @@ async def test_a_rate_limited_lookup_is_still_asked_again():
         await hutbot.slackcache.is_configurable_channel(app, "C12345")
     assert "C12345" not in hutbot.state._channel_info_cache
     assert app.client.conversations_info.await_count > first
+
+
+@pytest.mark.asyncio
+async def test_an_invisible_channels_members_are_asked_for_once_not_once_per_render():
+    # Listing a user's channels asks about every conversation the bot knows, so a channel it
+    # has been removed from wrote an error line per render for as long as its entry survived.
+    app = AsyncMock()
+    app.client.conversations_members = AsyncMock(
+        side_effect=SlackApiError("no", {"error": "channel_not_found"}))
+    with patch('hutbot.slackcache.log_error') as errored, \
+         patch('hutbot.slackcache.log_warning') as warned:
+        for _ in range(3):
+            assert await hutbot.slackcache.get_channel_members(app, "CM86CMEUE") == set()
+    assert app.client.conversations_members.await_count == 1
+    assert warned.call_count == 1
+    errored.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_members_lookup_that_really_failed_keeps_what_it_had():
+    app = AsyncMock()
+    app.client.conversations_members = AsyncMock(
+        return_value={"members": ["U1"], "response_metadata": {"next_cursor": ""}})
+    assert await hutbot.slackcache.get_channel_members(app, "C1") == {"U1"}
+    stamp, members = hutbot.state._channel_members_cache["C1"]
+    hutbot.state._channel_members_cache["C1"] = (
+        stamp - hutbot.slackcache._CHANNEL_MEMBERS_TTL - 1, members)
+    app.client.conversations_members = AsyncMock(side_effect=SlackApiError("no", {"error": "internal_error"}))
+    with patch('hutbot.slackcache.log_error') as errored:
+        assert await hutbot.slackcache.get_channel_members(app, "C1") == {"U1"}
+    errored.assert_called_once()

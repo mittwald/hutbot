@@ -22,13 +22,14 @@ own Back button.
 """
 
 from . import fields
-from .fields import block_id
+from .fields import NO_OPTION_VALUE, block_id
 from .. import buttonutil
 from .. import calendarfeed
 from .. import conditionutil
 from .. import configexport
 from .. import datetimefmt
 from .. import state
+from .. import templatedocs
 from ..constants import (
     ACTION_DM_USER,
     ACTION_GROUP_DM,
@@ -77,6 +78,7 @@ VIEW_PICKER = "picker"
 VIEW_LIST = "list"
 VIEW_NOTICE = "notice"
 VIEW_EXPORT = "export"
+VIEW_VARIABLES = "variables"
 
 # Which section each hub row opens, in the order the hub lists them.
 SECTION_ORDER = ("trigger", "message", "conditions", "buttons", "filters",
@@ -193,6 +195,9 @@ def _initial(options: list[dict], value) -> dict | None:
 
 def _select(field: str, options: list[dict], value=None, placeholder: str = "",
             dispatch: bool = False) -> dict:
+    # Slack rejects a select with no options at all, and a view it rejects is a screen the
+    # user never sees — so an empty list becomes the one honest option there is.
+    options = options or [_option(NO_OPTION_VALUE, "Nothing to choose from")]
     element = {"type": "static_select", "action_id": action_id("field", field), "options": options}
     chosen = _initial(options, value)
     if chosen is not None:
@@ -207,11 +212,28 @@ def _select(field: str, options: list[dict], value=None, placeholder: str = "",
 
 
 def _multi_select(field: str, options: list[dict], values=None) -> dict:
+    options = options or [_option(NO_OPTION_VALUE, "Nothing to choose from")]
     element = {"type": "multi_static_select", "action_id": action_id("field", field),
                "options": options, "placeholder": _plain("None")}
     chosen = [option for option in options if option["value"] in set(values or [])]
     if chosen:
         element["initial_options"] = chosen
+    return element
+
+
+def _external_select(field: str, value: str = "", placeholder: str = "") -> dict:
+    """A select whose options are fetched when it is opened, not when the view is built.
+
+    For a list that lives behind an API call — the OpsGenie schedules — so opening a form
+    costs nothing and the list is never stale. Slack cannot know what is already stored, so
+    the initial option is supplied here.
+    """
+    element = {"type": "external_select", "action_id": action_id("options", field),
+               "min_query_length": 0}
+    if placeholder:
+        element["placeholder"] = _plain(placeholder)
+    if value:
+        element["initial_option"] = _option(value)
     return element
 
 
@@ -248,6 +270,37 @@ def _text_input(field: str, value: str = "", multiline: bool = False, placeholde
     return element
 
 
+def _variable_options() -> list[dict]:
+    """Every variable as an option, grouped title first, each with what it takes.
+
+    The description comes from `templatedocs`, which derives it from the group rather than
+    from a list written here — so a new variable is described the day it is added.
+    """
+    options = []
+    for title, variables in templatedocs.variable_groups():
+        for name in sorted(variables):
+            options.append(_option(name, f"{{{{{name}}}}}",
+                                   description=templatedocs.describe_variable(name) or title))
+    return options[:SLACK_OPTION_LIMIT]
+
+
+def _variable_blocks(field: str, rule_meta: str) -> list[dict]:
+    """The two ways to reach a variable, under the field it goes into.
+
+    The select appends to the field without leaving the form, so nothing typed is lost — it
+    dispatches, and the handler rewrites the field and redraws. The button opens the full
+    reference, with the arguments and the examples that do not fit in an option's 75
+    characters, in a modal *on top of* this one so the form underneath is untouched.
+    """
+    return [
+        _input(f"{field}{fields.VARIABLE_PICK_SUFFIX}",
+               _select(f"{field}{fields.VARIABLE_PICK_SUFFIX}", _variable_options(),
+                       placeholder="Insert a variable…", dispatch=True),
+               label="Insert a variable", optional=True),
+        _actions([_button("What can I use?", "variables", field, value=rule_meta)]),
+    ]
+
+
 def _minutes_input(field: str, seconds, minimum: int = 0) -> dict:
     """Minutes, not seconds — the unit `set wait time` and `set escalation` already use.
 
@@ -258,9 +311,14 @@ def _minutes_input(field: str, seconds, minimum: int = 0) -> dict:
                "action_id": action_id("field", field),
                "min_value": str(minimum), "max_value": "1440"}
     try:
-        element["initial_value"] = str(int(seconds) // 60)
+        minutes = int(seconds) // 60
     except (TypeError, ValueError):
-        pass
+        return element
+    # Slack refuses a view whose initial value is below its own minimum, and a stored zero is
+    # exactly that for a field that starts at one — an escalation that is switched off. An
+    # empty field is the honest rendering of "not set yet".
+    if minutes >= minimum:
+        element["initial_value"] = str(minutes)
     return element
 
 
@@ -567,6 +625,33 @@ def hub_view(meta: dict, channel_id: str, config_name: str, config: dict) -> dic
     return _modal(VIEW_HUB, "Rule", blocks, rule_meta)
 
 
+def variables_view(meta: dict, channel_id: str, config_name: str) -> dict:
+    """The full `{{variable}}` reference — the same text `help variables` prints.
+
+    Read-only and pushed on top of the form, so the form keeps whatever was typed into it and
+    Slack's own back arrow is the way out. That is why pushing is safe here where it is not
+    for a form: nothing ever lands on the view underneath, so the stack cannot grow.
+    """
+    command = meta.get('slash_command') or state.slash_command
+    blocks: list[dict] = [
+        _section("Write one as `{{variable}}` in a message, an OpsGenie message, an "
+                 "acknowledgement text, or a target. One nothing resolved renders a "
+                 "placeholder such as `<no-event>`."),
+        _divider(),
+    ]
+    for title, variables in templatedocs.variable_groups():
+        blocks.append(_section(f"*{title}*\n"
+                               + ", ".join(f"`{{{{{name}}}}}`" for name in sorted(variables))))
+    blocks.append(_divider())
+    # The argument notes carry the examples; each is its own block so none is split.
+    for note in templatedocs.argument_notes(command):
+        blocks.append(_section(note))
+    blocks.append(_context(f"`{command} [config] test` renders every one of them for this "
+                           f"channel."))
+    return _modal(VIEW_VARIABLES, "Variables", blocks,
+                  fields.encode_meta(channel_id, config_name))
+
+
 def notice_view(title: str, text: str, meta_raw: str = "") -> dict:
     """A modal that only says something — a rule that vanished mid-edit, a refused action."""
     return _modal(VIEW_NOTICE, title, [_section(text)], meta_raw or fields.encode_meta(""))
@@ -659,7 +744,7 @@ def _trigger_blocks(meta: dict, config: dict) -> list[dict]:
     return blocks
 
 
-def _message_blocks(meta: dict, config: dict) -> list[dict]:
+def _message_blocks(meta: dict, config: dict, rule_meta: str = "") -> list[dict]:
     action = config.get('action', ACTION_REPLY)
     target = config.get('action_target') or ""
     templated = "{{" in target
@@ -690,6 +775,7 @@ def _message_blocks(meta: dict, config: dict) -> list[dict]:
                                      multiline=True),
                          hint="`{{variables}}` and @mentions are resolved when it is sent.",
                          optional=False))
+    blocks.extend(_variable_blocks("reply_message", rule_meta))
     return blocks
 
 
@@ -745,7 +831,14 @@ def _escalation_blocks(meta: dict, config: dict) -> list[dict]:
                          _minutes_input("escalation_timeout", config.get('escalation_timeout'), 1),
                          label="Wait (minutes)", optional=False))
     if kind == ESCALATION_BUTTON:
-        button_labels = [button.get('label') or "" for button in (config.get('buttons') or [])]
+        button_labels = [button.get('label') or "" for button in (config.get('buttons') or [])
+                         if button.get('label')]
+        if not button_labels:
+            # Nothing to point at, so there is nothing to ask: a select with no options is a
+            # view Slack refuses outright, and the fix is to add a button first.
+            blocks.append(_context("This rule has no buttons yet, so there is none to press. "
+                                   "Add one first, then come back."))
+            return blocks
         blocks.append(_input("escalation_target",
                              _select("escalation_target", _options(button_labels),
                                      config.get('escalation_target')),
@@ -760,7 +853,7 @@ def _escalation_blocks(meta: dict, config: dict) -> list[dict]:
     return blocks
 
 
-def _opsgenie_blocks(meta: dict, config: dict) -> list[dict]:
+def _opsgenie_blocks(meta: dict, config: dict, rule_meta: str = "") -> list[dict]:
     blocks = []
     if not meta.get('opsgenie_configured'):
         blocks.append(_context("This instance has no OpsGenie credentials, so an alert "
@@ -768,10 +861,20 @@ def _opsgenie_blocks(meta: dict, config: dict) -> list[dict]:
     blocks.append(_input("opsgenie", _checkboxes("opsgenie", label="Raise an OpsGenie alert",
                                                  checked=bool(config.get('opsgenie'))),
                          label="Alert"))
-    blocks.append(_input("opsgenie_schedule_name",
-                         _text_input("opsgenie_schedule_name",
-                                     config.get('opsgenie_schedule_name') or ""),
-                         hint="Whose on-call the alert goes to."))
+    schedule = config.get('opsgenie_schedule_name') or ""
+    if meta.get('opsgenie_configured'):
+        # Picked from what this account actually has, so a name cannot be a near miss.
+        blocks.append(_input("opsgenie_schedule_name",
+                             _external_select("opsgenie_schedule_name", schedule,
+                                              placeholder="Pick a schedule"),
+                             hint="Whose on-call the alert goes to."))
+    else:
+        # No credentials, so no list to pick from — but the field still has to be settable,
+        # or an instance that gets its token later could never have been configured for it.
+        blocks.append(_input("opsgenie_schedule_name",
+                             _text_input("opsgenie_schedule_name", schedule),
+                             hint="Whose on-call the alert goes to. No credentials on this "
+                                  "instance, so there is no list to pick from."))
     blocks.append(_input("opsgenie_priority",
                          _select("opsgenie_priority", _options(meta['opsgenie_priorities']),
                                  config.get('opsgenie_priority')), optional=False))
@@ -779,6 +882,7 @@ def _opsgenie_blocks(meta: dict, config: dict) -> list[dict]:
                          _text_input("opsgenie_message", config.get('opsgenie_message') or "",
                                      multiline=True),
                          hint="Empty sends the original message."))
+    blocks.extend(_variable_blocks("opsgenie_message", rule_meta))
     return blocks
 
 
@@ -787,8 +891,8 @@ def _calendar_blocks(meta: dict, config: dict) -> list[dict]:
     stored = config.get('calendar_url') or ""
     return [
         _input("calendar_builtin",
-               _select("calendar_builtin", [_option("", "None"), *calendars],
-                       config.get('calendar_builtin') or "", dispatch=True),
+               _select("calendar_builtin", [_option(NO_OPTION_VALUE, "None"), *calendars],
+                       config.get('calendar_builtin') or NO_OPTION_VALUE, dispatch=True),
                hint="One of this instance's calendars, no URL needed."),
         _input("calendar_url",
                _text_input("calendar_url", calendarfeed.describe_calendar_url(stored),
@@ -818,6 +922,10 @@ def _formatting_blocks(meta: dict, config: dict) -> list[dict]:
     ]
 
 
+# The sections holding a field that takes `{{variables}}`, and therefore needing the rule to
+# put in their helper's button.
+_SECTIONS_WITH_VARIABLES = ("message", "opsgenie")
+
 _SECTION_BLOCKS = {
     "trigger": _trigger_blocks,
     "message": _message_blocks,
@@ -832,8 +940,10 @@ _SECTION_BLOCKS = {
 def section_view(meta: dict, channel_id: str, config_name: str, section: str,
                  config: dict) -> dict:
     """One section's form. Applies on submit, as a whole config document."""
-    blocks = list(_SECTION_BLOCKS[section](meta, config))
     rule_meta = fields.encode_meta(channel_id, config_name)
+    builder = _SECTION_BLOCKS[section]
+    blocks = list(builder(meta, config, rule_meta) if section in _SECTIONS_WITH_VARIABLES
+                  else builder(meta, config))
     # Escalation is reached from the button list, because the two cross-check each other, so
     # that is where leaving it goes back to.
     if section == "escalation":
@@ -995,6 +1105,7 @@ def button_row_view(meta: dict, channel_id: str, config_name: str, row: int,
     else:
         blocks.append(_input("value", _text_input("value", value, multiline=True),
                              label="Text to post", hint="Empty just dismisses the message."))
+        blocks.extend(_variable_blocks("value", fields.encode_meta(channel_id, config_name)))
     blocks.append(_back_block(fields.encode_meta(channel_id, config_name),
                               "Back to the buttons", "list", "buttons"))
     title = "Button" if label else "New button"

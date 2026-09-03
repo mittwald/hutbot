@@ -39,8 +39,9 @@ def _slack(member=True):
         yield
 
 
-def _body(view_meta="", view_id="V1", values=None, callback_id=""):
-    view = {"id": view_id, "private_metadata": view_meta,
+def _body(view_meta="", view_id="V1", values=None, callback_id="", view_type="modal"):
+    """An interaction from inside the open modal."""
+    view = {"id": view_id, "type": view_type, "private_metadata": view_meta,
             "state": {"values": values or {}}}
     if callback_id:
         view["callback_id"] = f"hutbot_cfg_view:{callback_id}"
@@ -48,6 +49,14 @@ def _body(view_meta="", view_id="V1", values=None, callback_id=""):
     if view_id or view_meta or values or callback_id:
         body["view"] = view
     return body
+
+
+def _home_body(channel_id=CHANNEL):
+    """An interaction from the Home tab, which carries a view of its own — the tab."""
+    return {"user": {"id": USER}, "trigger_id": "T1",
+            "view": {"id": "VHOME", "type": "home",
+                     "private_metadata": fields.encode_meta(channel_id),
+                     "state": {"values": {}}}}
 
 
 def _action(action_id, value=None, selected=None):
@@ -1007,3 +1016,193 @@ def test_a_typeahead_lookup_is_described_by_its_action():
             "view": {"private_metadata": fields.encode_meta(CHANNEL, "nightly")}}
     assert handlers.describe_options(body) == \
         "config UI options hutbot_cfg:options:teams on rule 'nightly' in C12345 from U1"
+
+
+# --- opening a modal versus moving the one that is open -------------------------------
+
+@pytest.mark.asyncio
+async def test_editing_a_rule_from_the_home_tab_opens_a_modal():
+    """The Home tab is a view too, and its presses carry it. Taking that for an open modal
+    made `views.update` rewrite the *tab* with the modal's blocks — which Slack accepts,
+    rendering them there and dropping the submit and close buttons a home view has no chrome
+    for. Every form then had a Back button and no way to save."""
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(app, _home_body(), _action(
+            "hutbot_cfg:rule", value=fields.encode_meta(CHANNEL, "default")))
+    app.client.views_update.assert_not_awaited()
+    view = app.client.views_open.await_args.kwargs["view"]
+    assert view["type"] == "modal" and view["title"]["text"] == "Rule"
+
+
+@pytest.mark.asyncio
+async def test_a_new_rule_from_the_home_tab_opens_a_modal_with_a_save_button():
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(app, _home_body(), _action(
+            "hutbot_cfg:new_rule", value=fields.encode_meta(CHANNEL)))
+    app.client.views_update.assert_not_awaited()
+    view = app.client.views_open.await_args.kwargs["view"]
+    assert view["submit"]["text"] == "Save"
+
+
+@pytest.mark.asyncio
+async def test_the_same_press_inside_a_modal_moves_that_modal():
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(app, _body(), _action(
+            "hutbot_cfg:rule", value=fields.encode_meta(CHANNEL, "default")))
+    app.client.views_open.assert_not_awaited()
+    assert app.client.views_update.await_args.kwargs["view_id"] == "V1"
+
+
+@pytest.mark.asyncio
+async def test_the_home_tab_is_never_the_target_of_a_modal_update():
+    app = _app()
+    _seed()
+    with _slack(), patch('hutbot.apphome.handlers.log_error') as errored:
+        # A section form is only ever reachable from inside a modal; asking for one from the
+        # tab must refuse rather than write a form into the tab.
+        await handlers.handle_action(app, _home_body(), _action(
+            "hutbot_cfg:open:trigger", value=fields.encode_meta(CHANNEL, "default")))
+    app.client.views_update.assert_not_awaited()
+    assert "has none" in errored.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_every_form_a_section_opens_can_be_saved():
+    # The counterpart of the bug above, asserted on what the user actually receives.
+    app = _app()
+    _seed()
+    with _slack():
+        for section in views.SECTION_ORDER:
+            app.client.views_update.reset_mock()
+            await handlers.handle_action(app, _body(), _action(
+                f"hutbot_cfg:open:{section}", value=fields.encode_meta(CHANNEL, "default")))
+            view = app.client.views_update.await_args.kwargs["view"]
+            has_inputs = any(block.get("type") == "input" for block in view["blocks"])
+            assert has_inputs == ("submit" in view), (section, view.get("submit"))
+
+
+# --- picking a variable ---------------------------------------------------------------
+
+def _pick(field, variable):
+    return {fields.block_id(f"{field}{fields.VARIABLE_PICK_SUFFIX}"):
+            {"a": {"selected_option": {"value": variable}}}}
+
+
+@pytest.mark.asyncio
+async def test_choosing_a_variable_appends_it_to_the_field_without_saving():
+    app = _app()
+    configs = _seed()
+    values = {**_element("action", _option(ACTION_REPLY)),
+              **_element("reply_message", _plain("Anybody?")),
+              **_pick("reply_message", "calendar_summary")}
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "message"), values=values),
+            _action("hutbot_cfg:render:reply_message:pick"))
+    view = app.client.views_update.await_args.kwargs["view"]
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("reply_message")][0]
+    assert element["initial_value"] == "Anybody? {{calendar_summary}}"
+    # A redraw is not a write.
+    assert configs["default"]["reply_message"] == DEFAULT_CONFIG["reply_message"]
+
+
+@pytest.mark.asyncio
+async def test_choosing_a_variable_into_an_empty_field_adds_no_leading_space():
+    app = _app()
+    _seed()
+    values = {**_element("action", _option(ACTION_REPLY)),
+              **_element("reply_message", _plain("")),
+              **_pick("reply_message", "message")}
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "message"), values=values),
+            _action("hutbot_cfg:render:reply_message:pick"))
+    view = app.client.views_update.await_args.kwargs["view"]
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("reply_message")][0]
+    assert element["initial_value"] == "{{message}}"
+
+
+@pytest.mark.asyncio
+async def test_a_redraw_that_is_not_an_insertion_leaves_the_text_alone():
+    app = _app()
+    _seed()
+    values = {**_element("action", _option(ACTION_POST_CHANNEL)),
+              **_element("reply_message", _plain("Anybody?"))}
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "message"), values=values),
+            _action("hutbot_cfg:render:action"))
+    view = app.client.views_update.await_args.kwargs["view"]
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("reply_message")][0]
+    assert element["initial_value"] == "Anybody?"
+
+
+@pytest.mark.asyncio
+async def test_a_variable_can_be_added_to_an_acknowledgement_text():
+    app = _app()
+    _seed()
+    values = {**_element("label", _plain("Got it")),
+              **_element("action", _option("ack")),
+              **_element("value", _plain("Thanks")),
+              **_pick("value", "press_user")}
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "buttons", 0), values=values),
+            _action("hutbot_cfg:render:value:pick"))
+    view = app.client.views_update.await_args.kwargs["view"]
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("value")][0]
+    assert element["initial_value"] == "Thanks {{press_user}}"
+
+
+@pytest.mark.asyncio
+async def test_the_reference_opens_on_top_so_the_form_keeps_what_was_typed():
+    # Pushed, not navigated to: the form underneath is never rebuilt, so nothing typed into
+    # it is lost, and Slack's own back arrow is the way out.
+    app = _app()
+    _seed()
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "message")),
+            _action("hutbot_cfg:variables:reply_message",
+                    value=fields.encode_meta(CHANNEL, "default")))
+    app.client.views_update.assert_not_awaited()
+    view = app.client.views_push.await_args.kwargs["view"]
+    assert view["title"]["text"] == "Variables"
+    # Read-only, so it can only ever be popped — which is why pushing it is safe.
+    assert "submit" not in view
+
+
+@pytest.mark.asyncio
+async def test_the_opsgenie_schedules_are_offered_as_a_list():
+    ack = AsyncMock()
+    with patch('hutbot.opsgenie.load_opsgenie_tokens',
+               return_value=OpsGenieTokens("alert", "api")), \
+         patch('hutbot.opsgenie.list_schedule_names',
+               new=AsyncMock(return_value=(["Platform on-call", "Network on-call"], ""))):
+        await handlers.handle_options(_app(), ack, {
+            "action_id": "hutbot_cfg:options:opsgenie_schedule_name", "value": "platf"})
+    assert [option["value"] for option in ack.await_args.kwargs["options"]] == ["Platform on-call"]
+
+
+@pytest.mark.asyncio
+async def test_opsgenie_schedules_that_cannot_be_listed_are_logged_not_faked():
+    ack = AsyncMock()
+    with patch('hutbot.opsgenie.load_opsgenie_tokens',
+               return_value=OpsGenieTokens("alert", "")), \
+         patch('hutbot.opsgenie.list_schedule_names',
+               new=AsyncMock(return_value=([], "OpsGenie on-call lookups are not configured."))), \
+         patch('hutbot.apphome.handlers.log_warning') as warned:
+        await handlers.handle_options(_app(), ack, {
+            "action_id": "hutbot_cfg:options:opsgenie_schedule_name"})
+    assert ack.await_args.kwargs["options"] == []
+    assert "not configured" in warned.call_args.args[0]
