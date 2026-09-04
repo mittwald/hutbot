@@ -340,7 +340,9 @@ renaming is the **Rename** button next to **Delete rule**.
 ```
 
 `export config` prints one config as JSON, ready to paste into `import config` in another
-channel (or on another instance). Only the fields that differ from the defaults are exported:
+channel (or on another instance). The rule hub of the [App Home
+UI](#configuring-hutbot-from-slack-the-app-home) has the same two as buttons, with the same
+payload. Only the fields that differ from the defaults are exported:
 
 ```json
 {
@@ -588,11 +590,86 @@ listing the configurations it disabled, which can then be re-enabled with `/hutb
 (or the web UI). Configurations that a user had disabled by hand are left alone and are not part of
 that message.
 
+## Configuring Hutbot from Slack: the App Home
+
+Every setting a slash command sets can also be set from a form inside Slack, with no proxy, no
+open port and no separate service — Hutbot runs in Socket Mode, and Slack delivers a form's
+contents over the same connection it already delivers messages on.
+
+There are two ways in:
+
+- **The Hutbot app's Home tab.** Open Hutbot from the Slack sidebar and pick the **Home** tab.
+  It lists the channels that have a Hutbot rule and that you belong to, with the rules of the
+  one you picked.
+- **The Edit button under `show config`.** `/hutbot show config` ends with an **Edit in Slack**
+  button that opens the same editor for that channel.
+
+Both paths lead to a rule's **hub**: one row per group of settings — trigger, action and
+message, conditions, buttons, filters, calendar, OpsGenie, date and time — each with what it is
+currently set to and an **Edit** button. The hub is also where a rule is enabled, disabled,
+renamed, deleted, run once by hand, or exported and imported.
+
+**Export** and **Import** are the same payload as
+[`export config` / `import config`](#exporting-and-importing-a-config), which is often easier
+to use here: Export shows the JSON in a modal to copy out, and Import takes a paste plus the
+name to put it under, instead of one long command line. As with the command, an import
+describes a whole rule — anything the export left out goes back to its default, the calendar
+feed URL included, since that is never exported.
+
+A few things are worth knowing:
+
+- **A form saves when you press Save; a list saves immediately.** The hub, the condition list
+  and the button list have no Save button because Slack gives a tab and a list none — the
+  controls on them apply the moment you use them. The forms behind **Edit** apply on **Save**,
+  and Slack's own **Back** leaves one without saving.
+- **Delays are in minutes**, as in `set wait time` and `set escalation`, not in the seconds the
+  stored file uses.
+- **Conditions and buttons can be edited and deleted one at a time**, which the slash commands
+  cannot do — they only offer `clear conditions` and `clear buttons`.
+- **The calendar feed URL is only ever shown shortened**, because the link is a secret
+  (`host/…`). Leaving the field as it is keeps the stored URL; clearing it removes the feed.
+- **A form only shows what applies.** No schedule under a message trigger, no value field for
+  an operator that compares nothing, no OpsGenie details when the alert is off.
+- **Names that live somewhere else are picked, not typed.** The OpsGenie schedule is a list of
+  what that account actually has, the teams a typeahead, a channel or user target a Slack
+  picker, and a rule a `config` button runs is chosen from the channel's own rules.
+- **Every field that takes a `{{variable}}`** — the reply message, the OpsGenie message, an
+  acknowledgement text — has an **Insert a variable** list under it, which appends the one you
+  pick to the end of the field, and a **What can I use?** button that unfolds the full
+  reference (the same text `/hutbot help variables` prints) underneath the form. Both keep
+  whatever you have already typed, and the reference stays unfolded while you work.
+- **The Home tab is a snapshot.** It refreshes on your own changes; use **Refresh** after
+  someone else's, or after a slash command.
+- **The channel list is the channels a rule can live in** that you also belong to. A channel
+  with no rules yet is listed, so the first one can be created there; DMs and group DMs are
+  not, and neither is a channel Hutbot has been removed from — its rules are kept and
+  disabled until it is invited back.
+- **A save is refused as a whole.** Every save is validated as a complete rule by the same code
+  the web UI and the slash commands use, so a form can be refused over a setting it does not
+  show — an escalation pointing at a button that no longer exists, say. The message then says
+  which setting it was about.
+
+Editing is gated on channel membership, re-checked on every interaction, and Slack itself
+vouches for who you are — so unlike the web UI below there is no header to trust.
+
+Both editors share `hutbot/webui_backend.py`, which owns all validation and every write. They
+cannot drift into disagreeing about what a valid rule is.
+
+The Edit button under `show config` works with **no Slack app configuration at all**. The Home
+tab needs the two settings in [Step 1](#step-1-set-up-the-slack-app) (items 6 and 8); without
+them there is simply no Home tab and nothing else changes.
+
 ## Web configuration UI
 
 Hutbot can serve a small web UI from the **same bot process** (no separate service) that lets a
 logged-in user view and edit the Hutbot rule configuration for the Slack channels they belong to. It
 shows configuration only — there is no message log or analytics. It is **disabled by default**.
+
+It edits the same rules as the [App Home UI](#configuring-hutbot-from-slack-the-app-home) and
+through the same code, so the two cannot disagree about what a valid rule is. Prefer the App
+Home unless you want the wide screen: it needs no port, no Ingress and no header to trust, and
+it has no cap on how many rules or rows one screen can show, which the Slack views do (40
+rules, 80 rows — beyond that they point here).
 
 The calendar section offers the instance's built-in calendars as a dropdown (hidden when there are
 none) beside the feed-URL field. The two are mutually exclusive: picking a built-in clears the URL,
@@ -748,15 +825,31 @@ is the operator's responsibility — Hutbot only consumes the resulting header.
      - `message.mpim`
      - `member_joined_channel`
      - `member_left_channel`
+     - `app_home_opened`
 
-6. **Enable Interactivity** (required for buttons)
+   `app_home_opened` is only needed for the [App Home configuration
+   UI](#configuring-hutbot-from-slack-the-app-home); it needs no OAuth scope, so adding it
+   does not require reinstalling the app.
+
+6. **Enable the App Home tab** (required for the configuration UI)
+
+   - Go to **"App Home"**.
+   - Under **"Show Tabs"**, turn on **"Home Tab"**.
+   - Leave the Messages tab as it is; Hutbot does not use it.
+
+   Without this the configuration tab cannot be published — the bot logs one warning saying
+   so and carries on. The Edit button under `/hutbot show config` opens the same editor
+   without it.
+
+7. **Enable Interactivity** (required for buttons and for the configuration UI)
 
    - Go to **"Interactivity & Shortcuts"**.
    - Turn on **"Interactivity"**.
-   - Because the app uses **Socket Mode**, no Request URL is needed — interactive
-     button presses (`block_actions`) are delivered over the same socket.
+   - Because the app uses **Socket Mode**, no Request URL is needed — button presses
+     (`block_actions`), form submissions (`view_submission`) and typeahead lookups
+     (`block_suggestion`) are all delivered over the same socket.
 
-7. **Add Slash Command**
+8. **Add Slash Command**
 
    - Go to **"Slash Commands"**.
    - Click **"Create New Command"**.
@@ -764,13 +857,13 @@ is the operator's responsibility — Hutbot only consumes the resulting header.
    - Set the short description to `Configure @Hutbot`.
    - Click **"Save"**.
 
-8. **Install the App**
+9. **Install the App**
 
    - Go to **"Install App"**.
    - Click **"Install App to Workspace"** and authorize the app.
    - Copy the **Bot User OAuth Token**; you'll need it later.
 
-8. **Run the App**
+10. **Run the App**
 
 ```
 export SLACK_BOT_TOKEN='xoxb-your-bot-token'
@@ -782,7 +875,7 @@ python -m hutbot
    - See [Hutbot Slack App](https://api.slack.com/apps/A07RQ54Q5H9)
    - See [Hutbot_DEV Slack App](https://api.slack.com/apps/A0BN19HUTAP)
 
-9. **Invite Bot**
+11. **Invite Bot**
 
 ```
 /invite @Hutbot
@@ -1383,13 +1476,21 @@ split into cohesive modules; `bot.py` remains as a backward-compatible launcher:
 - `hutbot/persistence.py` — config and cache load/save
 - `hutbot/slackcache.py` — Slack user/channel/usergroup lookups
 - `hutbot/templating.py`, `hutbot/opsgenie.py` — reply templates and OpsGenie integration
+- `hutbot/templatedocs.py` — the `{{variable}}` reference, shared by `help variables` and the
+  config UI's own variable list
 - `hutbot/calendarfeed.py` — the ICS calendar feed (fetch, parse, current/next event) and the
   instance's built-in calendars (parse, look up, resolve to a URL)
 - `hutbot/conditionutil.py` — condition normalization and evaluation
 - `hutbot/messaging.py`, `hutbot/actions.py`, `hutbot/buttons.py` — sending, the action engine, and interactive buttons/escalation
 - `hutbot/scheduling.py`, `hutbot/routing.py` — scheduled replies / cron triggers and Slack event routing
 - `hutbot/commands/` — slash-command parsing and handlers
-- `hutbot/webui_backend.py` — the web-UI bridge (the HTTP server lives in `webui.py`)
+- `hutbot/configexport.py` — the `export config` payload and reading one back, shared by the
+  commands and the App Home's export/import modals
+- `hutbot/apphome/` — the configuration UI inside Slack: `fields.py` maps a config field to the
+  Block Kit block that edits it, `views.py` builds every view (pure — no Slack, no writes), and
+  `handlers.py` is the only half that talks to Slack, writing through `webui_backend.py`
+- `hutbot/webui_backend.py` — validation and the write path, shared by the web UI (whose HTTP
+  server lives in `webui.py`) and by `hutbot/apphome/`
 - `hutbot/__main__.py` — the entry point
 
 Run it locally with `python -m hutbot`. Existing `python bot.py` invocations remain supported.
@@ -1404,10 +1505,12 @@ the libraries (Bolt, `slack_sdk`, aiohttp) are given the same shape. `WARN`, `ER
 2026-09-02T12:20:10 ERROR [message 1756808401.1 in #alerts from B08BSKV9CMB]: Failed to fetch user `B08BSKV9CMB`: SlackApiError: ...
 ```
 
-The part in brackets is the inbound event, timer or background task the work belongs to — a
-message, a reaction, a slash command, a button press, a scheduled reply, a reply being restored
-at startup, a cron config, the scheduler's own tick, the calendar bridge refresh. It is set
-once by the handler or task that owns the work (the handlers in `hutbot/routing.py`, and each
+The part in brackets is the inbound event, request, timer or background task the work belongs
+to — a message, a reaction, a slash command, a button press, an App Home open or one of the
+[configuration UI's](#configuring-hutbot-from-slack-the-app-home) own interactions, a scheduled
+reply, a reply being restored at startup, a cron config, the scheduler's own tick, the calendar
+bridge refresh, a request to the web configuration UI. It is set once by the handler or task
+that owns the work (the handlers in `hutbot/routing.py`, a middleware in `webui.py`, and each
 background task for itself — see `logutil.log_origin`) and carried down through the whole call
 chain, so a failure deep in a lookup can be traced back to what caused it without turning on a
 channel's `debug` flag.

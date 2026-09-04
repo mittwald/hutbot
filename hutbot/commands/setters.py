@@ -4,7 +4,6 @@ The `test` command is a report rather than a change, so it lives in ``preview``.
 """
 
 import copy
-import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -21,6 +20,7 @@ from .. import datetimefmt
 from .. import slackcache
 from .. import actions
 from .. import renaming
+from .. import configexport
 from .. import targets
 from .. import webui_backend
 from ..buttonutil import _find_button_index, format_config_list, normalize_button, parse_config_list
@@ -43,7 +43,6 @@ from ..constants import (
     CONDITION_OPERATORS_ORDERED,
     CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE,
     CONDITION_OPERATORS_WITHOUT_VALUE,
-    CONFIG_EXPORT_FORMAT,
     CONFIG_NAME_PATTERN,
     DEFAULT_CONFIG,
     DEFAULT_CONFIG_NAME,
@@ -333,20 +332,6 @@ async def delete_config(app: AsyncApp, channel, config_name: str, user, thread_t
     await messaging.send_message(app, channel, user, f"Configuration `{config_name}` has been deleted.", thread_ts)
 
 
-def _strip_json_block(text: str) -> str:
-    """The pasted JSON without the code fence or backticks Slack pastes tend to wrap it in."""
-    text = text.strip()
-    if text.startswith("```") and text.endswith("```") and len(text) > 6:
-        text = text[3:-3]
-        # A fence may open with a language word (```json); that word belongs to the fence.
-        first_line, _, rest = text.partition("\n")
-        if first_line.strip().lower() in ("", "json"):
-            text = rest
-    else:
-        text = text.strip('`')
-    return text.strip()
-
-
 async def import_config(app: AsyncApp, channel, addressed_name: str, explicit_name: str, json_text: str, user, thread_ts: str = "") -> None:
     """`import config [<name>] <json>` — create or replace a config from an export.
 
@@ -358,28 +343,10 @@ async def import_config(app: AsyncApp, channel, addressed_name: str, explicit_na
     Everything runs through `validate_config_payload` — the exact checks the web UI save
     and the setters make — so an import cannot store what a setter would have refused.
     """
-    json_text = _strip_json_block(json_text)
-    try:
-        payload = json.loads(json_text)
-    except json.JSONDecodeError as e:
-        await messaging.send_message(app, channel, user, f"That is not valid JSON ({e}). Paste an export made with `{state.slash_command} export config <name>`.", thread_ts)
+    settings, envelope_name, error = configexport.read_payload(json_text, state.slash_command)
+    if error:
+        await messaging.send_message(app, channel, user, error, thread_ts)
         return
-    if not isinstance(payload, dict):
-        await messaging.send_message(app, channel, user, f"The import must be a JSON object, like the one `{state.slash_command} export config` prints.", thread_ts)
-        return
-
-    if 'settings' in payload or 'format' in payload:
-        format_value = str(payload.get('format') or "")
-        if format_value != CONFIG_EXPORT_FORMAT:
-            await messaging.send_message(app, channel, user, f"Unsupported export format `{format_value}`; this bot reads `{CONFIG_EXPORT_FORMAT}`.", thread_ts)
-            return
-        settings = payload.get('settings')
-        if not isinstance(settings, dict):
-            await messaging.send_message(app, channel, user, "The export's `settings` must be a JSON object.", thread_ts)
-            return
-        envelope_name = str(payload.get('name') or "").strip()
-    else:
-        settings, envelope_name = payload, ""
 
     name = explicit_name or addressed_name or envelope_name or DEFAULT_CONFIG_NAME
     if name.lower() in RESERVED_CONFIG_NAMES:
@@ -389,14 +356,11 @@ async def import_config(app: AsyncApp, channel, addressed_name: str, explicit_na
         await messaging.send_message(app, channel, user, f"Invalid config name: `{name}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.", thread_ts)
         return
 
-    unknown = sorted(key for key in settings if key not in DEFAULT_CONFIG)
+    unknown = configexport.unknown_settings(settings)
     if unknown:
         await messaging.send_message(app, channel, user, "Unknown setting(s) in the import: " + ", ".join(f"`{key}`" for key in unknown) + ".", thread_ts)
         return
-    # Slack wraps a URL typed into a message in `<…>`; the stored value is the bare URL.
-    if isinstance(settings.get('calendar_url'), str):
-        settings = dict(settings)
-        settings['calendar_url'] = unwrap_slack_link(settings['calendar_url'])
+    settings = configexport.normalized_settings(settings)
 
     existing = channel.configs.get(name)
     clean, errors = await webui_backend.validate_config_payload(settings, app, channel.id, existing)

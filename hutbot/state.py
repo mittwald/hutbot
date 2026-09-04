@@ -97,6 +97,12 @@ _bridge_roster_ready: asyncio.Event = asyncio.Event()
 # Slack member ids per channel, cached briefly (see slackcache.get_channel_members).
 _channel_members_cache: dict[str, tuple[float, set]] = {}
 
+# What `conversations.info` said about a conversation, with the timestamp of the lookup. Every
+# rule list — the App Home tab, the web UI's channel list — needs one lookup per conversation
+# it shows, both for the name and to tell a real channel from a DM, so without this a single
+# render is one `conversations.info` call per entry.
+_channel_info_cache: dict[str, tuple[float, dict]] = {}
+
 # Parsed ICS calendars per feed URL, cached briefly (see calendarfeed.fetch_calendar).
 # The parsed calendar is cached rather than the raw text (parsing is the expensive part)
 # or the derived context (which would go stale at every event boundary).
@@ -112,6 +118,14 @@ _calendar_failures: dict[str, float] = {}
 
 # Serializes web-UI config writes (mutate channel_config + save_configuration).
 _config_write_lock = asyncio.Lock()
+
+# Which channel each user last looked at in the App Home tab, keyed by Slack user id. Slack
+# carries no state between one `views.publish` and the next, and the tab is republished from
+# scratch on every open and every change, so without this a user would be dropped back to
+# their first channel each time. In-process on purpose: it is a viewing position, not a
+# setting, and losing it on a restart costs one click. Its keys also record who this process
+# has ever published a tab for, which is how a mutation knows whose tab is worth refreshing.
+home_tab_channel: dict[str, str] = {}
 
 # The command currently being handled, already normalized to its `/hutbot …` form, so every
 # reply can say what it was answering. Per-task (a ContextVar, not a global) because several
@@ -134,6 +148,8 @@ def reset() -> None:
     id_usergroup_cache.clear()
     team_cache.clear()
     _channel_members_cache.clear()
+    _channel_info_cache.clear()
+    home_tab_channel.clear()
     _calendar_cache.clear()
     _calendar_failures.clear()
     bridge_calendar_titles.clear()

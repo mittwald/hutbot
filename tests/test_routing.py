@@ -409,6 +409,99 @@ async def test_membership_handlers_only_react_to_the_bot():
         mock_added.assert_called_once_with(app, "C2")
 
 
+def _captured_listeners():
+    """Every listener `register_app_handlers` registers, by the pattern it listens on."""
+    app = MagicMock()
+    captured = {"event": {}, "action": [], "view": [], "options": [], "command": []}
+
+    def capture(bucket):
+        def decorator(pattern):
+            def register(fn):
+                if isinstance(captured[bucket], dict):
+                    captured[bucket][pattern] = fn
+                else:
+                    captured[bucket].append((pattern, fn))
+                return fn
+            return register
+        return decorator
+
+    app.event = MagicMock(side_effect=capture("event"))
+    app.action = MagicMock(side_effect=capture("action"))
+    app.view = MagicMock(side_effect=capture("view"))
+    app.options = MagicMock(side_effect=capture("options"))
+    app.command = MagicMock(side_effect=capture("command"))
+    register_app_handlers(app)
+    return app, captured
+
+
+def test_the_config_ui_registers_a_home_tab_and_all_three_interaction_kinds():
+    _, captured = _captured_listeners()
+    assert "app_home_opened" in captured["event"]
+    assert len(captured["action"]) == 2       # message buttons, and the config UI
+    assert len(captured["view"]) == 1         # view_submission only; no view_closed needed
+    assert len(captured["options"]) == 1      # the team typeahead
+
+
+@pytest.mark.parametrize("bucket,action_id,expected", [
+    ("action", "hutbot_cfg:open:trigger", True),
+    ("action", "hutbot_btn:0", False),
+    # A modal callback_id must not be caught by the action listener: `hutbot_cfg_view` has no
+    # `:` right after the word, which is what keeps the two namespaces apart.
+    ("action", "hutbot_cfg_view:hub", False),
+    ("view", "hutbot_cfg_view:section", True),
+    ("view", "hutbot_cfg:open:trigger", False),
+    ("options", "hutbot_cfg:options:teams", True),
+])
+def test_the_config_ui_patterns_match_only_their_own_ids(bucket, action_id, expected):
+    _, captured = _captured_listeners()
+    # The action bucket also holds the message-button listener, so pick the config UI's own.
+    pattern = [pattern for pattern, _ in captured[bucket]
+               if pattern.pattern.startswith("^hutbot_cfg")][0]
+    assert bool(pattern.search(action_id)) is expected
+
+
+def test_the_message_button_listener_does_not_catch_a_config_ui_action():
+    # The reverse direction of the same collision: a config UI id caught here would run a
+    # rule instead of opening a form.
+    _, captured = _captured_listeners()
+    button_pattern = [pattern for pattern, fn in captured["action"]
+                      if pattern.pattern.startswith("^hutbot_btn")][0]
+    assert button_pattern.search("hutbot_cfg:open:trigger") is None
+    assert button_pattern.search("hutbot_btn:0") is not None
+
+
+@pytest.mark.asyncio
+async def test_the_home_tab_listener_passes_the_event_through():
+    app, captured = _captured_listeners()
+    with patch('hutbot.routing.apphome.handle_app_home_opened', new=AsyncMock()) as opened:
+        await captured["event"]["app_home_opened"]({"event": {"tab": "home", "user": "U1"}}, None)
+    assert opened.await_args.args[1] == {"tab": "home", "user": "U1"}
+
+
+@pytest.mark.asyncio
+async def test_the_config_ui_action_listener_acks_before_it_works():
+    app, captured = _captured_listeners()
+    pattern, listener = [(pattern, fn) for pattern, fn in captured["action"]
+                         if pattern.pattern.startswith("^hutbot_cfg")][0]
+    ack = AsyncMock()
+    action = {"action_id": "hutbot_cfg:refresh"}
+    with patch('hutbot.routing.apphome.handle_action', new=AsyncMock()) as handled:
+        await listener(ack, {"user": {"id": "U1"}}, action, None)
+    ack.assert_awaited_once()
+    assert handled.await_args.args[2] is action
+
+
+@pytest.mark.asyncio
+async def test_a_submission_gets_the_raw_ack_because_its_answer_is_the_ack():
+    app, captured = _captured_listeners()
+    _, listener = captured["view"][0]
+    ack = AsyncMock()
+    with patch('hutbot.routing.apphome.handle_view_submission', new=AsyncMock()) as handled:
+        await listener(ack, {"view": {"callback_id": "hutbot_cfg_view:section"}}, None)
+    ack.assert_not_awaited()
+    assert handled.await_args.args[1] is ack
+
+
 @pytest.mark.asyncio
 async def test_route_message_treats_an_app_bot_user_as_a_bot():
     import hutbot
@@ -585,4 +678,55 @@ async def test_an_error_while_handling_a_reaction_says_which_reaction(capsys):
         await handlers["reaction_added"]({"event": event}, None)
 
     assert "ERROR [reaction :eyes: on message 1756.1 in #general from U1]: Failed to fetch user `U1`:" \
+        in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_an_error_while_handling_a_config_ui_action_says_which_interaction(capsys):
+    app, captured = _captured_listeners()
+    app.client = AsyncMock()
+    app.client.views_open = AsyncMock(side_effect=SlackApiError("no", {"error": "expired_trigger_id"}))
+    hutbot.state.channel_config["C1"] = {"default": dict(DEFAULT_CONFIG)}
+    _, listener = [(pattern, fn) for pattern, fn in captured["action"]
+                   if pattern.pattern.startswith("^hutbot_cfg")][0]
+    action = {"action_id": "hutbot_cfg:pick_rule",
+              "value": hutbot.apphome.fields.encode_meta("C1")}
+
+    with patch('hutbot.slackcache.is_user_in_channel', new=AsyncMock(return_value=True)):
+        await listener(AsyncMock(), {"user": {"id": "U1"}, "trigger_id": "T1"}, action, None)
+
+    assert "ERROR [config UI hutbot_cfg:pick_rule on C1 from U1]: " \
+        "Could not open a configuration modal:" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_a_refused_config_ui_action_says_who_was_refused(capsys):
+    # A modal, and the ephemeral `show config` its button sits on, outlive the membership they
+    # were opened with — so this warning is one an operator actually sees.
+    app, captured = _captured_listeners()
+    app.client = AsyncMock()
+    _, listener = [(pattern, fn) for pattern, fn in captured["action"]
+                   if pattern.pattern.startswith("^hutbot_cfg")][0]
+    action = {"action_id": "hutbot_cfg:open:trigger",
+              "value": hutbot.apphome.fields.encode_meta("C1", "nightly")}
+
+    with patch('hutbot.slackcache.is_user_in_channel', new=AsyncMock(return_value=False)):
+        await listener(AsyncMock(), {"user": {"id": "U9"}, "trigger_id": "T1"}, action, None)
+
+    assert "WARN [config UI hutbot_cfg:open:trigger on rule 'nightly' in C1 from U9]:" \
+        in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_an_error_while_publishing_the_home_tab_says_whose_it_was(capsys):
+    app, captured = _captured_listeners()
+    app.client = AsyncMock()
+    app.client.views_publish = AsyncMock(side_effect=SlackApiError("no", {"error": "internal_error"}))
+
+    with patch('hutbot.slackcache.get_user_by_id',
+               new=AsyncMock(return_value=User(id="U1", name="someuser", real_name="X",
+                                               team=TEAM_UNKNOWN))):
+        await captured["event"]["app_home_opened"]({"event": {"tab": "home", "user": "U1"}}, None)
+
+    assert "ERROR [App Home home opened by U1]: Could not publish the App Home tab:" \
         in capsys.readouterr().err

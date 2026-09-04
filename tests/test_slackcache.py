@@ -1,4 +1,4 @@
-"""Slack lookups that the caches cannot answer — bot ids above all."""
+"""Slack lookups the caches cannot answer: bot ids, and what a conversation is."""
 
 from tests._common import *  # noqa: F401,F403
 
@@ -95,3 +95,157 @@ async def test_a_bot_lookup_that_fails_still_leaves_a_usable_user(capsys):
     # The same fallback a failed user lookup gets: the id stands in for the name.
     assert user == User(id="B08BSKV9CMB", name="B08BSKV9CMB", real_name="", team=TEAM_UNKNOWN)
     assert "Failed to fetch bot `B08BSKV9CMB`:" in capsys.readouterr().err
+
+
+# --- channels ---------------------------------------------------------------------------
+
+def _info_app(info=None, error=None):
+    app = AsyncMock()
+    if error is not None:
+        app.client.conversations_info = AsyncMock(side_effect=SlackApiError("no", {"error": error}))
+    else:
+        app.client.conversations_info = AsyncMock(return_value={"channel": info})
+    return app
+
+
+@pytest.mark.asyncio
+async def test_a_channel_is_looked_up_once_and_then_served_from_the_cache():
+    # Every rule list needs one lookup per conversation it shows, so an uncached one is one
+    # `conversations.info` per entry on every render of the App Home tab and the web UI.
+    app = _info_app(_channel_info("general"))
+    assert await hutbot.slackcache.get_channel_name(app, "C12345") == "general"
+    assert await hutbot.slackcache.is_configurable_channel(app, "C12345") is True
+    assert app.client.conversations_info.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stale_lookup_is_made_again():
+    app = _info_app(_channel_info("general"))
+    await hutbot.slackcache.get_channel_name(app, "C12345")
+    stamp, info = hutbot.state._channel_info_cache["C12345"]
+    hutbot.state._channel_info_cache["C12345"] = (
+        stamp - hutbot.slackcache._CHANNEL_INFO_TTL - 1, info)
+    await hutbot.slackcache.get_channel_name(app, "C12345")
+    assert app.client.conversations_info.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_lookup_is_not_cached():
+    # Otherwise a channel the bot momentarily could not read would be written off — printed
+    # by its id and hidden from both UIs — for the next five minutes.
+    app = _info_app(error="ratelimited")
+    assert await hutbot.slackcache.get_channel_name(app, "C12345") == "C12345"
+    assert "C12345" not in hutbot.state._channel_info_cache
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_without_a_name_is_still_cached():
+    # A DM has no name, which is a stable answer rather than a failed lookup.
+    app = _info_app(_channel_info("", is_im=True, is_channel=False, is_member=None))
+    assert await hutbot.slackcache.get_channel_name(app, "D12345") == "D12345"
+    assert "D12345" in hutbot.state._channel_info_cache
+    await hutbot.slackcache.get_channel_name(app, "D12345")
+    assert app.client.conversations_info.await_count == 1
+
+
+# --- which conversations a rule can live in -------------------------------------------
+# The cases are the ones the dev instance actually had in `bot.json`.
+
+@pytest.mark.asyncio
+async def test_a_private_channel_the_bot_is_in_is_configurable():
+    app = _info_app(_channel_info("davetest", is_private=True))
+    assert await hutbot.slackcache.is_configurable_channel(app, "C02CGL76M8C") is True
+
+
+@pytest.mark.asyncio
+async def test_a_group_dm_is_not_configurable_even_though_slack_calls_it_a_channel():
+    # The trap: Slack reports `is_channel` for a group DM as well as `is_mpim`, so testing
+    # for the absence of `is_channel` would let one through.
+    info = _channel_info("mpdm-hutbotdev--d.grieser--f.gueney-1", is_mpim=True)
+    assert info["is_channel"] is True
+    app = _info_app(info)
+    assert await hutbot.slackcache.is_configurable_channel(app, "C0BPUU33ABW") is False
+
+
+@pytest.mark.asyncio
+async def test_a_direct_message_is_not_configurable():
+    app = _info_app(_channel_info("", is_im=True, is_channel=False, is_member=None))
+    assert await hutbot.slackcache.is_configurable_channel(app, "D0BT605QXLK") is False
+
+
+@pytest.mark.asyncio
+async def test_a_channel_the_bot_has_left_is_not_configurable():
+    app = _info_app(_channel_info("general", is_member=False))
+    assert await hutbot.slackcache.is_configurable_channel(app, "C12345") is False
+
+
+@pytest.mark.asyncio
+async def test_a_private_channel_the_bot_is_out_of_is_not_configurable():
+    # Slack answers `channel_not_found` rather than a channel with `is_member: false`.
+    app = _info_app(error="channel_not_found")
+    assert await hutbot.slackcache.is_configurable_channel(app, "C0BASJXHX2T") is False
+
+
+@pytest.mark.asyncio
+async def test_an_invisible_channel_is_asked_about_once_per_ttl_not_once_per_render():
+    # Every rule list asks about every conversation it knows, so an uncached not-found logged
+    # a failure per entry on every render for as long as the entry survived.
+    app = _info_app(error="channel_not_found")
+    with patch('hutbot.slackcache.log_error') as errored, \
+         patch('hutbot.slackcache.log_warning') as warned:
+        for _ in range(3):
+            assert await hutbot.slackcache.is_configurable_channel(app, "C0BASJXHX2T") is False
+    assert app.client.conversations_info.await_count == 1
+    # A state of the world, not a fault: warned about once, never logged as an error.
+    assert warned.call_count == 1
+    errored.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_archived_channel_is_not_configurable():
+    app = _info_app(error="is_archived")
+    assert await hutbot.slackcache.is_configurable_channel(app, "C12345") is False
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_lookup_is_still_asked_again():
+    # The counterpart: a fault has to stay uncached, or a blip writes a real channel off for
+    # a whole TTL. (`ratelimited` is retried inside one call, so only the cache is asserted.)
+    app = _info_app(error="ratelimited")
+    with patch('hutbot.slackcache.log_error'):
+        await hutbot.slackcache.is_configurable_channel(app, "C12345")
+        first = app.client.conversations_info.await_count
+        await hutbot.slackcache.is_configurable_channel(app, "C12345")
+    assert "C12345" not in hutbot.state._channel_info_cache
+    assert app.client.conversations_info.await_count > first
+
+
+@pytest.mark.asyncio
+async def test_an_invisible_channels_members_are_asked_for_once_not_once_per_render():
+    # Listing a user's channels asks about every conversation the bot knows, so a channel it
+    # has been removed from wrote an error line per render for as long as its entry survived.
+    app = AsyncMock()
+    app.client.conversations_members = AsyncMock(
+        side_effect=SlackApiError("no", {"error": "channel_not_found"}))
+    with patch('hutbot.slackcache.log_error') as errored, \
+         patch('hutbot.slackcache.log_warning') as warned:
+        for _ in range(3):
+            assert await hutbot.slackcache.get_channel_members(app, "CM86CMEUE") == set()
+    assert app.client.conversations_members.await_count == 1
+    assert warned.call_count == 1
+    errored.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_members_lookup_that_really_failed_keeps_what_it_had():
+    app = AsyncMock()
+    app.client.conversations_members = AsyncMock(
+        return_value={"members": ["U1"], "response_metadata": {"next_cursor": ""}})
+    assert await hutbot.slackcache.get_channel_members(app, "C1") == {"U1"}
+    stamp, members = hutbot.state._channel_members_cache["C1"]
+    hutbot.state._channel_members_cache["C1"] = (
+        stamp - hutbot.slackcache._CHANNEL_MEMBERS_TTL - 1, members)
+    app.client.conversations_members = AsyncMock(side_effect=SlackApiError("no", {"error": "internal_error"}))
+    with patch('hutbot.slackcache.log_error') as errored:
+        assert await hutbot.slackcache.get_channel_members(app, "C1") == {"U1"}
+    errored.assert_called_once()

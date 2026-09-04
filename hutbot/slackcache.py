@@ -14,6 +14,8 @@ from employee_list import (
     normalize_real_name_with_diagraphs,
     normalize_user_name,
 )
+from slack_sdk.errors import SlackApiError
+
 from logutil import log, log_error, log_warning
 import retryutil
 
@@ -26,6 +28,17 @@ from .textutil import log_debug
 # channels doesn't hammer conversations.members on every UI request.
 _CHANNEL_MEMBERS_TTL = 300.0
 
+# What a conversation is, on the same footing and for the same reason: a rule list needs one
+# lookup per conversation, and neither a rename nor a channel the bot just joined is urgent, so
+# serving a slightly stale answer costs nothing.
+_CHANNEL_INFO_TTL = 300.0
+
+# Slack's way of saying a conversation is not visible to this bot, rather than that the call
+# went wrong. Both are definite answers — a bot does not get back into a channel or unarchive
+# one by asking again — so they are cached like a successful lookup. Anything else is a fault
+# and stays uncached, so a rate limit or a network blip is not written off for a whole TTL.
+_CHANNEL_ABSENT_ERRORS = frozenset({'channel_not_found', 'is_archived'})
+
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     if channel_id not in state.channel_config:
@@ -37,18 +50,67 @@ async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
     return Channel(id=channel_id, name=name, configs=configs)
 
 
-async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
+async def get_channel_info(app: AsyncApp, channel_id: str) -> dict:
+    """What `conversations.info` says about a conversation, cached for _CHANNEL_INFO_TTL.
+
+    `{}` when the lookup failed — which is the answer for a private channel the bot is not in,
+    where Slack reports `channel_not_found` rather than a channel with `is_member: false`. A
+    failure is not cached, so a conversation the bot momentarily could not read is asked again
+    rather than written off for the next five minutes.
+    """
+    now = time.monotonic()
+    cached = state._channel_info_cache.get(channel_id)
+    if cached and (now - cached[0]) < _CHANNEL_INFO_TTL:
+        return cached[1]
     try:
         response = await retryutil.retry_async(
             lambda: app.client.conversations_info(channel=channel_id),
-            what=f"Reading the name of channel {channel_id}")
-        channel_name = response.get('channel', {}).get('name', '')
-        if channel_name:
-            return channel_name
+            what=f"Reading the details of channel {channel_id}")
+        info = response.get('channel') or {}
+        if info:
+            # Cached even when it carries no name: a DM has none, and that is a stable answer
+            # rather than a failed lookup.
+            state._channel_info_cache[channel_id] = (now, info)
+            return info
+    except SlackApiError as e:
+        error = ((e.response or {}) if not isinstance(e.response, str) else {}).get('error', '')
+        if error in _CHANNEL_ABSENT_ERRORS:
+            # Cached, and a warning rather than an error: every rule list asks about every
+            # conversation it knows, so without this a channel the bot has left logs a stack
+            # of failures on every render for as long as its entry survives.
+            state._channel_info_cache[channel_id] = (now, {})
+            log_warning(f"Channel {channel_id} is not visible to the bot ({error}); "
+                        f"leaving it out of the configurable channels.")
+            return {}
+        log_error(f"Failed to get channel details for {channel_id}", e)
     except Exception as e:
-        log_error(f"Failed to get channel name for {channel_id}", e)
+        log_error(f"Failed to get channel details for {channel_id}", e)
 
-    return channel_id
+    return {}
+
+
+async def get_channel_name(app: AsyncApp, channel_id: str) -> str:
+    """A channel's name, or the id — which is what every caller prints when there is no name."""
+    info = await get_channel_info(app, channel_id)
+    return info.get('name') or channel_id
+
+
+async def is_configurable_channel(app: AsyncApp, channel_id: str) -> bool:
+    """Whether a conversation is a channel a rule can sensibly live in.
+
+    A DM and a group DM are destinations an action posts *to*, never places to configure: the
+    bot reads their messages (to cancel a reminder, to handle a button press) and
+    `get_channel_by_id` therefore knows them, but a rule there would have nothing to watch.
+    Note that a group DM reports `is_channel` as well as `is_mpim`, so it has to be excluded by
+    name rather than by the absence of `is_channel`.
+
+    A channel the bot has left is excluded too. Its rules are kept and disabled — they come
+    back when the bot is invited again — but until then it can neither post there nor read the
+    channel's name, so offering it for editing only invites changes that can never fire.
+    """
+    info = await get_channel_info(app, channel_id)
+    return bool(info.get('is_channel')) and not info.get('is_mpim') \
+        and not info.get('is_im') and bool(info.get('is_member'))
 
 
 async def get_message_permalink(app: AsyncApp, channel: Channel, ts: str) -> str:
@@ -374,6 +436,19 @@ async def get_channel_members(app: AsyncApp, channel_id: str) -> set:
             cursor = response.get('response_metadata', {}).get('next_cursor')
             if not cursor:
                 break
+    except SlackApiError as e:
+        error = ((e.response or {}) if not isinstance(e.response, str) else {}).get('error', '')
+        if error in _CHANNEL_ABSENT_ERRORS:
+            # A channel the bot cannot see has no members it can name, and asking again will
+            # not change that — so the empty answer is cached and stated once, the same way
+            # `get_channel_info` treats it. Left uncached it was an error line per listed
+            # conversation on every render of a channel list.
+            state._channel_members_cache[channel_id] = (now, set())
+            log_warning(f"Channel {channel_id} is not visible to the bot ({error}); "
+                        f"treating it as having no members.")
+            return set()
+        log_error(f"Failed to fetch members for channel {channel_id}:", e)
+        return cached[1] if cached else set()
     except Exception as e:
         log_error(f"Failed to fetch members for channel {channel_id}:", e)
         return cached[1] if cached else set()
