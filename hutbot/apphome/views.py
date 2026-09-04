@@ -78,7 +78,6 @@ VIEW_PICKER = "picker"
 VIEW_LIST = "list"
 VIEW_NOTICE = "notice"
 VIEW_EXPORT = "export"
-VIEW_VARIABLES = "variables"
 
 # Which section each hub row opens, in the order the hub lists them.
 SECTION_ORDER = ("trigger", "message", "conditions", "buttons", "filters",
@@ -284,21 +283,27 @@ def _variable_options() -> list[dict]:
     return options[:SLACK_OPTION_LIMIT]
 
 
-def _variable_blocks(field: str, rule_meta: str) -> list[dict]:
-    """The two ways to reach a variable, under the field it goes into.
+def _variable_blocks(meta: dict, field: str, expanded: bool = False) -> list[dict]:
+    """The ways to reach a variable, under the field it goes into.
 
-    The select appends to the field without leaving the form, so nothing typed is lost — it
-    dispatches, and the handler rewrites the field and redraws. The button opens the full
-    reference, with the arguments and the examples that do not fit in an option's 75
-    characters, in a modal *on top of* this one so the form underneath is untouched.
+    The select appends to the field, and the button unfolds the reference underneath it. Both
+    redraw this same view from what is on screen, so neither loses a half-written message —
+    and neither opens a view, so both work at any depth.
+
+    The button carries no value of its own: everything the toggle needs, the section and
+    whether the reference is currently unfolded, is in the view's own metadata.
     """
-    return [
+    blocks = [
         _input(f"{field}{fields.VARIABLE_PICK_SUFFIX}",
                _select(f"{field}{fields.VARIABLE_PICK_SUFFIX}", _variable_options(),
                        placeholder="Insert a variable…", dispatch=True),
                label="Insert a variable", optional=True),
-        _actions([_button("What can I use?", "variables", field, value=rule_meta)]),
+        _actions([_button("Hide the variable reference" if expanded
+                          else "What can I use?", "variables", field)]),
     ]
+    if expanded:
+        blocks.extend(variable_reference_blocks(meta))
+    return blocks
 
 
 def _minutes_input(field: str, seconds, minimum: int = 0) -> dict:
@@ -368,17 +373,6 @@ def _overflow(options: list[dict], *parts, confirm: dict | None = None) -> dict:
     if confirm is not None:
         element["confirm"] = confirm
     return element
-
-
-def _back_block(rule_meta: str, label: str = "Back to the rule", *parts) -> dict:
-    """A Back button in the body, for the one view Slack draws none for.
-
-    Every other view is pushed, and Slack gives a pushed view its own way back — which is
-    both tidier and in the chrome where people look for it. A row form is the exception: it
-    takes its list's place rather than being pushed onto it (see `handlers`), so Slack's back
-    would skip the list and land on the hub.
-    """
-    return _actions([_button(label, "nav", *(parts or ("hub",)), value=rule_meta)])
 
 
 def _modal(kind: str, title: str, blocks: list[dict], meta: str, submit: str = "",
@@ -626,31 +620,29 @@ def hub_view(meta: dict, channel_id: str, config_name: str, config: dict) -> dic
     return _modal(VIEW_HUB, "Rule", blocks, rule_meta)
 
 
-def variables_view(meta: dict, channel_id: str, config_name: str) -> dict:
+def variable_reference_blocks(meta: dict) -> list[dict]:
     """The full `{{variable}}` reference — the same text `help variables` prints.
 
-    Read-only and pushed on top of the form, so the form keeps whatever was typed into it and
-    Slack's own back arrow is the way out. That is why pushing is safe here where it is not
-    for a form: nothing ever lands on the view underneath, so the stack cannot grow.
+    Blocks rather than a view of its own: Block Kit has no collapsible section, but folding
+    these into the form that asked for them costs no depth at all, which a pushed view does.
+    That matters because editing one button is already as deep as a modal stack may go, and
+    an acknowledgement text takes variables like any other message.
     """
     command = meta.get('slash_command') or state.slash_command
     blocks: list[dict] = [
-        _section("Write one as `{{variable}}` in a message, an OpsGenie message, an "
-                 "acknowledgement text, or a target. One nothing resolved renders a "
-                 "placeholder such as `<no-event>`."),
         _divider(),
+        _section("*Every variable*\nWrite one as `{{variable}}`. One that nothing resolved "
+                 "renders a placeholder such as `<no-event>`."),
     ]
     for title, variables in templatedocs.variable_groups():
         blocks.append(_section(f"*{title}*\n"
                                + ", ".join(f"`{{{{{name}}}}}`" for name in sorted(variables))))
-    blocks.append(_divider())
     # The argument notes carry the examples; each is its own block so none is split.
     for note in templatedocs.argument_notes(command):
         blocks.append(_section(note))
     blocks.append(_context(f"`{command} [config] test` renders every one of them for this "
                            f"channel."))
-    return _modal(VIEW_VARIABLES, "Variables", blocks,
-                  fields.encode_meta(channel_id, config_name))
+    return blocks
 
 
 def notice_view(title: str, text: str, meta_raw: str = "") -> dict:
@@ -743,7 +735,7 @@ def _trigger_blocks(meta: dict, config: dict) -> list[dict]:
     return blocks
 
 
-def _message_blocks(meta: dict, config: dict, rule_meta: str = "") -> list[dict]:
+def _message_blocks(meta: dict, config: dict, expanded: bool = False) -> list[dict]:
     action = config.get('action', ACTION_REPLY)
     target = config.get('action_target') or ""
     templated = "{{" in target
@@ -774,7 +766,7 @@ def _message_blocks(meta: dict, config: dict, rule_meta: str = "") -> list[dict]
                                      multiline=True),
                          hint="`{{variables}}` and @mentions are resolved when it is sent.",
                          optional=False))
-    blocks.extend(_variable_blocks("reply_message", rule_meta))
+    blocks.extend(_variable_blocks(meta, "reply_message", expanded))
     return blocks
 
 
@@ -852,7 +844,7 @@ def _escalation_blocks(meta: dict, config: dict) -> list[dict]:
     return blocks
 
 
-def _opsgenie_blocks(meta: dict, config: dict, rule_meta: str = "") -> list[dict]:
+def _opsgenie_blocks(meta: dict, config: dict, expanded: bool = False) -> list[dict]:
     blocks = []
     if not meta.get('opsgenie_configured'):
         blocks.append(_context("This instance has no OpsGenie credentials, so an alert "
@@ -881,7 +873,7 @@ def _opsgenie_blocks(meta: dict, config: dict, rule_meta: str = "") -> list[dict
                          _text_input("opsgenie_message", config.get('opsgenie_message') or "",
                                      multiline=True),
                          hint="Empty sends the original message."))
-    blocks.extend(_variable_blocks("opsgenie_message", rule_meta))
+    blocks.extend(_variable_blocks(meta, "opsgenie_message", expanded))
     return blocks
 
 
@@ -937,15 +929,15 @@ _SECTION_BLOCKS = {
 
 
 def section_view(meta: dict, channel_id: str, config_name: str, section: str,
-                 config: dict) -> dict:
+                 config: dict, variables_expanded: bool = False) -> dict:
     """One section's form. Applies on submit, as a whole config document."""
-    rule_meta = fields.encode_meta(channel_id, config_name)
     builder = _SECTION_BLOCKS[section]
     # Pushed, so Slack's own back arrow is the way out of it — no Back button in the body.
-    blocks = list(builder(meta, config, rule_meta) if section in _SECTIONS_WITH_VARIABLES
-                  else builder(meta, config))
+    blocks = list(builder(meta, config, variables_expanded)
+                  if section in _SECTIONS_WITH_VARIABLES else builder(meta, config))
     return _modal(VIEW_SECTION, SECTION_TITLES[section], blocks,
-                  fields.encode_meta(channel_id, config_name, section), submit="Save")
+                  fields.encode_meta(channel_id, config_name, section,
+                                     variables_expanded=variables_expanded), submit="Save")
 
 
 def first_input_block(view: dict) -> str:
@@ -1058,15 +1050,13 @@ def condition_row_view(meta: dict, channel_id: str, config_name: str, row: int,
         blocks.append(_input("offset", _text_input("offset", offset, placeholder="+1"),
                              hint="Which event, counted from the one at that moment."))
     blocks.append(_context(f"Reads as: {_condition_summary({'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive, 'at': at, 'offset': offset})}"))
-    blocks.append(_back_block(fields.encode_meta(channel_id, config_name),
-                              "Back to the conditions", "list", "conditions"))
     title = "Condition" if condition else "New condition"
     return _modal(VIEW_CONDITION_ROW, title, blocks,
                   fields.encode_meta(channel_id, config_name, "conditions", row), submit="Save")
 
 
 def button_row_view(meta: dict, channel_id: str, config_name: str, row: int,
-                    button: dict) -> dict:
+                    button: dict, variables_expanded: bool = False) -> dict:
     """One button, in its own form. Its submit is the write."""
     button = button or {}
     label = button.get('label') or ""
@@ -1095,9 +1085,8 @@ def button_row_view(meta: dict, channel_id: str, config_name: str, row: int,
     else:
         blocks.append(_input("value", _text_input("value", value, multiline=True),
                              label="Text to post", hint="Empty just dismisses the message."))
-        blocks.extend(_variable_blocks("value", fields.encode_meta(channel_id, config_name)))
-    blocks.append(_back_block(fields.encode_meta(channel_id, config_name),
-                              "Back to the buttons", "list", "buttons"))
+        blocks.extend(_variable_blocks(meta, "value", variables_expanded))
     title = "Button" if label else "New button"
     return _modal(VIEW_BUTTON_ROW, title, blocks,
-                  fields.encode_meta(channel_id, config_name, "buttons", row), submit="Save")
+                  fields.encode_meta(channel_id, config_name, "buttons", row,
+                                     variables_expanded=variables_expanded), submit="Save")

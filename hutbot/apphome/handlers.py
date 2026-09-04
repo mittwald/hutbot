@@ -29,12 +29,13 @@ The budget, which nothing may exceed:
 
 * 1 — the rule hub, the only `views.open`.
 * 2 — a section form, a row list, an export or an import, all pushed from the hub.
-* 3 — the variable reference, pushed from a section form; the escalation form, pushed from the
-  button list.
+* 3 — a row form or the escalation form, pushed from a list.
 
-A row form is the one thing reached by replacing rather than pushing: it takes its list's place
-at depth 2, so that the variable reference an acknowledgement text needs still fits above it.
-That is why it, alone, carries a Back button of its own.
+Nothing goes deeper, because the variable reference is not a view of its own: Block Kit has no
+collapsible section, so the reference is folded into the form that asked for it, and the fold
+is a redraw of that same view. A redraw costs no depth, which is what lets it work from a row
+form already sitting at the bottom of the budget. Every form is pushed, so no view carries a
+Back button of its own; Slack draws one for each of them.
 """
 
 import json
@@ -290,16 +291,14 @@ def _hub(channel_id: str, config_name: str, configs: dict | None = None) -> dict
     return views.hub_view(_meta(configs), channel_id, config_name, config)
 
 
-def _landing(channel_id: str, config_name: str, parts) -> dict:
-    """Where a Back button or a successful save goes.
+def _section_landing(channel_id: str, config_name: str, section: str) -> dict:
+    """Where a saved section pops back to.
 
-    `["list", "buttons"]` for the button list, anything else for the rule hub. The escalation
-    form and the row forms belong to a list, so leaving or saving one goes back to that list
-    rather than all the way out to the hub.
+    The button list for an escalation, which is reached from there because the two
+    cross-check each other; the rule hub for every other section.
     """
-    parts = list(parts)
-    if len(parts) >= 2 and parts[0] == 'list' and parts[1] in fields.LIST_SECTIONS:
-        return _list_view(channel_id, config_name, parts[1])
+    if section == "escalation":
+        return _list_view(channel_id, config_name, "buttons")
     return _hub(channel_id, config_name)
 
 
@@ -398,8 +397,6 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
         await _open_or_update(app, body, views.name_view(_meta(), channel_id))
     elif kind == 'rename':
         await _push(app, body, views.name_view(_meta(), channel_id, config_name))
-    elif kind == 'nav':
-        await _update(app, body, _landing(channel_id, config_name, parts[1:]))
     elif kind == 'open':
         section = parts[1] if len(parts) > 1 else ""
         view = (_list_view(channel_id, config_name, section)
@@ -432,9 +429,11 @@ async def handle_action(app: AsyncApp, body: dict, action: dict,
             await _update(app, body, _list_view(channel_id, config_name, "conditions"))
             await _refresh_home_if_open(app, user_id)
     elif kind == 'variables':
-        await _push(app, body, views.variables_view(_meta(), channel_id, config_name))
+        # The fold is a redraw of this same view with the reference in or out of it, so
+        # everything typed into the form survives being read.
+        await _redraw(app, body, target, expanded=not target.get('variables_expanded'))
     elif kind == 'render':
-        await _rerender(app, body, target, parts[1] if len(parts) > 1 else "")
+        await _redraw(app, body, target)
 
 
 async def _open_or_update(app: AsyncApp, body: dict, view: dict) -> None:
@@ -509,7 +508,7 @@ async def _row_action(app: AsyncApp, body: dict, target: dict, parts: list[str],
 
     if verb == 'add':
         # A new row is the one past the end; `_apply_rows` appends rather than replaces.
-        await _update(app, body, row_view(_meta(configs), channel_id, config_name, len(rows), {}))
+        await _push(app, body, row_view(_meta(configs), channel_id, config_name, len(rows), {}))
         return
     if verb != 'menu':
         return
@@ -520,7 +519,7 @@ async def _row_action(app: AsyncApp, body: dict, target: dict, parts: list[str],
     index = int(raw_index)
     if operation == 'edit':
         row = rows[index] if index < len(rows) else {}
-        await _update(app, body, row_view(_meta(configs), channel_id, config_name, index, row))
+        await _push(app, body, row_view(_meta(configs), channel_id, config_name, index, row))
         return
     if operation == 'delete':
         ok, errors = await _apply_rows(app, channel_id, config_name, kind, index, None)
@@ -554,14 +553,21 @@ def _with_variable_inserted(values: dict, pending: dict) -> dict:
     return pending
 
 
-async def _rerender(app: AsyncApp, body: dict, target: dict, field: str) -> None:
-    """Redraw a form after a value that decides which other fields it shows.
+async def _redraw(app: AsyncApp, body: dict, target: dict,
+                  expanded: bool | None = None) -> None:
+    """Rebuild a form from what is on screen.
 
-    The form is rebuilt from what is on screen, not from storage, so nothing typed is lost —
-    and nothing is saved either: a redraw is not a write.
+    Three things ask for this: a value that decides which other fields the form shows, a
+    variable being picked, and the reference being folded in or out. All three rebuild from
+    the view's own state rather than from storage, so nothing typed is lost — and none of them
+    saves anything: a redraw is not a write.
+
+    `expanded` overrides the fold the view came with, which is how the toggle flips it.
     """
     channel_id, config_name = target.get('channel_id', ""), target.get('config_name', "")
     section = target.get('section', "")
+    if expanded is None:
+        expanded = bool(target.get('variables_expanded'))
     values = _values(body)
     configs = _configs(channel_id)
     config = configs.get(config_name)
@@ -575,13 +581,15 @@ async def _rerender(app: AsyncApp, body: dict, target: dict, field: str) -> None
                                             fields.read_condition_row(values))
         else:
             pending = _with_variable_inserted(values, fields.read_button_row(values))
-            view = views.button_row_view(_meta(configs), channel_id, config_name, row, pending)
+            view = views.button_row_view(_meta(configs), channel_id, config_name, row, pending,
+                                         variables_expanded=expanded)
     elif section in fields.SECTIONS:
         pending = {**config, **fields.read_section_values(values, section)}
         # A redraw triggered by the variable picker is the insertion: the field grows by the
         # variable that was chosen, and the redraw is what puts it on screen.
         pending = _with_variable_inserted(values, pending)
-        view = views.section_view(_meta(configs), channel_id, config_name, section, pending)
+        view = views.section_view(_meta(configs), channel_id, config_name, section, pending,
+                                  variables_expanded=expanded)
     else:
         return
     await _update(app, body, view)
@@ -648,8 +656,7 @@ async def _submit_section(app: AsyncApp, ack, view: dict, values: dict, target: 
         return
     # Popped, and the view underneath rebuilt from what was just stored — so the summary the
     # user lands back on is the saved one rather than the one the form was opened with.
-    landing = ("list", "buttons") if section == "escalation" else ()
-    await _pop_to(app, ack, view, _landing(channel_id, config_name, landing))
+    await _pop_to(app, ack, view, _section_landing(channel_id, config_name, section))
 
 
 async def _submit_row(app: AsyncApp, ack, view: dict, values: dict, target: dict,
@@ -670,8 +677,7 @@ async def _submit_row(app: AsyncApp, ack, view: dict, values: dict, target: dict
         await ack(response_action="errors",
                   errors=_errors_for(view, errors, f"{section}.{index}", landing))
         return
-    # Replaced its list rather than being pushed onto it, so it hands the place back.
-    await ack(response_action="update", view=_list_view(channel_id, config_name, section))
+    await _pop_to(app, ack, view, _list_view(channel_id, config_name, section))
 
 
 async def _submit_name(app: AsyncApp, ack, view: dict, values: dict, target: dict,

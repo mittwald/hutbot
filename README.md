@@ -635,9 +635,9 @@ A few things are worth knowing:
   picker, and a rule a `config` button runs is chosen from the channel's own rules.
 - **Every field that takes a `{{variable}}`** — the reply message, the OpsGenie message, an
   acknowledgement text — has an **Insert a variable** list under it, which appends the one you
-  pick to the end of the field, and a **What can I use?** button that opens the full reference
-  (the same text `/hutbot help variables` prints) on top of the form, so nothing you have
-  typed is lost while you read it.
+  pick to the end of the field, and a **What can I use?** button that unfolds the full
+  reference (the same text `/hutbot help variables` prints) underneath the form. Both keep
+  whatever you have already typed, and the reference stays unfolded while you work.
 - **The Home tab is a snapshot.** It refreshes on your own changes; use **Refresh** after
   someone else's, or after a slash command.
 - **The channel list is the channels a rule can live in** that you also belong to. A channel

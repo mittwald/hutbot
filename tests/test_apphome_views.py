@@ -478,21 +478,11 @@ def test_the_hub_offers_export_and_import():
 # --- the modal stack ------------------------------------------------------------------
 
 @pytest.mark.parametrize("label,config,name", CONFIGS)
-def test_only_a_row_form_carries_a_back_button_in_its_body(label, config, name):
-    # Every other view is pushed, and Slack gives a pushed view its own way back — tidier,
-    # and in the chrome where people look for it. A row form takes its list's place instead
-    # of being pushed onto it, so Slack's back would skip the list and land on the hub.
+def test_no_view_carries_a_back_button_in_its_body(label, config, name):
+    # Every view but the hub is pushed, and Slack gives a pushed view its own way back —
+    # tidier, and in the chrome where people look for it.
     for view_name, view in _every_view(config, name):
-        has_body_back = "hutbot_cfg:nav:" in json.dumps(view)
-        assert has_body_back == view_name.endswith("_row"), view_name
-
-
-def test_a_row_form_goes_back_to_its_own_list():
-    meta = _meta()
-    condition = views.condition_row_view(meta, "C1", "default", 0, {})
-    button = views.button_row_view(meta, "C1", "default", 0, {})
-    assert "hutbot_cfg:nav:list:conditions" in json.dumps(condition)
-    assert "hutbot_cfg:nav:list:buttons" in json.dumps(button)
+        assert "hutbot_cfg:nav" not in json.dumps(view), view_name
 
 
 # --- what Slack refuses outright ------------------------------------------------------
@@ -636,8 +626,9 @@ def test_every_variable_is_offered_with_what_it_takes():
 
 
 def test_the_reference_is_the_same_text_the_command_prints():
-    # One source, so the modal cannot describe a variable the command does not.
-    view = views.variables_view(_meta(), "C1", "default")
+    # One source, so the form cannot describe a variable the command does not.
+    view = views.section_view(_meta(), "C1", "default", "message", DEFAULT_CONFIG,
+                              variables_expanded=True)
     texts = [block["text"]["text"] for block in view["blocks"] if block.get("text")]
     rendered = "\n".join(texts)
     for title, variables in hutbot.templatedocs.variable_groups():
@@ -649,17 +640,56 @@ def test_the_reference_is_the_same_text_the_command_prints():
         assert note in texts
 
 
-def test_the_reference_fits_in_one_view():
-    view = views.variables_view(_meta(), "C1", "default")
+@pytest.mark.parametrize("build", [
+    lambda meta: views.section_view(meta, "C1", "default", "message", DEFAULT_CONFIG, True),
+    lambda meta: views.section_view(meta, "C1", "default", "opsgenie", DEFAULT_CONFIG, True),
+    lambda meta: views.button_row_view(meta, "C1", "default", 0,
+                                       {"label": "Ack", "action": "ack", "value": ""}, True),
+])
+def test_a_form_with_the_reference_unfolded_still_fits(build):
+    # Block Kit has no collapsible section, so the reference is 20-odd blocks appended to a
+    # form that has to stay inside Slack's hundred.
+    view = build(_meta())
     assert len(view["blocks"]) <= views.SLACK_VIEW_BLOCK_LIMIT
     for block in view["blocks"]:
         if block.get("text"):
             assert len(block["text"]["text"]) <= views.SLACK_SECTION_TEXT_LIMIT
 
 
-def test_the_reference_has_nothing_to_submit():
-    # What makes it safe to push: it can only ever be popped, so the stack cannot grow.
-    assert "submit" not in views.variables_view(_meta(), "C1", "default")
+def test_the_reference_is_folded_away_until_it_is_asked_for():
+    folded = views.section_view(_meta(), "C1", "default", "message", DEFAULT_CONFIG)
+    unfolded = views.section_view(_meta(), "C1", "default", "message", DEFAULT_CONFIG, True)
+    assert len(unfolded["blocks"]) > len(folded["blocks"])
+    assert "Every variable" not in json.dumps(folded)
+    assert "Every variable" in json.dumps(unfolded)
+    # The fold is remembered by the view, so another redraw does not close it.
+    assert fields.decode_meta(unfolded["private_metadata"])["variables_expanded"] is True
+    assert fields.decode_meta(folded["private_metadata"])["variables_expanded"] is False
+
+
+def test_the_toggle_says_which_way_it_goes():
+    folded = views.section_view(_meta(), "C1", "default", "message", DEFAULT_CONFIG)
+    unfolded = views.section_view(_meta(), "C1", "default", "message", DEFAULT_CONFIG, True)
+    assert "What can I use?" in json.dumps(folded)
+    assert "Hide the variable reference" in json.dumps(unfolded)
+
+
+def test_the_toggle_carries_no_value_so_it_reads_the_views_own_state():
+    # The section and the current fold are both in the view's metadata; a value on the button
+    # would shadow them and the toggle would forget which form it was in.
+    view = views.section_view(_meta(), "C1", "default", "message", DEFAULT_CONFIG)
+    toggle = [element for block in view["blocks"] if block.get("type") == "actions"
+              for element in block["elements"]
+              if element["action_id"].startswith("hutbot_cfg:variables:")][0]
+    assert "value" not in toggle
+
+
+def test_an_acknowledgement_text_can_unfold_the_reference_too():
+    # It sits at the bottom of the depth budget, which is exactly why the reference is a fold
+    # rather than a view.
+    view = views.button_row_view(_meta(), "C1", "default", 0,
+                                 {"label": "Ack", "action": "ack", "value": ""}, True)
+    assert "Every variable" in json.dumps(view)
 
 
 def test_the_opsgenie_schedule_is_a_list_when_there_are_credentials():

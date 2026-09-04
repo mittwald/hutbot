@@ -169,7 +169,7 @@ def all_ui_fields() -> set[str]:
 
 
 def encode_meta(channel_id: str, config_name: str = "", section: str = "", row: int | None = None,
-                extra: dict | None = None) -> str:
+                variables_expanded: bool = False, extra: dict | None = None) -> str:
     """`private_metadata` for a view: what it edits, in short keys.
 
     Short keys because Slack caps `private_metadata` at 3000 characters and a rule name may
@@ -182,6 +182,11 @@ def encode_meta(channel_id: str, config_name: str = "", section: str = "", row: 
         meta["s"] = section
     if row is not None:
         meta["i"] = row
+    if variables_expanded:
+        # Whether the variable reference is unfolded in this view. Carried here rather than
+        # in a process-side store so that any other redraw of the view — a changed action, an
+        # inserted variable — leaves it as the reader left it.
+        meta["v"] = 1
     if extra:
         meta.update(extra)
     return json.dumps(meta, separators=(',', ':'))
@@ -207,6 +212,7 @@ def decode_meta(raw: str) -> dict:
     }
     row = meta.get("i")
     decoded["row"] = row if isinstance(row, int) else None
+    decoded["variables_expanded"] = bool(meta.get("v"))
     return decoded
 
 

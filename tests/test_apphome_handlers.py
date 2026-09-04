@@ -494,7 +494,7 @@ async def test_editing_a_row_opens_its_form_without_writing():
         await handlers.handle_action(
             app, _body(fields.encode_meta(CHANNEL, "default", "conditions")),
             _action("hutbot_cfg:row:conditions:menu:0", selected="edit:0"))
-    view = app.client.views_update.await_args.kwargs["view"]
+    view = app.client.views_push.await_args.kwargs["view"]
     assert fields.decode_meta(view["private_metadata"])["row"] == 0
     assert configs["default"]["conditions"] == rows
 
@@ -971,39 +971,30 @@ async def test_a_section_is_pushed_so_slack_draws_the_way_back():
 
 
 @pytest.mark.asyncio
-async def test_a_row_form_replaces_its_list_so_the_reference_still_fits_above_it():
-    # The one exception to pushing: pushed, an acknowledgement text's variable reference
-    # would be a fourth view and Slack allows three.
+async def test_a_row_form_is_pushed_onto_its_list_like_every_other_form():
     app = _app()
     _seed()
     with _slack():
         await handlers.handle_action(
             app, _body(fields.encode_meta(CHANNEL, "default", "buttons")),
             _action("hutbot_cfg:row:buttons:add", value=fields.encode_meta(CHANNEL, "default")))
-    app.client.views_push.assert_not_awaited()
-    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "New button"
+    app.client.views_update.assert_not_awaited()
+    assert app.client.views_push.await_args.kwargs["view"]["title"]["text"] == "New button"
 
 
 @pytest.mark.asyncio
-async def test_leaving_a_section_form_goes_back_to_the_hub():
+async def test_a_saved_row_pops_back_onto_its_list():
     app = _app()
-    _seed()
+    configs = _seed()
+    ack = AsyncMock()
     with _slack():
-        await handlers.handle_action(app, _body(
-            fields.encode_meta(CHANNEL, "default", "trigger")),
-            _action("hutbot_cfg:nav:hub", value=fields.encode_meta(CHANNEL, "default")))
-    assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Rule"
-
-
-@pytest.mark.asyncio
-async def test_leaving_a_row_form_goes_back_to_its_list_not_to_the_hub():
-    app = _app()
-    _seed()
-    with _slack():
-        await handlers.handle_action(app, _body(
-            fields.encode_meta(CHANNEL, "default", "conditions", 0)),
-            _action("hutbot_cfg:nav:list:conditions",
-                    value=fields.encode_meta(CHANNEL, "default")))
+        await handlers.handle_view_submission(app, ack, _pushed_body(
+            fields.encode_meta(CHANNEL, "default", "conditions", 0),
+            callback_id=views.VIEW_CONDITION_ROW, values=_condition_values(),
+            parent="VCONDITIONS"))
+    assert len(configs["default"]["conditions"]) == 1
+    assert ack.await_args.kwargs == {}
+    assert app.client.views_update.await_args.kwargs["view_id"] == "VCONDITIONS"
     assert app.client.views_update.await_args.kwargs["view"]["title"]["text"] == "Conditions"
 
 
@@ -1099,7 +1090,7 @@ async def test_the_home_tab_is_never_the_target_of_a_modal_update():
         # for one from the tab must refuse, rather than write a modal's blocks into the tab —
         # where Slack renders them and drops the submit and close buttons.
         await handlers.handle_action(app, _home_body(), _action(
-            "hutbot_cfg:nav:hub", value=fields.encode_meta(CHANNEL, "default")))
+            "hutbot_cfg:toggle_enabled", value=fields.encode_meta(CHANNEL, "default")))
     app.client.views_update.assert_not_awaited()
     assert "has none" in errored.call_args.args[0]
 
@@ -1197,21 +1188,75 @@ async def test_a_variable_can_be_added_to_an_acknowledgement_text():
 
 
 @pytest.mark.asyncio
-async def test_the_reference_opens_on_top_so_the_form_keeps_what_was_typed():
-    # Pushed, not navigated to: the form underneath is never rebuilt, so nothing typed into
-    # it is lost, and Slack's own back arrow is the way out.
+async def test_unfolding_the_reference_keeps_what_was_typed_and_costs_no_depth():
+    # Block Kit has no collapsible section, so the fold is a redraw of this same view: no
+    # push, and the form is rebuilt from its own state rather than from storage.
     app = _app()
-    _seed()
+    configs = _seed()
+    values = {**_element("action", _option(ACTION_REPLY)),
+              **_element("reply_message", _plain("Half-written…"))}
     with _slack():
         await handlers.handle_action(
-            app, _body(fields.encode_meta(CHANNEL, "default", "message")),
-            _action("hutbot_cfg:variables:reply_message",
-                    value=fields.encode_meta(CHANNEL, "default")))
-    app.client.views_update.assert_not_awaited()
-    view = app.client.views_push.await_args.kwargs["view"]
-    assert view["title"]["text"] == "Variables"
-    # Read-only, so it can only ever be popped — which is why pushing it is safe.
-    assert "submit" not in view
+            app, _body(fields.encode_meta(CHANNEL, "default", "message"), values=values),
+            _action("hutbot_cfg:variables:reply_message"))
+    app.client.views_push.assert_not_awaited()
+    view = app.client.views_update.await_args.kwargs["view"]
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("reply_message")][0]
+    assert element["initial_value"] == "Half-written…"
+    assert "Every variable" in json.dumps(view)
+    # A redraw is not a write.
+    assert configs["default"]["reply_message"] == DEFAULT_CONFIG["reply_message"]
+
+
+@pytest.mark.asyncio
+async def test_the_toggle_folds_the_reference_back_away():
+    app = _app()
+    _seed()
+    values = {**_element("action", _option(ACTION_REPLY)),
+              **_element("reply_message", _plain("Anybody?"))}
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "message",
+                                          variables_expanded=True), values=values),
+            _action("hutbot_cfg:variables:reply_message"))
+    view = app.client.views_update.await_args.kwargs["view"]
+    assert "Every variable" not in json.dumps(view)
+
+
+@pytest.mark.asyncio
+async def test_an_unfolded_reference_survives_another_redraw_of_the_form():
+    # The fold lives in the view's metadata, so changing the action does not close it.
+    app = _app()
+    _seed()
+    values = {**_element("action", _option(ACTION_POST_CHANNEL)),
+              **_element("reply_message", _plain("Anybody?"))}
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "message",
+                                          variables_expanded=True), values=values),
+            _action("hutbot_cfg:render:action"))
+    view = app.client.views_update.await_args.kwargs["view"]
+    assert "Every variable" in json.dumps(view)
+
+
+@pytest.mark.asyncio
+async def test_an_acknowledgement_text_can_unfold_the_reference_at_full_depth():
+    app = _app()
+    _seed()
+    values = {**_element("label", _plain("Got it")),
+              **_element("action", _option("ack")),
+              **_element("value", _plain("Thanks"))}
+    with _slack():
+        await handlers.handle_action(
+            app, _body(fields.encode_meta(CHANNEL, "default", "buttons", 0), values=values),
+            _action("hutbot_cfg:variables:value"))
+    app.client.views_push.assert_not_awaited()
+    view = app.client.views_update.await_args.kwargs["view"]
+    assert "Every variable" in json.dumps(view)
+    element = [block["element"] for block in view["blocks"]
+               if block.get("block_id") == block_id("value")][0]
+    assert element["initial_value"] == "Thanks"
 
 
 @pytest.mark.asyncio
@@ -1275,34 +1320,29 @@ async def test_a_saved_form_never_leaves_a_second_view_on_the_stack():
 
 @pytest.mark.asyncio
 async def test_the_deepest_route_through_the_ui_stays_within_slacks_three():
-    """The route that decides the budget: an acknowledgement text's variable reference. Its
-    row form takes the button list's place rather than being pushed onto it, which is what
-    leaves room for the reference above it."""
+    """Nothing the UI opens goes past three, which is Slack's limit. The variable reference is
+    what would have: as a view of its own it was a fourth on this route, and as a fold into
+    the form that asks for it, it is none."""
     app = _app()
     _seed()
     rule = fields.encode_meta(CHANNEL, "default")
-    depth = 1  # the hub
+
+    async def pushed_by(body, action):
+        app.client.views_push.reset_mock()
+        await handlers.handle_action(app, body, action)
+        return app.client.views_push.await_count
 
     with _slack():
-        # 1 -> 2: the button list.
-        app.client.views_push.reset_mock()
-        await handlers.handle_action(app, _body(), _action("hutbot_cfg:open:buttons", value=rule))
-        depth += app.client.views_push.await_count
-        assert depth == 2
+        depth = 1  # the hub
+        depth += await pushed_by(_body(), _action("hutbot_cfg:open:buttons", value=rule))
+        assert depth == 2, "the button list"
+        depth += await pushed_by(_body(fields.encode_meta(CHANNEL, "default", "buttons")),
+                                 _action("hutbot_cfg:row:buttons:add", value=rule))
+        assert depth == 3, "the row form"
 
-        # Still 2: the row form replaces the list.
-        app.client.views_push.reset_mock()
-        await handlers.handle_action(
-            app, _body(fields.encode_meta(CHANNEL, "default", "buttons")),
-            _action("hutbot_cfg:row:buttons:add", value=rule))
-        depth += app.client.views_push.await_count
-        assert depth == 2
+        # And from the bottom of the budget the reference still opens, because unfolding it
+        # is a redraw of this view rather than a fourth one.
+        depth += await pushed_by(_body(fields.encode_meta(CHANNEL, "default", "buttons", 0)),
+                                 _action("hutbot_cfg:variables:value"))
+        assert depth == 3
 
-        # 2 -> 3: the reference, on top of the row form so the typed text survives.
-        app.client.views_push.reset_mock()
-        await handlers.handle_action(
-            app, _body(fields.encode_meta(CHANNEL, "default", "buttons", 0)),
-            _action("hutbot_cfg:variables:value", value=rule))
-        depth += app.client.views_push.await_count
-
-    assert depth == 3
