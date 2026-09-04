@@ -61,12 +61,21 @@ def test_meta_round_trips_and_stays_small():
     raw = fields.encode_meta("C12345", "nightly", "conditions", 3)
     assert len(raw) < 200
     assert fields.decode_meta(raw) == {
-        "channel_id": "C12345", "config_name": "nightly", "section": "conditions", "row": 3}
+        "channel_id": "C12345", "config_name": "nightly", "section": "conditions", "row": 3,
+        "variables_expanded": False}
 
 
 def test_meta_omits_what_it_was_not_given():
     assert fields.decode_meta(fields.encode_meta("C12345")) == {
-        "channel_id": "C12345", "config_name": "", "section": "", "row": None}
+        "channel_id": "C12345", "config_name": "", "section": "", "row": None,
+        "variables_expanded": False}
+
+
+def test_the_unfolded_reference_is_remembered_in_the_views_own_metadata():
+    # So that any other redraw of the form — a changed action, an inserted variable — leaves
+    # the reference as the reader left it.
+    raw = fields.encode_meta("C12345", "nightly", "message", variables_expanded=True)
+    assert fields.decode_meta(raw)["variables_expanded"] is True
 
 
 def test_meta_survives_a_long_rule_name_under_slacks_cap():
@@ -77,7 +86,8 @@ def test_meta_survives_a_long_rule_name_under_slacks_cap():
 def test_decode_meta_of_garbage_reads_as_blank_rather_than_missing_keys():
     # Handlers read the keys unconditionally; a blank channel id then fails the membership
     # check the same way any unknown channel does.
-    blank = {"channel_id": "", "config_name": "", "section": "", "row": None}
+    blank = {"channel_id": "", "config_name": "", "section": "", "row": None,
+             "variables_expanded": False}
     assert fields.decode_meta("not json") == blank
     assert fields.decode_meta("[1, 2]") == blank
     assert fields.decode_meta("") == blank
