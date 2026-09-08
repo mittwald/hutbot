@@ -79,6 +79,7 @@ import hutbot.conditionutil
 import hutbot.actions
 import hutbot.buttons
 import hutbot.buttonutil
+import hutbot.configexport
 import hutbot.scheduling
 import hutbot.routing
 import hutbot.webui_backend
