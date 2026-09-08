@@ -57,7 +57,7 @@ from hutbot.webui_backend import (
     ui_rename_config, ui_meta,
     ui_snapshot_configs,
 )
-from hutbot.commands.dispatch import process_command
+from hutbot.commands.dispatch import matches_a_command, process_command
 from hutbot.commands.setters import (
     set_work_hours, set_pattern, set_reply_message,
     set_replies_enabled,

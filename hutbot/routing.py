@@ -341,7 +341,7 @@ async def handle_bot_added_to_channel(app: AsyncApp, channel_id: str) -> None:
     text = (
         f"Hi! :wave: I am *{state.bot_name}* :palm_up_hand::tophat: and I am back in this channel.\n\n"
         f"I disabled {'this configuration' if singular else 'these configurations'} when I was removed: {config_list}. "
-        f"Re-enable {'it' if singular else 'them'} with `{state.slash_command} [config] enable`."
+        f"Re-enable {'it' if singular else 'them'} with `{state.slash_command} [config] config enable`."
     )
     await messaging._post_message(app, channel_id, text, None)
     log(f"{state.bot_name} was added to channel {channel_id}. "

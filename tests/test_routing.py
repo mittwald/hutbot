@@ -358,7 +358,10 @@ async def test_handle_bot_added_reports_configs_disabled_by_removal():
     text = mock_post.call_args.args[2]
     assert "`default`, `nightly`" in text
     assert "off-by-hand" not in text
-    assert f"{hutbot.state.slash_command} [config] enable" in text
+    # The spelling has to be one a command actually accepts, or the hint sends people
+    # into the help nudge instead of re-enabling anything.
+    assert f"{hutbot.state.slash_command} [config] config enable" in text
+    assert matches_a_command("config enable")
     # Nothing is re-enabled automatically.
     assert hutbot.state.channel_config[channel_id]["default"]["enabled"] is False
 
