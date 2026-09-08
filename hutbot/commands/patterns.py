@@ -57,20 +57,21 @@ SET_WORK_HOURS_PATTERN = create_command_pattern(r'(set\s+)?(work[_ -]?)?hours\s+
 ENABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'enable\s+(only[_ -]?)?work[_ -]?days')
 DISABLE_ONLY_WORK_DAYS_PATTERN = create_command_pattern(r'disable\s+(only[_ -]?)?work[_ -]?days')
 SHOW_CONFIG_PATTERN = re.compile(r'^(show\s+)?config(uration)?$', re.IGNORECASE)
-DELETE_CONFIG_PATTERN = create_command_pattern(r'delete\s+config\s+(?P<name>.+)')
-# `export config` prints one config as JSON; `import config` reads such an export back. The
-# name is optional in both: export falls back to the addressed config, import to the name the
-# export carries. The import is anchored and DOTALL because the pasted JSON spans lines, and
-# its group starts at `{` or a backtick (a code fence) — neither can start a config name, so
-# the optional name never swallows the JSON.
-EXPORT_CONFIG_PATTERN = re.compile(r'^export\s+config(uration)?(?:\s+(?P<name>\S+))?\s*$', re.IGNORECASE)
-IMPORT_CONFIG_PATTERN = re.compile(r'^import\s+config(uration)?(?:\s+(?P<name>[A-Za-z0-9-_\.:/]+))?\s+(?P<json>[{`].*)$', re.IGNORECASE | re.DOTALL)
-# The old name is one word, because a config name cannot contain a space. The new one takes
-# the rest of the line so that a name with a space in it is *rejected by name*, rather than
+# Whole-config commands are all spelled `[config] config <verb>`, so the config they act on
+# is addressed the way it is for every other command rather than named as an argument.
+# `enable` and `disable` fall back to the default config when none is addressed; `rename`
+# and `delete` need one named; `export` and `import` act on all configs without one.
+CONFIG_ENABLE_PATTERN = re.compile(r'^config(uration)?\s+enable$', re.IGNORECASE)
+CONFIG_DISABLE_PATTERN = re.compile(r'^config(uration)?\s+disable$', re.IGNORECASE)
+# `rename`, `name` and `set name` are one verb with three spellings. The new name takes the
+# rest of the line so that a name with a space in it is *rejected by name*, rather than
 # failing to look like this command at all — and so a missing new name says so.
-RENAME_CONFIG_PATTERN = create_command_pattern(r'rename\s+config\s+(?P<name>\S+)(?:\s+(?P<new_name>.+?))?\s*$')
-ENABLE_REPLIES_PATTERN = create_command_pattern(r'enable$')
-DISABLE_REPLIES_PATTERN = create_command_pattern(r'disable$')
+CONFIG_RENAME_PATTERN = re.compile(r'^config(uration)?\s+(rename|(set\s+)?name)(?:\s+(?P<new_name>.+?))?\s*$', re.IGNORECASE)
+CONFIG_DELETE_PATTERN = re.compile(r'^config(uration)?\s+delete$', re.IGNORECASE)
+CONFIG_EXPORT_PATTERN = re.compile(r'^config(uration)?\s+export$', re.IGNORECASE)
+# DOTALL because the pasted JSON spans lines. Anything is taken as the payload, so a
+# malformed paste is answered by the importer rather than by the command list.
+CONFIG_IMPORT_PATTERN = re.compile(r'^config(uration)?\s+import\s+(?P<json>.+)$', re.IGNORECASE | re.DOTALL)
 # The cron expression belongs to the `cron` trigger, so both arrive together.
 SET_TRIGGER_PATTERN = create_command_pattern(r'(set\s+)?trigger\s+(?P<trigger>\S+)(?:\s+(?P<expression>.+))?$')
 # Conditions chain together, so they are added one at a time like buttons. `clear` and

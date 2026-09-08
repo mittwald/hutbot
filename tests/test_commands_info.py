@@ -844,18 +844,18 @@ async def test_export_config_prints_only_non_default_fields():
     user = User(id="U123", name="test", real_name="Test User", team="A")
 
     with patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "export config alarms", channel, user)
+        await process_command(app, "alarms config export", channel, user)
 
     text = sent_messages(mock_send_message)
     payload = _exported_json(text)
     assert payload["format"] == "hutbot-config/1"
     assert payload["name"] == "alarms"
     assert payload["settings"] == {"wait_time": 300, "reply_message": "Alarm message", "opsgenie": True}
-    assert "import config" in text
+    assert "config import" in text
 
 
 @pytest.mark.asyncio
-async def test_export_config_defaults_to_the_addressed_config():
+async def test_export_config_exports_the_addressed_config():
     app = AsyncMock()
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["wait_time"] = 300
@@ -863,14 +863,34 @@ async def test_export_config_defaults_to_the_addressed_config():
     user = User(id="U123", name="test", real_name="Test User", team="A")
 
     with patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "alarms export config", channel, user)
-    assert _exported_json(sent_messages(mock_send_message))["name"] == "alarms"
+        await process_command(app, "alarms config export", channel, user)
+
+    payload = _exported_json(sent_messages(mock_send_message))
+    assert payload["name"] == "alarms"
+    assert payload["settings"] == {"wait_time": 300}
+
+
+@pytest.mark.asyncio
+async def test_export_without_a_config_exports_all_of_them():
+    app = AsyncMock()
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["wait_time"] = 300
+    channel = Channel(id="C123", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG), "alarms": config})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
 
     with patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "export config", channel, user)
-    payload = _exported_json(sent_messages(mock_send_message))
-    assert payload["name"] == "default"
-    assert payload["settings"] == {}
+        await process_command(app, "config export", channel, user)
+
+    text = sent_messages(mock_send_message)
+    payload = _exported_json(text)
+    assert payload["format"] == "hutbot-config/1"
+    assert "name" not in payload
+    # In the order the channel keeps them, so the export reads like `show config`.
+    assert payload["configs"] == [
+        {"name": "default", "settings": {}},
+        {"name": "alarms", "settings": {"wait_time": 300}},
+    ]
+    assert "All 2 configurations of #general" in text
 
 
 @pytest.mark.asyncio
@@ -882,7 +902,7 @@ async def test_export_config_never_prints_the_calendar_url():
     user = User(id="U123", name="test", real_name="Test User", team="A")
 
     with patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "export config alarms", channel, user)
+        await process_command(app, "alarms config export", channel, user)
 
     text = sent_messages(mock_send_message)
     assert "SECRETTOKEN" not in text
@@ -899,7 +919,7 @@ async def test_export_config_escapes_backticks_so_the_fence_survives():
     user = User(id="U123", name="test", real_name="Test User", team="A")
 
     with patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "export config alarms", channel, user)
+        await process_command(app, "alarms config export", channel, user)
 
     text = sent_messages(mock_send_message)
     # Exactly the opening and closing fence of the export itself.
@@ -916,7 +936,7 @@ async def test_export_config_unknown_name():
     user = User(id="U123", name="test", real_name="Test User", team="A")
 
     with patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "export config nope", channel, user)
+        await process_command(app, "nope config export", channel, user)
     assert "Configuration `nope` not found." in sent_messages(mock_send_message)
 
 
@@ -928,7 +948,7 @@ async def test_an_oversized_export_is_one_preformatted_block():
     channel = Channel(id="C123", name="general", configs={"alarms": config})
     user = User(id="U123", name="test", real_name="Test User", team="A")
 
-    await process_command(app, "export config alarms", channel, user)
+    await process_command(app, "alarms config export", channel, user)
 
     blocks = app.client.chat_postEphemeral.await_args.kwargs["blocks"]
     exports = [

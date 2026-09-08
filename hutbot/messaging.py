@@ -319,6 +319,16 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
     # commands, so it reads as a list. `•` rather than `-`, because Slack turns a `-` line
     # inside a quote block into a nested list and re-indents it.
     entries = [
+        "> :gear: *Every whole-config command is spelled `config <verb>`*\n>\n"
+        f"> • `{command} [config] config enable` and `{command} [config] config disable` — "
+        "turn a config on or off.\n"
+        f"> • `{command} <config> config rename <new-name>` — also `config name` and "
+        "`config set name`.\n"
+        f"> • `{command} <config> config delete` — the config it acts on is the one addressed.\n"
+        f"> • `{command} [config] config export` — one config as JSON, or every config of the "
+        "channel without a `<config>`.\n"
+        f"> • `{command} [config] config import <json>` — read such an export back.",
+
         "> :robot_face: *Triggers, actions & buttons*\n>\n"
         f"> • `{command} [config] set trigger cron \"0 9 * * 1-5\"` — fire on a schedule, "
         "no message needed.\n"
@@ -533,12 +543,12 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
     command_groups = [
         ("Configurations", [
             (f"{command} show config", "Show all configurations."),
-            (f"{command} [config] enable", "Enable this config."),
-            (f"{command} [config] disable", "Disable this config."),
-            (f"{command} rename config <name> <new-name>", "Rename a configuration, and everything pointing at it."),
-            (f"{command} delete config <name>", "Delete a configuration."),
-            (f"{command} export config [<name>]", "Print a configuration as JSON to copy elsewhere."),
-            (f"{command} import config [<name>] <json>", "Create or replace a configuration from an export."),
+            (f"{command} [config] config enable", "Enable this config."),
+            (f"{command} [config] config disable", "Disable this config."),
+            (f"{command} <config> config rename <new-name>", "Rename a configuration, and everything pointing at it."),
+            (f"{command} <config> config delete", "Delete a configuration."),
+            (f"{command} [config] config export", "Print a configuration as JSON, or all of them."),
+            (f"{command} [config] config import <json>", "Create or replace configurations from an export."),
         ]),
         ("Trigger", [
             (f"{command} [config] set trigger <message|manual>", "Set how the rule starts."),

@@ -320,6 +320,14 @@ async def set_pattern(app: AsyncApp, channel, config_name: str, pattern_str: str
 
 
 async def delete_config(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    """`<config> config delete` — the config to delete is the addressed one.
+
+    Deleting is not something to guess at, so an unaddressed command deletes nothing.
+    """
+    if not config_name:
+        await messaging.send_message(app, channel, user, f"Name the configuration to delete: `{state.slash_command} <config> config delete`.", thread_ts)
+        return
+
     if config_name == DEFAULT_CONFIG_NAME:
         await messaging.send_message(app, channel, user, f"The `{DEFAULT_CONFIG_NAME}` configuration cannot be deleted.", thread_ts)
         return
@@ -347,85 +355,132 @@ def _strip_json_block(text: str) -> str:
     return text.strip()
 
 
-async def import_config(app: AsyncApp, channel, addressed_name: str, explicit_name: str, json_text: str, user, thread_ts: str = "") -> None:
-    """`import config [<name>] <json>` — create or replace a config from an export.
+async def import_config(app: AsyncApp, channel, addressed_name: str, json_text: str, user, thread_ts: str = "") -> None:
+    """`[config] config import <json>` — create or replace configs from an export.
 
-    The JSON is what `export config` prints. Fields missing from `settings` take the
-    default, so an export only changes what the exporter actually set. The name given in
-    the command wins over the one the export carries; a `<config>` prefix counts as given.
-    A bare settings object without the envelope is accepted too, for hand-written imports.
+    The JSON is what `config export` prints: one config, or every config of a channel.
+    Fields missing from a `settings` object take the default, so an export only changes what
+    the exporter actually set. An addressed `<config>` is the name to import into and wins
+    over the name the export carries; without one, each config keeps its exported name. A
+    bare settings object without the envelope is accepted too, for hand-written imports.
 
-    Everything runs through `validate_config_payload` — the exact checks the web UI save
-    and the setters make — so an import cannot store what a setter would have refused.
+    Everything runs through `validate_config_payload` — the exact checks the web UI save and
+    the setters make — so an import cannot store what a setter would have refused. It is
+    all-or-nothing: an import that refuses one config imports none of them.
     """
     json_text = _strip_json_block(json_text)
     try:
         payload = json.loads(json_text)
     except json.JSONDecodeError as e:
-        await messaging.send_message(app, channel, user, f"That is not valid JSON ({e}). Paste an export made with `{state.slash_command} export config <name>`.", thread_ts)
+        await messaging.send_message(app, channel, user, f"That is not valid JSON ({e}). Paste an export made with `{state.slash_command} [config] config export`.", thread_ts)
         return
     if not isinstance(payload, dict):
-        await messaging.send_message(app, channel, user, f"The import must be a JSON object, like the one `{state.slash_command} export config` prints.", thread_ts)
+        await messaging.send_message(app, channel, user, f"The import must be a JSON object, like the one `{state.slash_command} config export` prints.", thread_ts)
         return
 
-    if 'settings' in payload or 'format' in payload:
+    # `(exported name, settings)` per config in the import, in the order the export lists
+    # them, so an all-configs export and a single one take the same path from here on.
+    exported: list[tuple[str, dict]] = []
+    if 'settings' in payload or 'configs' in payload or 'format' in payload:
         format_value = str(payload.get('format') or "")
         if format_value != CONFIG_EXPORT_FORMAT:
             await messaging.send_message(app, channel, user, f"Unsupported export format `{format_value}`; this bot reads `{CONFIG_EXPORT_FORMAT}`.", thread_ts)
             return
-        settings = payload.get('settings')
-        if not isinstance(settings, dict):
-            await messaging.send_message(app, channel, user, "The export's `settings` must be a JSON object.", thread_ts)
-            return
-        envelope_name = str(payload.get('name') or "").strip()
-    else:
-        settings, envelope_name = payload, ""
-
-    name = explicit_name or addressed_name or envelope_name or DEFAULT_CONFIG_NAME
-    if name.lower() in RESERVED_CONFIG_NAMES:
-        await messaging.send_message(app, channel, user, f"`{name}` cannot be a configuration name; it starts a command.", thread_ts)
-        return
-    if not CONFIG_NAME_PATTERN.match(name):
-        await messaging.send_message(app, channel, user, f"Invalid config name: `{name}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.", thread_ts)
-        return
-
-    unknown = sorted(key for key in settings if key not in DEFAULT_CONFIG)
-    if unknown:
-        await messaging.send_message(app, channel, user, "Unknown setting(s) in the import: " + ", ".join(f"`{key}`" for key in unknown) + ".", thread_ts)
-        return
-    # Slack wraps a URL typed into a message in `<…>`; the stored value is the bare URL.
-    if isinstance(settings.get('calendar_url'), str):
-        settings = dict(settings)
-        settings['calendar_url'] = unwrap_slack_link(settings['calendar_url'])
-
-    existing = channel.configs.get(name)
-    clean, errors = await webui_backend.validate_config_payload(settings, app, channel.id, existing)
-    if errors:
-        rows = "\n".join(f"• `{field}`: {problem}" for field, problem in sorted(errors.items()))
-        await messaging.send_message(app, channel, user, f"Nothing imported. The import into configuration `{name}` was refused:\n{rows}", thread_ts)
-        return
-
-    async with state._config_write_lock:
-        # Validation awaits Slack/cache operations. A UI delete or rename can therefore move
-        # the config after the first lookup. Re-read it while holding the same lock as every
-        # whole-config writer so a detached or renamed object is never mutated.
-        existing = channel.configs.get(name)
-        if existing is None:
-            channel.configs[name] = clean
-            verb = "created"
+        if 'configs' in payload:
+            entries = payload.get('configs')
+            if not isinstance(entries, list) or not entries:
+                await messaging.send_message(app, channel, user, "The export's `configs` must be a non-empty JSON array.", thread_ts)
+                return
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get('settings'), dict):
+                    await messaging.send_message(app, channel, user, "Every entry in the export's `configs` needs a `name` and a `settings` object.", thread_ts)
+                    return
+                exported.append((str(entry.get('name') or "").strip(), entry['settings']))
         else:
-            # Mutated in place rather than replaced, exactly like the web UI save: a queued
-            # reminder and a pending buttoned message hold this dict object, which is how the
-            # import reaches work already in flight. `clean` starts from a full
-            # `DEFAULT_CONFIG`, so this drops nothing.
-            existing.clear()
-            existing.update(clean)
-            verb = "replaced"
+            settings = payload.get('settings')
+            if not isinstance(settings, dict):
+                await messaging.send_message(app, channel, user, "The export's `settings` must be a JSON object.", thread_ts)
+                return
+            exported.append((str(payload.get('name') or "").strip(), settings))
+    else:
+        exported.append(("", payload))
+
+    if addressed_name and len(exported) > 1:
+        await messaging.send_message(app, channel, user, f"That export holds {len(exported)} configurations, so it cannot be imported into `{addressed_name}`. Import it without naming a configuration.", thread_ts)
+        return
+    # Which config a problem belongs to only needs saying when the import holds several.
+    def about(name: str) -> str:
+        return f"`{name}`: " if len(exported) > 1 else ""
+
+    # Name and clean settings per config, ready to store. Every check runs over the whole
+    # import before anything is written, so a refusal leaves the channel exactly as it was.
+    planned: list[tuple[str, dict]] = []
+    errors: list[str] = []
+    for exported_name, settings in exported:
+        name = addressed_name or exported_name or DEFAULT_CONFIG_NAME
+        if name.lower() in RESERVED_CONFIG_NAMES:
+            await messaging.send_message(app, channel, user, f"`{name}` cannot be a configuration name; it starts a command.", thread_ts)
+            return
+        if not CONFIG_NAME_PATTERN.match(name):
+            await messaging.send_message(app, channel, user, f"Invalid config name: `{name}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.", thread_ts)
+            return
+        if any(name == planned_name for planned_name, _ in planned):
+            await messaging.send_message(app, channel, user, f"The import names configuration `{name}` twice.", thread_ts)
+            return
+
+        unknown = sorted(key for key in settings if key not in DEFAULT_CONFIG)
+        if unknown:
+            await messaging.send_message(app, channel, user, about(name) + "Unknown setting(s) in the import: " + ", ".join(f"`{key}`" for key in unknown) + ".", thread_ts)
+            return
+        # Slack wraps a URL typed into a message in `<…>`; the stored value is the bare URL.
+        if isinstance(settings.get('calendar_url'), str):
+            settings = dict(settings)
+            settings['calendar_url'] = unwrap_slack_link(settings['calendar_url'])
+
+        clean, refused = await webui_backend.validate_config_payload(settings, app, channel.id, channel.configs.get(name))
+        errors.extend(f"• {about(name)}`{field}`: {problem}" for field, problem in sorted(refused.items()))
+        if not refused:
+            planned.append((name, clean))
+
+    if errors:
+        into = "" if len(exported) > 1 else f" into configuration `{addressed_name or exported[0][0] or DEFAULT_CONFIG_NAME}`"
+        await messaging.send_message(app, channel, user, f"Nothing imported. The import{into} was refused:\n" + "\n".join(errors), thread_ts)
+        return
+
+    results: list[tuple[str, str]] = []
+    async with state._config_write_lock:
+        for name, clean in planned:
+            # Validation awaits Slack/cache operations. A UI delete or rename can therefore
+            # move the config after the first lookup. Re-read it while holding the same lock
+            # as every whole-config writer so a detached or renamed object is never mutated.
+            existing = channel.configs.get(name)
+            if existing is None:
+                channel.configs[name] = clean
+                results.append((name, "created"))
+            else:
+                # Mutated in place rather than replaced, exactly like the web UI save: a
+                # queued reminder and a pending buttoned message hold this dict object, which
+                # is how the import reaches work already in flight. `clean` starts from a full
+                # `DEFAULT_CONFIG`, so this drops nothing.
+                existing.clear()
+                existing.update(clean)
+                results.append((name, "replaced"))
         await persistence.save_configuration()
-    await messaging.send_message(app, channel, user, f"Configuration `{name}` has been *{verb}* from the import.", thread_ts)
+
+    if len(results) == 1:
+        name, verb = results[0]
+        message = f"Configuration `{name}` has been *{verb}* from the import."
+    else:
+        message = f"{len(results)} configurations imported: " + ", ".join(f"`{name}` *{verb}*" for name, verb in results) + "."
+    await messaging.send_message(app, channel, user, message, thread_ts)
 
 
 async def rename_config(app: AsyncApp, channel, config_name: str, new_name: str, user, thread_ts: str = "") -> None:
+    """`<config> config rename <new-name>` — the config to rename is the addressed one."""
+    if not config_name:
+        await messaging.send_message(app, channel, user, f"Name the configuration to rename: `{state.slash_command} <config> config rename <new-name>`.", thread_ts)
+        return
+
     ok, error, changed = await renaming.rename_config(channel.id, config_name, new_name)
     if not ok:
         await messaging.send_message(app, channel, user, error, thread_ts)

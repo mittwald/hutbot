@@ -138,38 +138,61 @@ async def get_team_of(app: AsyncApp, channel, username: str, user, thread_ts: st
 
 
 # Left out of an export on purpose: the calendar URL is a bearer secret that must never be
-# printed to the channel (`export config` says so when one is set), and `disabled_reason` is
+# printed to the channel (`config export` says so when one is set), and `disabled_reason` is
 # the bot's own bookkeeping, not a setting the exporter made.
 EXPORT_SKIPPED_FIELDS = {'calendar_url', 'disabled_reason'}
 
 
-async def export_config(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
-    """`export config [<name>]` — one config as JSON, ready for `import config`.
-
-    Only the fields that differ from the defaults are exported, so the JSON stays readable
-    and importing it changes only what the exporter actually set.
-    """
-    config = channel.configs.get(config_name)
-    if config is None:
-        await messaging.send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
-        return
-
-    settings = {
+def _exported_settings(config: dict) -> dict:
+    """The fields of `config` worth exporting: the ones that differ from the defaults."""
+    return {
         key: copy.deepcopy(value)
         for key, value in config.items()
         if key in DEFAULT_CONFIG and key not in EXPORT_SKIPPED_FIELDS and value != DEFAULT_CONFIG[key]
     }
-    payload = {"format": CONFIG_EXPORT_FORMAT, "name": config_name, "settings": settings}
+
+
+async def export_config(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
+    """`[config] config export` — configs as JSON, ready for `config import`.
+
+    The addressed config, or every config of the channel when none is addressed — one
+    payload either way, so a whole channel travels in a single paste. Only the fields that
+    differ from the defaults are exported, so the JSON stays readable and importing it
+    changes only what the exporter actually set.
+    """
+    if config_name:
+        config = channel.configs.get(config_name)
+        if config is None:
+            await messaging.send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
+            return
+        exported = {config_name: config}
+        payload = {"format": CONFIG_EXPORT_FORMAT, "name": config_name, "settings": _exported_settings(config)}
+        heading = f"Configuration `{config_name}` of #{channel.name}:"
+    else:
+        exported = {name: config for name, config in channel.configs.items() if isinstance(config, dict)}
+        if not exported:
+            await messaging.send_message(app, channel, user, f"There are no configurations in #{channel.name} to export.", thread_ts)
+            return
+        payload = {
+            "format": CONFIG_EXPORT_FORMAT,
+            "configs": [{"name": name, "settings": _exported_settings(config)} for name, config in exported.items()],
+        }
+        heading = f"All {len(exported)} configurations of #{channel.name}:" if len(exported) > 1 else f"The one configuration of #{channel.name}:"
+
     dumped = json.dumps(payload, indent=2, ensure_ascii=False)
     # A backtick can only occur inside a JSON string, so escaping every one of them keeps the
     # JSON valid (and round-tripping) while a message containing ``` cannot close the code
     # fence early the way `show config` has to guard against.
     dumped = dumped.replace("`", "\\u0060")
 
-    notes = [f"_Import it with `{state.slash_command} import config [<name>] <json>`; a name given there wins over the exported one._"]
-    if config.get('calendar_url'):
-        notes.append(f"_The calendar feed URL is a secret and was *not* exported; set it again with `{state.slash_command} [config] set calendar <url>`._")
-    heading = f"Configuration `{config_name}` of #{channel.name}:"
+    if config_name:
+        notes = [f"_Import it with `{state.slash_command} [config] config import <json>`; a configuration addressed there wins over the exported name._"]
+    else:
+        notes = [f"_Import it with `{state.slash_command} config import <json>` — every configuration in it, under its exported name._"]
+    with_calendar = [name for name, config in exported.items() if config.get('calendar_url')]
+    if with_calendar:
+        which = "" if config_name else " (" + ", ".join(f"`{name}`" for name in with_calendar) + ")"
+        notes.append(f"_The calendar feed URL is a secret and was *not* exported{which}; set it again with `{state.slash_command} [config] set calendar <url>`._")
     note_text = "\n".join(notes)
     message = f"{heading}\n```\n{dumped}\n```\n{note_text}"
     blocks = messaging.section_blocks(heading)

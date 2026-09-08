@@ -25,6 +25,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     """Parses and executes a command, returns True if a command was matched."""
     # A bare `/hutbot` — or a lone @mention, whose text is stripped to nothing before it
     # gets here — is someone looking for the command list, not a typo to scold.
+    addressed_name = config_name if config_addressed else ""
     if not command_text.strip():
         await messaging.send_help_message(app, channel, user, thread_ts)
     elif (match := (patterns.TEST_WITH_MESSAGE_PATTERN if allow_test_message else patterns.TEST_PATTERN).match(command_text)):
@@ -125,21 +126,21 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
         await setters.set_escalation(app, channel, config_name, match.group("minutes"), match.group("kind"), match.group("target"), user, thread_ts)
     elif patterns.RUN_PATTERN.match(command_text):
         await setters.run_config_now(app, opsgenie_tokens, channel, config_name, user, thread_ts)
-    elif patterns.ENABLE_REPLIES_PATTERN.match(command_text):
+    elif patterns.CONFIG_ENABLE_PATTERN.match(command_text):
         await setters.set_replies_enabled(app, channel, config_name, True, user, thread_ts)
-    elif patterns.DISABLE_REPLIES_PATTERN.match(command_text):
+    elif patterns.CONFIG_DISABLE_PATTERN.match(command_text):
         await setters.set_replies_enabled(app, channel, config_name, False, user, thread_ts)
-    elif (match := patterns.RENAME_CONFIG_PATTERN.match(command_text)):
-        await setters.rename_config(app, channel, strip_quotes(match.group("name")), strip_quotes(match.group("new_name") or ""), user, thread_ts)
-    elif (match := patterns.DELETE_CONFIG_PATTERN.match(command_text)):
-        name = strip_quotes(match.group("name"))
-        await setters.delete_config(app, channel, name, user, thread_ts)
-    elif (match := patterns.EXPORT_CONFIG_PATTERN.match(command_text)):
-        name = strip_quotes(match.group("name") or "")
-        await info.export_config(app, channel, name or config_name, user, thread_ts)
-    elif (match := patterns.IMPORT_CONFIG_PATTERN.match(command_text)):
-        addressed_name = config_name if config_addressed else ""
-        await setters.import_config(app, channel, addressed_name, strip_quotes(match.group("name") or ""), match.group("json"), user, thread_ts)
+    # `rename`, `delete`, `export` and `import` act on the config as a whole, so an
+    # unaddressed one is no config at all rather than the default: the first two say so, and
+    # the other two work on every config in the channel.
+    elif (match := patterns.CONFIG_RENAME_PATTERN.match(command_text)):
+        await setters.rename_config(app, channel, addressed_name, strip_quotes(match.group("new_name") or ""), user, thread_ts)
+    elif patterns.CONFIG_DELETE_PATTERN.match(command_text):
+        await setters.delete_config(app, channel, addressed_name, user, thread_ts)
+    elif patterns.CONFIG_EXPORT_PATTERN.match(command_text):
+        await info.export_config(app, channel, addressed_name, user, thread_ts)
+    elif (match := patterns.CONFIG_IMPORT_PATTERN.match(command_text)):
+        await setters.import_config(app, channel, addressed_name, match.group("json"), user, thread_ts)
     elif patterns.SHOW_CONFIG_PATTERN.match(command_text):
         await info.show_config(app, channel, user, thread_ts)
     elif patterns.HELP_VARIABLES_PATTERN.match(command_text):
