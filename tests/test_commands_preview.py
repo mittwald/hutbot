@@ -120,7 +120,10 @@ async def test_process_command_slash_test_with_trailing_text_is_unknown():
         await process_command(app, "test hello world", channel, user)
 
     mock_get_opsgenie_template_variables.assert_not_awaited()
-    mock_send_message.assert_called_with(app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", "")
+    # A test message needs the mention form, which is what the nudge points at.
+    text = mock_send_message.call_args.args[3]
+    assert text.startswith("Huh? :thinking_face:")
+    assert "@Hutbot [config] test <message>" in text
 
 
 

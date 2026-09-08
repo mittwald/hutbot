@@ -652,9 +652,12 @@ async def test_a_command_word_is_not_taken_as_a_config_name():
          patch('hutbot.messaging.send_message') as mock_send_message:
         await process_command(app, "set config enable", channel, user)
 
-    assert mock_send_message.call_args.args[3] == (
+    sent_message = mock_send_message.call_args.args[3]
+    assert sent_message.startswith(
         "`set` cannot be a configuration name; it starts a command. Check the syntax with `/hutbot help`."
     )
+    # The refusal is about the name, but the command behind it is named too.
+    assert "/hutbot [config] config enable" in sent_message
     assert sorted(configs) == ["default"]
 
 

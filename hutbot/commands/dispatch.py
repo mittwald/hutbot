@@ -213,13 +213,17 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
     # Nothing matched as a command, so a leading word can only be a config name —
     # including one that does not exist yet, which is how configs are created.
     if remainder and matches_a_command(remainder, allow_test_message):
+        # Both refusals are about the name, but the command behind it is often a near miss
+        # too — `export config` is a config called `export` only by accident.
+        suggestion = messaging.command_help_block(text)
         if leading_word.lower() in RESERVED_CONFIG_NAMES:
-            await messaging.send_message(app, channel, user, f"`{leading_word}` cannot be a configuration name; it starts a command. Check the syntax with `{state.slash_command} help`.", thread_ts)
+            await messaging.send_message(app, channel, user, f"`{leading_word}` cannot be a configuration name; it starts a command. Check the syntax with `{state.slash_command} help`.{suggestion}", thread_ts)
             return
         if not CONFIG_NAME_PATTERN.match(leading_word):
-            await messaging.send_message(app, channel, user, f"Invalid config name: `{leading_word}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.", thread_ts)
+            await messaging.send_message(app, channel, user, f"Invalid config name: `{leading_word}`. Only characters `A-Z`, `a-z`, `0-9`, `.`, `:`, `/`, `-`, `_` are allowed.{suggestion}", thread_ts)
             return
         if await run(remainder, leading_word, config_addressed=True):
             return
 
-    await messaging.send_message(app, channel, user, f"Huh? :thinking_face: Maybe type `{state.slash_command} help` for a list of commands.", thread_ts)
+    # Not a command — but often a near miss, so the reply names the commands it looks like.
+    await messaging.send_unknown_command_message(app, channel, user, text, thread_ts)

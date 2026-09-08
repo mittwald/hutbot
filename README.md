@@ -5,8 +5,10 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
 Run `/hutbot` (or just `@hutbot` on its own) with nothing after it to get the full command
 list; `/hutbot help` does the same. `/hutbot help variables` prints the separate reference of
 every `{{variable}}` — grouped by message, date/time, Opsgenie and calendar — plus the
-condition operators. Any argument may be quoted with `"`, `'` or backticks —
-handy since Slack renders a backticked value as code as you type it.
+condition operators. Something that is not a command is answered with the help for whatever it
+looks like — `/hutbot delete config alarms` names `/hutbot <config> config delete` — and with
+the plain "type `/hutbot help`" nudge when it could be anything. Any argument may be quoted
+with `"`, `'` or backticks — handy since Slack renders a backticked value as code as you type it.
 
 A reply message can span several lines: a command arrives as a single line, so type `\n`
 where the break belongs — `/hutbot set message "First line.\nSecond line."` — and `\\n` when a

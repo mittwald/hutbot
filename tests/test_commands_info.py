@@ -166,6 +166,117 @@ async def test_process_command_help_uses_compact_command_reference():
 
 
 
+# ----- the nudge for something that is not a command -----
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text, expected", [
+    # The spellings this bot used to have, which is what people keep typing.
+    ("delete config alarms", "/hutbot <config> config delete"),
+    ("rename config nag standup-nag", "/hutbot <config> config rename <new-name>"),
+    ('import config {"wait_time": 300}', "/hutbot [config] config import <json>"),
+    # A command typed without its value.
+    ("set wait-time", "/hutbot [config] set wait-time <minutes>"),
+    ("set condition-mode", "/hutbot [config] set condition-mode <all|any>"),
+])
+async def test_an_unknown_command_names_the_command_it_looks_like(text, expected):
+    app = AsyncMock()
+    channel = Channel(id="C123", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, text, channel, user)
+
+    sent_message = sent_messages(mock_send_message)
+    assert sent_message.startswith("Huh? :thinking_face:")
+    assert "Did you mean this command?" in sent_message
+    assert expected in sent_message
+    assert "`/hutbot help` lists every command." in sent_message
+
+
+@pytest.mark.asyncio
+async def test_a_refused_config_name_names_the_command_it_looks_like():
+    """`export config` is a config called `export` only by accident."""
+    app = AsyncMock()
+    channel = Channel(id="C123", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "export config", channel, user)
+
+    sent_message = sent_messages(mock_send_message)
+    assert sent_message.startswith("`export` cannot be a configuration name; it starts a command.")
+    assert "/hutbot [config] config export" in sent_message
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "bad!name config enable", channel, user)
+
+    sent_message = sent_messages(mock_send_message)
+    assert sent_message.startswith("Invalid config name: `bad!name`.")
+    assert "/hutbot [config] config enable" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_command_names_every_spelling_that_fits():
+    """A bare `enable` was a command once; all four things that can be enabled are offered."""
+    app = AsyncMock()
+    channel = Channel(id="C123", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "alarms enable", channel, user)
+
+    sent_message = sent_messages(mock_send_message)
+    assert "Did you mean one of these?" in sent_message
+    for expected in ("# Configurations\n/hutbot [config] config enable",
+                     "/hutbot [config] enable bots",
+                     "/hutbot [config] enable only-work-days",
+                     "/hutbot [config] enable opsgenie"):
+        assert expected in sent_message, expected
+    # A guess is a few rows, never the help table over again.
+    assert "# Buttons" not in sent_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [
+    "wat",
+    "blah blah blah",
+    # `set` alone fits half the table, so it says nothing about which command was meant.
+    "set foo bar",
+])
+async def test_an_unrecognizable_command_keeps_the_plain_nudge(text):
+    app = AsyncMock()
+    channel = Channel(id="C123", name="general", configs={"default": copy.deepcopy(DEFAULT_CONFIG)})
+    user = User(id="U123", name="test", real_name="Test User", team="A")
+
+    with patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, text, channel, user)
+
+    mock_send_message.assert_called_once_with(
+        app, channel, user, "Huh? :thinking_face: Maybe type `/hutbot help` for a list of commands.", "")
+
+
+def test_a_suggested_command_is_always_a_documented_one():
+    """The nudge reads the help table itself, so it cannot offer a command help does not."""
+    documented = {command for _, rows in hutbot.messaging.help_command_groups() for command, _ in rows}
+
+    for text in ("delete config alarms", "enable", "set trigger", "add button", "show calender"):
+        suggested = {command
+                     for _, rows in hutbot.messaging.suggested_command_groups(text)
+                     for command, _ in rows}
+        assert suggested and suggested <= documented, text
+
+
+def test_a_pasted_payload_does_not_outvote_the_command():
+    """Matching stops at the first value, or a paste would score on stray keywords."""
+    payload = '{"reply_message": "run the test", "trigger": "cron", "action": "reply"}'
+
+    suggested = [command
+                 for _, rows in hutbot.messaging.suggested_command_groups(f"import config {payload}")
+                 for command, _ in rows]
+
+    assert suggested == ["/hutbot [config] config import <json>"]
+
+
 @pytest.mark.asyncio
 async def test_process_command_help_uses_configured_slash_command():
     app = AsyncMock()
