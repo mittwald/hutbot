@@ -5,8 +5,10 @@ The hutbot is a simple Slack bot that monitors messages in a channel and automat
 Run `/hutbot` (or just `@hutbot` on its own) with nothing after it to get the full command
 list; `/hutbot help` does the same. `/hutbot help variables` prints the separate reference of
 every `{{variable}}` — grouped by message, date/time, Opsgenie and calendar — plus the
-condition operators. Any argument may be quoted with `"`, `'` or backticks —
-handy since Slack renders a backticked value as code as you type it.
+condition operators. Something that is not a command is answered with the help for whatever it
+looks like — `/hutbot delete config alarms` names `/hutbot <config> config delete` — and with
+the plain "type `/hutbot help`" nudge when it could be anything. Any argument may be quoted
+with `"`, `'` or backticks — handy since Slack renders a backticked value as code as you type it.
 
 A reply message can span several lines: a command arrives as a single line, so type `\n`
 where the break belongs — `/hutbot set message "First line.\nSecond line."` — and `\\n` when a
@@ -313,9 +315,13 @@ the egress rule lets the packet leave.
 ## Renaming a config
 
 ```bash
-/hutbot rename config <name> <new-name>
-/hutbot delete config <name>
+/hutbot <config> config rename <new-name>   # also `config name` and `config set name`
+/hutbot <config> config delete
 ```
+
+Both act on the addressed config, so the config to rename or delete is named the same way as
+for every other command — and neither has a default: without a `<config>` they say which
+configuration to name instead of touching `default`.
 
 A config's name is its identity — there is no separate name field — so renaming one moves
 everything that points at it in the same step:
@@ -335,11 +341,11 @@ renaming is the **Rename** button next to **Delete rule**.
 ## Exporting and importing a config
 
 ```bash
-/hutbot export config [<name>]
-/hutbot import config [<name>] <json>
+/hutbot [config] config export        # without a config: every config of the channel
+/hutbot [config] config import <json>
 ```
 
-`export config` prints one config as JSON, ready to paste into `import config` in another
+`config export` prints one config as JSON, ready to paste into `config import` in another
 channel (or on another instance). Only the fields that differ from the defaults are exported:
 
 ```json
@@ -354,19 +360,35 @@ channel (or on another instance). Only the fields that differ from the defaults 
 }
 ```
 
-`import config` creates the config, or **replaces** it entirely if one with that name already
-exists. A name given in the command — `import config <name> <json>` or the `<config>` prefix —
-wins over the `name` in the JSON; without either, the exported name is used. The JSON may be
-pasted bare or inside a code block, and a plain `{ "wait_time": 600, … }` settings object
-without the envelope is accepted too.
+Without a `<config>`, the export holds every configuration of the channel instead, so a whole
+channel travels in one paste. That payload carries a `configs` array rather than one
+`name`/`settings` pair:
+
+```json
+{
+  "format": "hutbot-config/1",
+  "configs": [
+    { "name": "default", "settings": {} },
+    { "name": "escalate", "settings": { "wait_time": 600 } }
+  ]
+}
+```
+
+`config import` creates each config, or **replaces** it entirely if one with that name already
+exists. An addressed `<config>` — `/hutbot escalate config import <json>` — is the name to
+import into and wins over the `name` in the JSON; without one, each config keeps its exported
+name (and a single export without a name at all lands in `default`). An all-configs export
+cannot be imported into one addressed config, because its several configs have nowhere to go.
+The JSON may be pasted bare or inside a code block, and a plain `{ "wait_time": 600, … }`
+settings object without the envelope is accepted too.
 
 Every import runs through the same validation as the web UI save and the setters, so an
-import cannot store what a setter would have refused; a refused import changes nothing and
-lists each offending field. Fields missing from `settings` take their defaults. Two fields
-never travel: `disabled_reason` is the bot's own bookkeeping, and the calendar feed URL is a
-bearer secret that must not be printed to the channel — the export says so when one is set,
-and `set calendar <url>` restores it on the imported config (a `calendar_builtin` name is
-exported normally).
+import cannot store what a setter would have refused; an import is all-or-nothing — one
+refused config imports none of them, changes nothing, and lists each offending field. Fields
+missing from `settings` take their defaults. Two fields never travel: `disabled_reason` is the
+bot's own bookkeeping, and the calendar feed URL is a bearer secret that must not be printed
+to the channel — the export says so when one is set, and `set calendar <url>` restores it on
+the imported config (a `calendar_builtin` name is exported normally).
 
 ## Triggers, conditions, and actions
 
@@ -584,7 +606,7 @@ post in. When Hutbot is removed from a channel (kicked, or `/remove`d):
   elsewhere by one of its rules (so nothing escalates into a now-disabled configuration).
 
 Configurations are **not** re-enabled automatically. When Hutbot is added back it posts a message
-listing the configurations it disabled, which can then be re-enabled with `/hutbot [config] enable`
+listing the configurations it disabled, which can then be re-enabled with `/hutbot [config] config enable`
 (or the web UI). Configurations that a user had disabled by hand are left alone and are not part of
 that message.
 

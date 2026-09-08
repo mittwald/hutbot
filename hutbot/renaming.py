@@ -35,7 +35,7 @@ def rename_error(configs: dict, old_name: str, new_name: str) -> str:
     if old_name not in configs:
         return f"Configuration `{old_name}` not found."
     if not new_name:
-        return f"Give the new name, e.g. `{state.slash_command} rename config old new`."
+        return f"Give the new name, e.g. `{state.slash_command} old config rename new`."
     if new_name == old_name:
         return f"Configuration `{old_name}` is already called that."
     if not CONFIG_NAME_PATTERN.fullmatch(new_name):

@@ -300,7 +300,7 @@ async def test_the_command_renames_and_reports_what_else_moved():
 
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.messaging.send_message') as send:
-        await process_command(app, "rename config nag standup-nag", channel, User("U1", "d", "D", "T"))
+        await process_command(app, "nag config rename standup-nag", channel, User("U1", "d", "D", "T"))
 
     assert "standup-nag" in configs
     assert send.call_args.args[3] == (
@@ -315,7 +315,7 @@ async def test_the_command_says_nothing_extra_when_nothing_else_moved():
 
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.messaging.send_message') as send:
-        await process_command(app, "rename config nag standup-nag", channel, User("U1", "d", "D", "T"))
+        await process_command(app, "nag config rename standup-nag", channel, User("U1", "d", "D", "T"))
 
     assert send.call_args.args[3] == "Configuration `nag` has been renamed to `standup-nag`."
 
@@ -328,7 +328,7 @@ async def test_the_command_reports_a_refusal():
 
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.messaging.send_message') as send:
-        await process_command(app, "rename config nag default", channel, User("U1", "d", "D", "T"))
+        await process_command(app, "nag config rename default", channel, User("U1", "d", "D", "T"))
 
     assert "already exists" in send.call_args.args[3]
     assert "nag" in configs
@@ -342,7 +342,7 @@ async def test_the_command_is_listed_in_the_help():
     with patch('hutbot.messaging.send_message') as send:
         await process_command(app, "help", channel, User("U1", "d", "D", "T"))
 
-    assert "rename config <name> <new-name>" in sent_messages(send)
+    assert "<config> config rename <new-name>" in sent_messages(send)
 
 
 # ----- the web UI -----

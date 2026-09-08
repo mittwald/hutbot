@@ -319,6 +319,16 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
     # commands, so it reads as a list. `•` rather than `-`, because Slack turns a `-` line
     # inside a quote block into a nested list and re-indents it.
     entries = [
+        "> :gear: *Every whole-config command is spelled `config <verb>`*\n>\n"
+        f"> • `{command} [config] config enable` and `{command} [config] config disable` — "
+        "turn a config on or off.\n"
+        f"> • `{command} <config> config rename <new-name>` — also `config name` and "
+        "`config set name`.\n"
+        f"> • `{command} <config> config delete` — the config it acts on is the one addressed.\n"
+        f"> • `{command} [config] config export` — one config as JSON, or every config of the "
+        "channel without a `<config>`.\n"
+        f"> • `{command} [config] config import <json>` — read such an export back.",
+
         "> :robot_face: *Triggers, actions & buttons*\n>\n"
         f"> • `{command} [config] set trigger cron \"0 9 * * 1-5\"` — fire on a schedule, "
         "no message needed.\n"
@@ -522,23 +532,28 @@ def format_command_rows(rows: list[tuple[str, str]], width: int, gap: int = 2) -
     return lines
 
 
-async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
+def help_command_groups() -> list[tuple[str, list[tuple[str, str]]]]:
+    """The help table: `(group title, [(command spelling, description)])`.
+
+    Its own function rather than a literal inside `send_help_message`, because the nudge for
+    an unrecognized command searches the same rows — so what the help teaches and what a
+    typo is answered with cannot drift apart.
+
+    Grouped in the order a rule runs — configs, then trigger, condition, what it matches,
+    timing, the message it sends, buttons, alerting, formatting — with lookups and meta
+    commands last. Same grouping as `show config` prints.
+    """
     command = state.slash_command
-    name = state.bot_name
-    version = state.version
     mention = f"@{state.bot_user_name}"
-    # Grouped in the order a rule runs — configs, then trigger, condition, what it
-    # matches, timing, the message it sends, buttons, alerting, formatting — with
-    # lookups and meta commands last. Same grouping as `show config` prints.
-    command_groups = [
+    return [
         ("Configurations", [
             (f"{command} show config", "Show all configurations."),
-            (f"{command} [config] enable", "Enable this config."),
-            (f"{command} [config] disable", "Disable this config."),
-            (f"{command} rename config <name> <new-name>", "Rename a configuration, and everything pointing at it."),
-            (f"{command} delete config <name>", "Delete a configuration."),
-            (f"{command} export config [<name>]", "Print a configuration as JSON to copy elsewhere."),
-            (f"{command} import config [<name>] <json>", "Create or replace a configuration from an export."),
+            (f"{command} [config] config enable", "Enable this config."),
+            (f"{command} [config] config disable", "Disable this config."),
+            (f"{command} <config> config rename <new-name>", "Rename a configuration, and everything pointing at it."),
+            (f"{command} <config> config delete", "Delete a configuration."),
+            (f"{command} [config] config export", "Print a configuration as JSON, or all of them."),
+            (f"{command} [config] config import <json>", "Create or replace configurations from an export."),
         ]),
         ("Trigger", [
             (f"{command} [config] set trigger <message|manual>", "Set how the rule starts."),
@@ -616,12 +631,111 @@ async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_
             (f"{command} help variables", "List all {{variables}} and condition operators."),
         ]),
     ]
-    command_width = command_column_width(
-        [command for _, rows in command_groups for command, _ in rows])
-    group_blocks = [
-        f"# {title}\n" + "\n".join(format_command_rows(rows, command_width))
-        for title, rows in command_groups
-    ]
+
+
+# Words in a command spelling that a reader types literally, as opposed to the values they
+# fill in — the words a typo can be recognized by.
+def command_keywords(command: str) -> list[str]:
+    """The literal words of a command spelling, without the leading `/hutbot` or `@hutbot`."""
+    return [token.lower() for token in tokenize_command(command)[1:] if not _is_argument(token)]
+
+
+# Past this many rows a guess is no longer an answer but a second help message, so the plain
+# nudge is the better reply. Eight covers every group of related spellings (the three
+# `add button` forms, the four `enable …` commands) without printing a table.
+MAX_SUGGESTED_COMMAND_ROWS = 8
+# A command's own words come first and are few; past this the text is its arguments.
+_MATCHED_WORD_LIMIT = 8
+# What a value starts with: a pasted JSON export, a quoted message, a code-fenced block. The
+# words of one are not command words — `config import {"trigger": "cron"}` is not about
+# triggers — so matching stops at the first of these.
+_VALUE_PREFIXES = ('{', '"', "'", '`')
+
+
+def _typed_words(text: str) -> set[str]:
+    """The words of `text` that can be command words, as they compare to a keyword."""
+    words = set()
+    for word in text.split()[:_MATCHED_WORD_LIMIT]:
+        if word.startswith(_VALUE_PREFIXES):
+            break
+        if stripped := word.strip(',;:').lower():
+            words.add(stripped)
+    return words
+
+
+def suggested_command_groups(text: str) -> list[tuple[str, list[tuple[str, str]]]]:
+    """The help rows for the command `text` was reaching for — empty when that is anyone's guess.
+
+    Rows are scored by how many of their literal words `text` uses, and only the best-scoring
+    ones are kept: `delete config alarms` names `config delete` and nothing else, a bare
+    `enable` names the four commands that enable something, and `set …` on its own matches half
+    the table and so names nothing at all.
+    """
+    typed = _typed_words(text)
+    scored = []
+    for title, rows in help_command_groups():
+        for row in rows:
+            score = sum(1 for keyword in command_keywords(row[0]) if keyword in typed)
+            if score:
+                scored.append((score, title, row))
+    best = max((score for score, _, _ in scored), default=0)
+    if not best:
+        return []
+    matched = [(title, row) for score, title, row in scored if score == best]
+    if len(matched) > MAX_SUGGESTED_COMMAND_ROWS:
+        return []
+    # Kept in table order, so rows of one group stay under one heading.
+    groups: list[tuple[str, list[tuple[str, str]]]] = []
+    for title, row in matched:
+        if groups and groups[-1][0] == title:
+            groups[-1][1].append(row)
+        else:
+            groups.append((title, [row]))
+    return groups
+
+
+def command_group_blocks(groups: list[tuple[str, list[tuple[str, str]]]]) -> list[str]:
+    """One printable block per group, every command in them lined up in the same column."""
+    width = command_column_width([command for _, rows in groups for command, _ in rows])
+    return [f"# {title}\n" + "\n".join(format_command_rows(rows, width)) for title, rows in groups]
+
+
+def command_help_block(text: str) -> str:
+    """`"Did you mean …"` plus the help for the command `text` looks like — or `""`.
+
+    Appended to whatever an unusable command is answered with, so the reply carries the
+    spelling that would have worked. Empty when the text is anyone's guess, which leaves the
+    error to speak for itself.
+    """
+    groups = suggested_command_groups(text)
+    if not groups:
+        return ""
+    single = sum(len(rows) for _, rows in groups) == 1
+    lead = "Did you mean this command?" if single else "Did you mean one of these?"
+    return f"\n{lead}\n```\n" + "\n\n".join(command_group_blocks(groups)) + "\n```"
+
+
+async def send_unknown_command_message(app: AsyncApp, channel: Channel, user: User, text: str, thread_ts: str = "") -> None:
+    """The nudge for something that is not a command — with the help for what it looks like.
+
+    Naming the command the text was reaching for turns "Huh?" into an answer, which matters
+    most right after a spelling changes. When the text could be half the table, it stays the
+    plain nudge rather than a help message nobody asked for.
+    """
+    command = state.slash_command
+    block = command_help_block(text)
+    if not block:
+        await send_message(app, channel, user, f"Huh? :thinking_face: Maybe type `{command} help` for a list of commands.", thread_ts)
+        return
+    await send_message(app, channel, user, f"Huh? :thinking_face:{block}\n`{command} help` lists every command.", thread_ts)
+
+
+async def send_help_message(app: AsyncApp, channel: Channel, user: User, thread_ts: str = "") -> None:
+    command = state.slash_command
+    name = state.bot_name
+    version = state.version
+    mention = f"@{state.bot_user_name}"
+    group_blocks = command_group_blocks(help_command_groups())
     intro = (
         f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what I can do:\n\n"
         "*Show All Configurations:*\n"

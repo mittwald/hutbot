@@ -302,11 +302,13 @@ CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-_\.:/]+$")
 RESERVED_CONFIG_NAMES = {
     "set", "clear", "unset", "remove", "add", "enable", "disable",
     "show", "delete", "rename", "list", "run", "fire", "test", "help", "news",
-    "export", "import",
+    "export", "import", "config", "configuration",
 }
 
-# The envelope `export config` prints and `import config` reads. Bump the version when a
-# change to the payload would mislead an older importer.
+# The envelope `config export` prints and `config import` reads. Bump the version when a
+# change to the payload would mislead an older importer. An all-configs export carries a
+# `configs` array instead of one `name`/`settings` pair; an older importer refuses it with
+# an error rather than reading it wrongly, so the version stays.
 CONFIG_EXPORT_FORMAT = "hutbot-config/1"
 TEMPLATE_VARIABLE_NAME_PATTERN = re.compile(r'[a-z_][a-z0-9_]*')
 TEMPLATE_ARGUMENT_NAME_PATTERN = re.compile(r'[a-z_][a-z0-9_]*')
