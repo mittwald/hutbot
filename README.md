@@ -591,7 +591,7 @@ configuration that does not exist, an escalation on a rule that posts no buttons
 timer), and an empty OpsGenie body on a rule with no triggering message. Long reports are split
 across several Slack messages.
 
-`@hutbot [config] test <message>` does the same with `<message>` as `{{message}}`.
+`/hutbot [config] test <message>` does the same with `<message>` as `{{message}}`.
 
 ## Leaving and rejoining a channel
 

@@ -701,7 +701,7 @@ async def test_a_lone_mention_prints_the_help(text):
     user = User("U1", "dave", "Dave", "T")
     hutbot.state.bot_user_id = "U0BOT"
     with patch('hutbot.messaging.send_message') as send:
-        await process_command(app, text, channel, user, allow_test_message=True)
+        await process_command(app, text, channel, user)
     assert "Here's what I can do" in sent_messages(send)
 
 
@@ -749,7 +749,7 @@ async def test_a_mention_is_quoted_back_as_the_slash_command():
     hutbot.state.slash_command = "/hutbot"
     hutbot.state.bot_user_id = "U0BOT"
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()):
-        await process_command(app, "<@U0BOT> set wait-time 7", channel, user, allow_test_message=True)
+        await process_command(app, "<@U0BOT> set wait-time 7", channel, user)
     kwargs = app.client.chat_postEphemeral.await_args.kwargs
     assert kwargs["blocks"][-1]["elements"][1]["elements"][0]["text"] == "/hutbot set wait-time 7"
     assert "Response to command:\n```\n/hutbot set wait-time 7\n```" in kwargs["text"]

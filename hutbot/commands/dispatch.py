@@ -21,15 +21,15 @@ from . import setters
 from . import info
 
 
-async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, config_name: str, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), allow_test_message: bool = False, command_ts: str = "", config_addressed: bool = False) -> bool:
+async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, config_name: str, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), command_ts: str = "", config_addressed: bool = False) -> bool:
     """Parses and executes a command, returns True if a command was matched."""
     # A bare `/hutbot` — or a lone @mention, whose text is stripped to nothing before it
     # gets here — is someone looking for the command list, not a typo to scold.
     addressed_name = config_name if config_addressed else ""
     if not command_text.strip():
         await messaging.send_help_message(app, channel, user, thread_ts)
-    elif (match := (patterns.TEST_WITH_MESSAGE_PATTERN if allow_test_message else patterns.TEST_PATTERN).match(command_text)):
-        test_message = match.group("message") if allow_test_message and match.groupdict().get("message") is not None else ""
+    elif (match := patterns.TEST_PATTERN.match(command_text)):
+        test_message = match.group("message") or ""
         await preview.test_reply_message(app, opsgenie_tokens, channel, config_name, user, test_message, command_ts, thread_ts)
     elif (match := patterns.SET_WAIT_TIME_PATTERN.match(command_text)):
         await setters.set_wait_time(app, channel, config_name, match.group("wait_time"), user, thread_ts)
@@ -154,7 +154,7 @@ async def parse_and_execute_command(app: AsyncApp, command_text: str, channel, c
     return True
 
 
-def matches_a_command(command_text: str, allow_test_message: bool = False) -> bool:
+def matches_a_command(command_text: str) -> bool:
     """Whether `command_text` is a command in its own right.
 
     Used to tell `<config> <command>` from a `<command>` whose first word happens
@@ -164,16 +164,14 @@ def matches_a_command(command_text: str, allow_test_message: bool = False) -> bo
     for name, pattern in vars(patterns).items():
         if not name.endswith("_PATTERN") or not isinstance(pattern, re.Pattern):
             continue
-        if name == "TEST_WITH_MESSAGE_PATTERN" and not allow_test_message:
-            continue
         if pattern.match(command_text):
             return True
     return False
 
 
-async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), allow_test_message: bool = False, command_ts: str = "") -> None:
+async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), command_ts: str = "") -> None:
     try:
-        await _process_command(app, text, channel, user, thread_ts, opsgenie_tokens, allow_test_message, command_ts)
+        await _process_command(app, text, channel, user, thread_ts, opsgenie_tokens, command_ts)
     except Exception as e:
         # Never let a bad command take down the listener: log it and tell the user.
         log_error(f"Failed to process command in #{getattr(channel, 'name', '?')}: {text}", e)
@@ -184,7 +182,7 @@ async def process_command(app: AsyncApp, text: str, channel, user, thread_ts: st
             log_error("Failed to report command error to the user:", send_error)
 
 
-async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), allow_test_message: bool = False, command_ts: str = "") -> None:
+async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: str = "", opsgenie_tokens: OpsGenieTokens = OpsGenieTokens(), command_ts: str = "") -> None:
     text = text.replace(f"<@{state.bot_user_id}>", "").strip()
     log_debug(channel, f"Received command for channel #{channel.name}: {text}")
     # Replies quote this back, so a mention and a slash command read the same way.
@@ -194,7 +192,7 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
     async def run(command_text: str, config_name: str, config_addressed: bool = False) -> bool:
         return await parse_and_execute_command(
             app, command_text, channel, config_name, user, thread_ts, opsgenie_tokens,
-            allow_test_message, command_ts, config_addressed)
+            command_ts, config_addressed)
 
     parts = text.split(None, 1)
     leading_word, remainder = (parts[0], parts[1]) if len(parts) > 1 else ("", "")
@@ -203,7 +201,7 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
     # named `trigger` and the command `trigger cron "…"`. An existing config wins
     # that tie, because naming one is deliberate; otherwise the text is a command
     # for the default config.
-    if remainder and leading_word in channel.configs and matches_a_command(remainder, allow_test_message):
+    if remainder and leading_word in channel.configs and matches_a_command(remainder):
         if await run(remainder, leading_word, config_addressed=True):
             return
 
@@ -212,7 +210,7 @@ async def _process_command(app: AsyncApp, text: str, channel, user, thread_ts: s
 
     # Nothing matched as a command, so a leading word can only be a config name —
     # including one that does not exist yet, which is how configs are created.
-    if remainder and matches_a_command(remainder, allow_test_message):
+    if remainder and matches_a_command(remainder):
         # Both refusals are about the name, but the command behind it is often a near miss
         # too — `export config` is a config called `export` only by accident.
         suggestion = messaging.command_help_block(text)

@@ -112,7 +112,7 @@ async def test_process_command_mention_test_uses_trailing_text_as_message():
     with patch.object(hutbot.state, 'bot_user_id', "UBOT"), \
          patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})), \
          patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "<@UBOT> test hello world", channel, user, "1234.1", allow_test_message=True, command_ts="1234.1")
+        await process_command(app, "<@UBOT> test hello world", channel, user, "1234.1", command_ts="1234.1")
 
     app.client.chat_getPermalink.assert_awaited_once_with(channel="C12345", message_ts="1234.1")
     sent_message = sent_messages(mock_send_message)
@@ -160,7 +160,7 @@ async def test_process_command_help_uses_compact_command_reference():
     assert '\n                     button "<label>"' in sent_message
     assert "/hutbot [config] clear escalation" in sent_message
     assert "/hutbot [config] clear pattern" in sent_message
-    assert "@Hutbot [config] test <message>" in sent_message
+    assert "/hutbot [config] test <message>" in sent_message
     assert "Preview it with <message> as {{message}}." in sent_message
     assert "*Enable OpsGenie Integration:*" not in sent_message
 
@@ -309,7 +309,6 @@ async def test_process_command_help_uses_configured_bot_name():
     assert "I am *Hutbot (DEV)*" in sent_message
     assert "or just `@hutbot_dev` me." in sent_message
     assert "@hutbot_dev show config```" in sent_message
-    assert "@hutbot_dev [config] test <message>" in sent_message
     assert "@Hutbot" not in sent_message
 
 
