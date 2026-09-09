@@ -110,20 +110,17 @@ async def test_process_command_test_uses_selected_config():
 
 
 @pytest.mark.asyncio
-async def test_process_command_slash_test_with_trailing_text_is_unknown():
+async def test_process_command_slash_test_takes_a_message():
+    """A slash command carries its own text, so `test <message>` works there too."""
     app = AsyncMock()
-    channel = Channel(id="C12345", name="general", configs={"default": DEFAULT_CONFIG.copy()})
+    config = {**DEFAULT_CONFIG.copy(), "reply_message": "Heard: {{message}}"}
+    channel = Channel(id="C12345", name="general", configs={"default": config})
     user = User("U12345", "test", "Test User", "Testers")
 
-    with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock()) as mock_get_opsgenie_template_variables, \
-         patch('hutbot.messaging.send_message') as mock_send_message:
-        await process_command(app, "test hello world", channel, user)
+    text = await _preview(app, "test hello world", channel, user)
 
-    mock_get_opsgenie_template_variables.assert_not_awaited()
-    # A test message needs the mention form, which is what the nudge points at.
-    text = mock_send_message.call_args.args[3]
-    assert text.startswith("Huh? :thinking_face:")
-    assert "@Hutbot [config] test <message>" in text
+    assert "Heard: hello world" in text
+    assert "`{{message}}`: hello world" in text
 
 
 
@@ -400,7 +397,7 @@ async def test_a_test_message_that_matches_passes_the_gates():
 
     with patch('hutbot.opsgenie.get_opsgenie_template_variables', new=AsyncMock(return_value={})), \
          patch('hutbot.messaging.send_message') as send:
-        await process_command(app, "test this is urgent", channel, user, allow_test_message=True)
+        await process_command(app, "test this is urgent", channel, user)
     text = sent_messages(send)
 
     assert ":white_check_mark: the message matches `urgent` (case-insensitive)" in text

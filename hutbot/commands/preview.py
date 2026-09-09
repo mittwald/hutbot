@@ -425,9 +425,9 @@ def _message_gates(config: dict, user, text: str) -> list[tuple[bool, str, str]]
             matched = False
         failed = f"the message does not match `{pattern}` ({casing})"
         if not text:
-            # The plain command has no message behind it, which is a real reason this gate
-            # fails — and the mention form is how to give it one.
-            failed += f", and there is no message here — try `@{state.bot_user_name} [config] test <message>`"
+            # The bare `test` has no message behind it, which is a real reason this gate
+            # fails — and `test <message>` is how to give it one.
+            failed += f", and there is no message here — try `{state.slash_command} [config] test <message>`"
         gates.append((matched, f"the message matches `{pattern}` ({casing})", failed))
     return gates
 

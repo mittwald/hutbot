@@ -313,7 +313,6 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
     command = state.slash_command
     name = state.bot_name
     version = state.version
-    mention = f"@{state.bot_user_name}"
     intro = f"Hi! :wave: I am *{name}* `{version}` :palm_up_hand::tophat: Here's what's :new::"
     # One headline plus one bullet per thing you can type: the news is a list of new
     # commands, so it reads as a list. `•` rather than `-`, because Slack turns a `-` line
@@ -360,7 +359,7 @@ async def send_news_message(app: AsyncApp, channel: Channel, user: User, thread_
         f"> • `{command} [config] test` — the rendered message, where it would go (targets "
         "resolved to real people), when it fires next, which variables each field reads, and the "
         "calendar events behind them.\n"
-        f"> • `{mention} [config] test <message>` — preview it against a message of your own.\n"
+        f"> • `{command} [config] test <message>` — preview it against a message of your own.\n"
         f"> • `{command} [config] run` — let it act for real, right now.",
 
         "> :books: *Look things up*\n>\n"
@@ -544,7 +543,6 @@ def help_command_groups() -> list[tuple[str, list[tuple[str, str]]]]:
     commands last. Same grouping as `show config` prints.
     """
     command = state.slash_command
-    mention = f"@{state.bot_user_name}"
     return [
         ("Configurations", [
             (f"{command} show config", "Show all configurations."),
@@ -618,7 +616,7 @@ def help_command_groups() -> list[tuple[str, list[tuple[str, str]]]]:
         ("Try it out and look things up", [
             (f"{command} [config] run", "Run this configuration's action now."),
             (f"{command} [config] test", "Preview a rule: message, destination, variables, events."),
-            (f"{mention} [config] test <message>", "Preview it with <message> as {{message}}."),
+            (f"{command} [config] test <message>", "Preview it with <message> as {{message}}."),
             (f"{command} [config] on-call [opsgenie-schedule]", "Show current on-call user."),
             (f"{command} list teams", "List available teams."),
             (f"{command} list opsgenie-schedules", "List OpsGenie schedules."),

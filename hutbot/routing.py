@@ -74,7 +74,7 @@ async def route_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, event: d
         await handle_message_deletion(app, channel, previous_user, previous_message.get('ts'))
     elif user and is_command(text):
         # command
-        await commands.process_command(app, text, channel, user, ts, opsgenie_tokens, allow_test_message=True, command_ts=ts)
+        await commands.process_command(app, text, channel, user, ts, opsgenie_tokens, command_ts=ts)
     elif user and thread_ts:
         # thread
         await handle_thread_response(app, channel, user, thread_ts, actor_is_bot)
