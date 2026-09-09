@@ -4,7 +4,6 @@ The `test` command is a report rather than a change, so it lives in ``preview``.
 """
 
 import copy
-import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -21,6 +20,7 @@ from .. import datetimefmt
 from .. import slackcache
 from .. import actions
 from .. import renaming
+from .. import configexport
 from .. import targets
 from .. import webui_backend
 from ..buttonutil import _find_button_index, format_config_list, normalize_button, parse_config_list
@@ -43,7 +43,6 @@ from ..constants import (
     CONDITION_OPERATORS_ORDERED,
     CONDITION_OPERATORS_REQUIRING_NONEMPTY_VALUE,
     CONDITION_OPERATORS_WITHOUT_VALUE,
-    CONFIG_EXPORT_FORMAT,
     CONFIG_NAME_PATTERN,
     DEFAULT_CONFIG,
     DEFAULT_CONFIG_NAME,
@@ -341,20 +340,6 @@ async def delete_config(app: AsyncApp, channel, config_name: str, user, thread_t
     await messaging.send_message(app, channel, user, f"Configuration `{config_name}` has been deleted.", thread_ts)
 
 
-def _strip_json_block(text: str) -> str:
-    """The pasted JSON without the code fence or backticks Slack pastes tend to wrap it in."""
-    text = text.strip()
-    if text.startswith("```") and text.endswith("```") and len(text) > 6:
-        text = text[3:-3]
-        # A fence may open with a language word (```json); that word belongs to the fence.
-        first_line, _, rest = text.partition("\n")
-        if first_line.strip().lower() in ("", "json"):
-            text = rest
-    else:
-        text = text.strip('`')
-    return text.strip()
-
-
 async def import_config(app: AsyncApp, channel, addressed_name: str, json_text: str, user, thread_ts: str = "") -> None:
     """`[config] config import <json>` — create or replace configs from an export.
 
@@ -368,42 +353,13 @@ async def import_config(app: AsyncApp, channel, addressed_name: str, json_text: 
     the setters make — so an import cannot store what a setter would have refused. It is
     all-or-nothing: an import that refuses one config imports none of them.
     """
-    json_text = _strip_json_block(json_text)
-    try:
-        payload = json.loads(json_text)
-    except json.JSONDecodeError as e:
-        await messaging.send_message(app, channel, user, f"That is not valid JSON ({e}). Paste an export made with `{state.slash_command} [config] config export`.", thread_ts)
-        return
-    if not isinstance(payload, dict):
-        await messaging.send_message(app, channel, user, f"The import must be a JSON object, like the one `{state.slash_command} config export` prints.", thread_ts)
-        return
-
     # `(exported name, settings)` per config in the import, in the order the export lists
-    # them, so an all-configs export and a single one take the same path from here on.
-    exported: list[tuple[str, dict]] = []
-    if 'settings' in payload or 'configs' in payload or 'format' in payload:
-        format_value = str(payload.get('format') or "")
-        if format_value != CONFIG_EXPORT_FORMAT:
-            await messaging.send_message(app, channel, user, f"Unsupported export format `{format_value}`; this bot reads `{CONFIG_EXPORT_FORMAT}`.", thread_ts)
-            return
-        if 'configs' in payload:
-            entries = payload.get('configs')
-            if not isinstance(entries, list) or not entries:
-                await messaging.send_message(app, channel, user, "The export's `configs` must be a non-empty JSON array.", thread_ts)
-                return
-            for entry in entries:
-                if not isinstance(entry, dict) or not isinstance(entry.get('settings'), dict):
-                    await messaging.send_message(app, channel, user, "Every entry in the export's `configs` needs a `name` and a `settings` object.", thread_ts)
-                    return
-                exported.append((str(entry.get('name') or "").strip(), entry['settings']))
-        else:
-            settings = payload.get('settings')
-            if not isinstance(settings, dict):
-                await messaging.send_message(app, channel, user, "The export's `settings` must be a JSON object.", thread_ts)
-                return
-            exported.append((str(payload.get('name') or "").strip(), settings))
-    else:
-        exported.append(("", payload))
+    # them, so an all-configs export and a single one take the same path from here on. The
+    # envelope itself lives in `configexport`, shared with `config export` and the App Home.
+    exported, error = configexport.read_entries(json_text, state.slash_command)
+    if error:
+        await messaging.send_message(app, channel, user, error, thread_ts)
+        return
 
     if addressed_name and len(exported) > 1:
         await messaging.send_message(app, channel, user, f"That export holds {len(exported)} configurations, so it cannot be imported into `{addressed_name}`. Import it without naming a configuration.", thread_ts)
@@ -428,14 +384,11 @@ async def import_config(app: AsyncApp, channel, addressed_name: str, json_text: 
             await messaging.send_message(app, channel, user, f"The import names configuration `{name}` twice.", thread_ts)
             return
 
-        unknown = sorted(key for key in settings if key not in DEFAULT_CONFIG)
+        unknown = configexport.unknown_settings(settings)
         if unknown:
             await messaging.send_message(app, channel, user, about(name) + "Unknown setting(s) in the import: " + ", ".join(f"`{key}`" for key in unknown) + ".", thread_ts)
             return
-        # Slack wraps a URL typed into a message in `<…>`; the stored value is the bare URL.
-        if isinstance(settings.get('calendar_url'), str):
-            settings = dict(settings)
-            settings['calendar_url'] = unwrap_slack_link(settings['calendar_url'])
+        settings = configexport.normalized_settings(settings)
 
         clean, refused = await webui_backend.validate_config_payload(settings, app, channel.id, channel.configs.get(name))
         errors.extend(f"• {about(name)}`{field}`: {problem}" for field, problem in sorted(refused.items()))

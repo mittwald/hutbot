@@ -125,6 +125,35 @@ async def resolve_slack_user_for_opsgenie_recipient(app: AsyncApp, recipient_ema
     return slack_user
 
 
+async def list_schedule_names(opsgenie_api_token: str) -> tuple[list[str], str]:
+    """Every schedule this OpsGenie account has, by name — `(names, error)`.
+
+    Shared by `list opsgenie-schedules` and by the config UI, which offers them as a dropdown
+    rather than asking anyone to type a schedule name exactly right.
+    """
+    if not opsgenie_api_token:
+        return [], "OpsGenie on-call lookups are not configured. Missing `OPSGENIE_API_TOKEN`."
+    url = "https://api.opsgenie.com/v2/schedules"
+    headers = {"Authorization": f"GenieKey {opsgenie_api_token}"}
+    try:
+        status, payload = await _get_opsgenie_json(url, headers, None,
+                                                  "Listing the OpsGenie schedules")
+    except Exception as e:
+        log_error("Failed to list OpsGenie schedules:", e)
+        # A rate limit or a server error that survived its retries still has a status worth
+        # naming; a dropped connection has none, and the plain sentence is all there is to say.
+        detail = f": HTTP {e.status}" if isinstance(e, retryutil.TransientHTTPError) else ""
+        return [], f"Failed to list OpsGenie schedules{detail}."
+    if payload is None:
+        log_error(f"Failed to list OpsGenie schedules: {status}")
+        return [], f"Failed to list OpsGenie schedules: HTTP {status}."
+    names = sorted(
+        (schedule.get("name", "").strip() for schedule in payload.get("data", [])
+         if schedule.get("name")),
+        key=str.casefold)
+    return names, ""
+
+
 async def resolve_opsgenie_on_call(app: AsyncApp, opsgenie_api_token: str, schedule_name: str) -> tuple[str, User | None]:
     schedule_name = schedule_name.strip()
     if not opsgenie_api_token:

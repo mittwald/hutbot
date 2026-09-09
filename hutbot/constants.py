@@ -153,6 +153,14 @@ SLACK_SYSTEM_USER_IDS = {"USLACKBOT", "USLACK"}
 
 BUTTON_ACTION_PREFIX = "hutbot_btn"
 
+# The config UI: the App Home tab and the modals it opens. Three namespaces, each anchored on
+# the `:` that follows it, so `^hutbot_cfg:` cannot match a `hutbot_btn:` action and
+# `^hutbot_btn:` cannot match one of these. `CONFIG_UI_VIEW_PREFIX` deliberately has no `:`
+# after the word, which is what keeps a modal's callback_id out of the action listener's reach.
+CONFIG_UI_ACTION_PREFIX = "hutbot_cfg"     # block_actions and block_suggestion action_ids
+CONFIG_UI_VIEW_PREFIX = "hutbot_cfg_view"  # modal callback_ids
+CONFIG_UI_BLOCK_PREFIX = "f"               # block_id namespace: `f:<config field name>`
+
 # Marker written to a config's ``disabled_reason`` when the bot disabled it by
 # itself (instead of a user running `disable`). Removing the bot from a channel
 # disables that channel's configs; the marker lets the bot point them out when

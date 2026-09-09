@@ -1,7 +1,5 @@
 """Read-only slash-command handlers: lists, team lookup, and config display."""
 
-import copy
-import json
 import re
 
 from slack_bolt.async_app import AsyncApp
@@ -19,14 +17,16 @@ from .. import templating
 from .. import calendarfeed
 from .. import conditionutil
 from ..buttonutil import normalize_button, parse_config_list
+from .. import configexport
 from .. import targets
+# `views` only, never `handlers`: that one reaches back into `webui_backend` and would tie
+# the whole config-write stack into the `commands` import graph for one button.
+from ..apphome import views as apphome_views
 from ..constants import (
     ACK_DESTINATION_UNKNOWN,
     ACK_DESTINATIONS,
     BUTTON_ACTION_ACK,
     CONDITION_MODE_ALL,
-    CONFIG_EXPORT_FORMAT,
-    DEFAULT_CONFIG,
     ACTION_DM_USER,
     DATETIME_TEMPLATE_VARIABLES,
     TEMPLATE_DATETIME_VARIABLES,
@@ -52,39 +52,10 @@ async def list_teams(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
 
 
 async def list_opsgenie_schedules(app: AsyncApp, channel, user, thread_ts: str = "") -> None:
-    opsgenie_api_token = opsgenie.load_opsgenie_tokens().api
-    if not opsgenie_api_token:
-        await messaging.send_message(app, channel, user, "OpsGenie on-call lookups are not configured. Missing `OPSGENIE_API_TOKEN`.", thread_ts)
+    schedule_names, error = await opsgenie.list_schedule_names(opsgenie.load_opsgenie_tokens().api)
+    if error:
+        await messaging.send_message(app, channel, user, error, thread_ts)
         return
-
-    url = "https://api.opsgenie.com/v2/schedules"
-    headers = {
-        "Authorization": f"GenieKey {opsgenie_api_token}",
-    }
-
-    try:
-        status, payload = await opsgenie._get_opsgenie_json(url, headers, None, "Listing the OpsGenie schedules")
-    except Exception as e:
-        log_error("Failed to list OpsGenie schedules:", e)
-        # A rate limit or a server error that survived its retries still has a status worth
-        # naming; a dropped connection has none, and the plain sentence is all there is to say.
-        detail = f": HTTP {e.status}" if isinstance(e, retryutil.TransientHTTPError) else ""
-        await messaging.send_message(app, channel, user, f"Failed to list OpsGenie schedules{detail}.", thread_ts)
-        return
-    if payload is None:
-        log_error(f"Failed to list OpsGenie schedules: {status}")
-        await messaging.send_message(app, channel, user, f"Failed to list OpsGenie schedules: HTTP {status}.", thread_ts)
-        return
-
-    schedules = payload.get("data", [])
-    if not schedules:
-        await messaging.send_message(app, channel, user, "No OpsGenie schedules found.", thread_ts)
-        return
-
-    schedule_names = sorted(
-        (schedule.get("name", "").strip() for schedule in schedules if schedule.get("name")),
-        key=str.casefold
-    )
     if not schedule_names:
         await messaging.send_message(app, channel, user, "No OpsGenie schedules found.", thread_ts)
         return
@@ -137,21 +108,6 @@ async def get_team_of(app: AsyncApp, channel, username: str, user, thread_ts: st
         await messaging.send_message(app, channel, user, f"Unknown user: `{username}`.", thread_ts)
 
 
-# Left out of an export on purpose: the calendar URL is a bearer secret that must never be
-# printed to the channel (`config export` says so when one is set), and `disabled_reason` is
-# the bot's own bookkeeping, not a setting the exporter made.
-EXPORT_SKIPPED_FIELDS = {'calendar_url', 'disabled_reason'}
-
-
-def _exported_settings(config: dict) -> dict:
-    """The fields of `config` worth exporting: the ones that differ from the defaults."""
-    return {
-        key: copy.deepcopy(value)
-        for key, value in config.items()
-        if key in DEFAULT_CONFIG and key not in EXPORT_SKIPPED_FIELDS and value != DEFAULT_CONFIG[key]
-    }
-
-
 async def export_config(app: AsyncApp, channel, config_name: str, user, thread_ts: str = "") -> None:
     """`[config] config export` — configs as JSON, ready for `config import`.
 
@@ -159,6 +115,9 @@ async def export_config(app: AsyncApp, channel, config_name: str, user, thread_t
     payload either way, so a whole channel travels in a single paste. Only the fields that
     differ from the defaults are exported, so the JSON stays readable and importing it
     changes only what the exporter actually set.
+
+    The payload itself lives in `configexport`, shared with `config import` and with the App
+    Home's export modal so all three cannot disagree about the format.
     """
     if config_name:
         config = channel.configs.get(config_name)
@@ -166,24 +125,17 @@ async def export_config(app: AsyncApp, channel, config_name: str, user, thread_t
             await messaging.send_message(app, channel, user, f"Configuration `{config_name}` not found.", thread_ts)
             return
         exported = {config_name: config}
-        payload = {"format": CONFIG_EXPORT_FORMAT, "name": config_name, "settings": _exported_settings(config)}
+        payload = configexport.build_payload(config_name, config)
         heading = f"Configuration `{config_name}` of #{channel.name}:"
     else:
         exported = {name: config for name, config in channel.configs.items() if isinstance(config, dict)}
         if not exported:
             await messaging.send_message(app, channel, user, f"There are no configurations in #{channel.name} to export.", thread_ts)
             return
-        payload = {
-            "format": CONFIG_EXPORT_FORMAT,
-            "configs": [{"name": name, "settings": _exported_settings(config)} for name, config in exported.items()],
-        }
+        payload = configexport.build_multi_payload(exported)
         heading = f"All {len(exported)} configurations of #{channel.name}:" if len(exported) > 1 else f"The one configuration of #{channel.name}:"
 
-    dumped = json.dumps(payload, indent=2, ensure_ascii=False)
-    # A backtick can only occur inside a JSON string, so escaping every one of them keeps the
-    # JSON valid (and round-tripping) while a message containing ``` cannot close the code
-    # fence early the way `show config` has to guard against.
-    dumped = dumped.replace("`", "\\u0060")
+    dumped = configexport.dump_payload(payload)
 
     if config_name:
         notes = [f"_Import it with `{state.slash_command} [config] config import <json>`; a configuration addressed there wins over the exported name._"]
@@ -430,4 +382,12 @@ async def show_config(app: AsyncApp, channel, user, thread_ts: str = "") -> None
     # fence in half, so a channel with several configs is sent as several messages.
     chunks = messaging.pack_message_chunks([message, *config_sections, footer])
     for index, chunk in enumerate(chunks):
-        await messaging.send_message(app, channel, user, chunk, thread_ts, footer=index == len(chunks) - 1)
+        last = index == len(chunks) - 1
+        # The Edit button rides on the final chunk only, before the footer, so "Response to
+        # command:" stays last. `send_message` appends the footer to whatever blocks it is
+        # given, the same way `export config` hands it a preformatted block.
+        blocks = messaging.section_blocks(chunk)
+        if last:
+            blocks = blocks + apphome_views.edit_config_blocks(channel.id)
+        await messaging.send_message(app, channel, user, chunk, thread_ts, footer=last,
+                                     blocks=blocks)

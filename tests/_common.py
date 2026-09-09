@@ -79,6 +79,8 @@ import hutbot.conditionutil
 import hutbot.actions
 import hutbot.buttons
 import hutbot.buttonutil
+import hutbot.configexport
+import hutbot.templatedocs
 import hutbot.scheduling
 import hutbot.routing
 import hutbot.webui_backend
@@ -86,6 +88,9 @@ import hutbot.commands.dispatch
 import hutbot.commands.preview
 import hutbot.commands.setters
 import hutbot.commands.info
+import hutbot.apphome.fields
+import hutbot.apphome.views
+import hutbot.apphome.handlers
 
 # The two Opsgenie keys a run carries. The halves differ on purpose, so a test can tell which
 # endpoint a call reached: alerts and the heartbeat take `.alert`, on-call lookups take `.api`.
@@ -109,6 +114,19 @@ def _patch_builtin_calendars(entries=None):
     with patch.object(hutbot.state, 'builtin_calendars',
                       list(BUILTIN_CALENDARS if entries is None else entries)):
         yield
+
+
+def _channel_info(name="general", **overrides):
+    """A `conversations.info` channel as Slack shapes one: a real channel the bot is in.
+
+    Override a flag to get one of the conversations that is *not* configurable — a group DM
+    (`is_mpim=True`, which Slack reports alongside `is_channel`), a DM (`is_im=True`, no name),
+    or a channel the bot has left (`is_member=False`).
+    """
+    info = {"name": name, "is_channel": True, "is_group": False, "is_im": False,
+            "is_mpim": False, "is_member": True, "is_archived": False, "is_private": True}
+    info.update(overrides)
+    return info
 
 
 def _mk_channel(configs=None):
