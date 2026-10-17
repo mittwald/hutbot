@@ -143,6 +143,16 @@ if ! $assume_yes; then
   esac
 fi
 
+# A release deployed by deploy-tools reads <release>-secret, which deploy-tools renders from
+# Vault, and is deployed with the import off; a self-deploy points it back at <release>.
+deployed_by_deploy_tools() {
+  local live
+  live=$(kubectl -n "$NAMESPACE" get deployment "$deployment" \
+    -o 'jsonpath={.spec.template.spec.containers[*].env[?(@.name=="SLACK_BOT_TOKEN")].valueFrom.secretKeyRef.name}' \
+    2>/dev/null || true)
+  [[ "$live" == "${release}-secret" ]]
+}
+
 has_file() {
   local needle=$1 file
   shift
@@ -196,6 +206,11 @@ export_state() {
     # release and its volume stay put until someone removes them on purpose.
     kubectl -n "$NAMESPACE" scale "deploy/${deployment}" --replicas=0
     echo "==> scaled ${NAMESPACE}/deploy/${deployment} to 0 replicas"
+    if deployed_by_deploy_tools; then
+      echo "note: deploy-tools deploys ${deployment}, and its next apply that upgrades the release"
+      echo "      scales it back up. Switch it off there (hutbot.enabled, or hutbot.dev.enabled for"
+      echo "      hutbot-dev) before the target starts."
+    fi
   else
     echo "==> the source is still running — scale it to zero before the target starts:"
     echo "    kubectl -n ${NAMESPACE} scale deploy/${deployment} --replicas=0"
@@ -230,6 +245,11 @@ import_state() {
   echo "==> Secret ${NAMESPACE}/${secret_name} holds: ${imported[*]}"
   echo "==> deploy once with STATE_IMPORT_ENABLED=true; files already on the volume are kept"
   echo "==> afterwards: deploy with the flag off, then run --cleanup"
+  if deployed_by_deploy_tools; then
+    echo "note: deploy-tools deploys ${deployment} with the import off, so the deploy with the flag on is"
+    echo "      a self-deploy (deploy-*.sh). That reads ${NAMESPACE}/${release} rather than ${release}-secret"
+    echo "      — sync it first — until the next deploy-tools apply, which also switches the import off."
+  fi
 }
 
 cleanup_state() {

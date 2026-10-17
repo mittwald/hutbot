@@ -885,13 +885,44 @@ python query_employees.py john --json
 The helper reads the same employee cache and `employees-fallback.json` as the bot, so a fallback
 record can be checked locally before it is copied onto the state volume.
 
+### Deployed from deploy-tools
+
+Both releases, `hutbot` and `hutbot-dev`, are deployed by
+[deploy-tools](https://gitlab.mittwald.it/mittwald/tools/deploy-tools): its operator on
+`coabkube-prod` runs `helmfile apply` from that repository's `prod` branch
+(`helmfiles/hutbot.yaml.gotmpl`, values in `helmfiles/hutbot/`).
+
+- **Pin:** `hutbot.version` and `hutbot.dev.version` in deploy-tools' `default.yaml`. A pin selects
+  the image tag *and* the chart: `charts/hutbot` is pulled from this repository's GitLab mirror
+  (`mittwald/tools/hutbot`) at that git tag, so a chart change ships with the first tag pinned
+  after it.
+- **Bumping:** push the tag here, open an MR against deploy-tools `master` that changes the pin (and
+  values, if needed), then an MR from `master` to `prod`. The merge into `prod` is what deploys.
+- **Credentials:** Vault `secrets-tools/hutbot` and `secrets-tools/hutbot-dev` (KV v1, the fields
+  listed under [Secret sync](#secret-sync)). deploy-tools renders each into a Helm-managed Secret,
+  `mw-internal/hutbot-secret` and `mw-internal/hutbot-dev-secret`, and points `existingSecret` at it.
+- **When a Vault change rolls out:** deploy-tools does not watch Vault. It applies when `prod` (or
+  its pin in `mittwald/infrastructure/deployment-version`) changes, or when its operator restarts —
+  `kubectl -n mw-internal rollout restart deploy/deploy-tools-deployment`. An apply that changes
+  only the Secret does not roll the bot, which reads its environment at startup, so restart it
+  afterwards: `kubectl -n mw-internal rollout restart deploy/hutbot`. The chart's `podAnnotations`
+  (chart 0.5.0) lets deploy-tools set a `checksum/secret` annotation that rolls the pod on its own,
+  once a tag containing it is pinned.
+- **Self-deploy still works:** `./deploy-prod.sh`, `./deploy-dev.sh` and `helmfile` here deploy
+  exactly as before — this checkout's chart, the env file's values and the out-of-band Secret
+  `mw-internal/hutbot` (`hutbot-dev`) that `make sync-secret` writes. That holds until deploy-tools'
+  next apply puts its own pin, values and Secret back. The deploy scripts say so when they replace a
+  deploy-tools release, and `sync-secret.sh --restart` and `edit-calendars.sh` print the steps above
+  instead of a restart that would not reach the pod.
+
 ### Secret sync
 
-Source of truth is Vault at <https://vault.m3.services>: `secrets-coabkube/production/hutbot` for
-production, `.../hutbot-dev` for the dev instance. Every field becomes one key of the Kubernetes
-Secret named after the release (`mw-internal/hutbot`, `mw-internal/hutbot-dev`). Ordinary fields
-reach the bot through individual environment references; `HUTBOT_BUILTIN_CALENDARS` is mounted
-only as a file so large lists do not hit the process environment's size limit.
+Source of truth is Vault at <https://vault.m3.services>: `secrets-tools/hutbot` for production,
+`.../hutbot-dev` for the dev instance. Every field becomes one key of the Kubernetes Secret named
+after the release (`mw-internal/hutbot`, `mw-internal/hutbot-dev`) — the one a self-deploy reads;
+deploy-tools renders the same fields into `<release>-secret` itself. Ordinary fields reach the bot
+through individual environment references; `HUTBOT_BUILTIN_CALENDARS` is mounted only as a file so
+large lists do not hit the process environment's size limit.
 
 | Field | Required | Purpose |
 | ----- | -------- | ------- |
@@ -951,7 +982,7 @@ remove a key the live Secret already has (`--allow-drop`, or `--drop KEY`, to me
 through files, never through a command line.
 
 > **`vault kv put` replaces every field.** Use `vault kv patch <path> KEY=…` to change one.
-> `secrets-coabkube/production` is a **KV v1** mount today, where there is no `kv patch` and no
+> `secrets-tools` is a **KV v1** mount, where there is no `kv patch` and no
 > version history to roll back to — so a careless put is unrecoverable and the Secret already in the
 > cluster is the only remaining copy. `scripts/edit-calendars.sh` handles that: on v1 it merges the
 > sibling fields back in explicitly, and `sync-secret.sh` refuses to write a Secret that would lose
@@ -959,7 +990,9 @@ through files, never through a command line.
 > put.
 
 Because the Secret is not part of the release, changing it does not restart the bot — the bot reads
-its environment at startup, so pass `--restart` when a change has to take effect now.
+its environment at startup, so pass `--restart` when a change has to take effect now. While
+deploy-tools' release is live the pod reads `<release>-secret` instead, so `--restart` is skipped
+and the script prints how to roll the change out (see [Deployed from deploy-tools](#deployed-from-deploy-tools)).
 
 Without Vault access, the same Secret can be built from `.env`:
 
@@ -1141,7 +1174,7 @@ cat > calendars.json <<'JSON'
 JSON
 # KV v2 only — it touches just this field. The v1 mount in use today has no `patch`, so there
 # `make calendars` is the way: a bare `put` would drop every other field.
-vault kv patch secrets-coabkube/production/hutbot HUTBOT_BUILTIN_CALENDARS=@calendars.json
+vault kv patch secrets-tools/hutbot HUTBOT_BUILTIN_CALENDARS=@calendars.json
 shred -u calendars.json
 make sync-secret ARGS='--restart'
 ```
@@ -1154,7 +1187,7 @@ warning naming it, and the rest of the list still loads.
 Read a value back:
 
 ```bash
-vault kv get -field=HUTBOT_BUILTIN_CALENDARS secrets-coabkube/production/hutbot | jq .
+vault kv get -field=HUTBOT_BUILTIN_CALENDARS secrets-tools/hutbot | jq .
 # what the cluster has:
 kubectl -n mw-internal get secret hutbot -o jsonpath='{.data.HUTBOT_BUILTIN_CALENDARS}' | base64 -d | jq .
 # what the pod sees, without the tokens:
@@ -1164,7 +1197,8 @@ kubectl -n mw-internal exec deploy/hutbot -- cat /etc/hutbot/builtin-calendars.j
 The first two print the feed tokens.
 
 The registry is read at startup, so a change to it needs `make sync-secret ARGS='--restart'` (or
-`kubectl -n mw-internal rollout restart deploy/hutbot`). The Deployment uses `strategy: Recreate` —
+`kubectl -n mw-internal rollout restart deploy/hutbot`) — or, while deploy-tools deploys the
+release, its next apply and then a restart. The Deployment uses `strategy: Recreate` —
 hutbot is a singleton on a ReadWriteOnce volume, so a rolling restart would briefly run two bots
 against one `bot.json` — which means every restart has a few seconds of gap.
 
@@ -1182,6 +1216,9 @@ bridge is such a host: `mittwald-outlook-bridge.prod.mittwald.systems` needs all
 listing goes down the same guarded path as any feed — https only, every redirect hop revalidated.
 
 ### Deploy
+
+Production normally comes from deploy-tools (see [above](#deployed-from-deploy-tools)). Deploying
+from here works as it always did, and lasts until deploy-tools' next apply.
 
 ```bash
 make deploy-dev                  # newest release tag, release hutbot-dev
@@ -1247,7 +1284,7 @@ Register a second Slack app for the dev bot — [Hutbot_DEV Slack App](https://a
 and put its credentials in the dev Vault path, with the same field names production uses:
 
 ```bash
-vault kv put secrets-coabkube/production/hutbot-dev \
+vault kv put secrets-tools/hutbot-dev \
   SLACK_APP_TOKEN='<dev app-level token>' \
   SLACK_BOT_TOKEN='<dev bot token>'
 make sync-secret-dev

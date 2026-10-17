@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sync the out-of-band Kubernetes Secret the hutbot chart consumes via `existingSecret`.
-# Source is Vault by default (secrets-coabkube/production/hutbot for the production release,
-# .../hutbot-dev for the dev release; override with VAULT_PATH). Every field of the Vault
+# Source is Vault by default (secrets-tools/hutbot for the production release, .../hutbot-dev
+# for the dev release; override with VAULT_MOUNT or VAULT_PATH). Every field of the Vault
 # secret becomes one key of the Kubernetes Secret. The deployment receives ordinary values
 # as environment variables and mounts the potentially large built-in-calendar field as a
 # file. SLACK_APP_TOKEN and SLACK_BOT_TOKEN are required; the other fields are optional.
@@ -19,6 +19,12 @@
 # The bot reads its environment once at startup: pass --restart (or run
 # `kubectl -n mw-internal rollout restart deploy/hutbot`) to apply a change to the running
 # deployment. Per-channel configuration lives on the state volume and is untouched here.
+#
+# The Secret written here is the one a self-deploy (deploy-prod.sh, deploy-dev.sh) points the
+# release at. A release deployed by deploy-tools reads <release>-secret instead, which
+# deploy-tools renders from Vault secrets-tools/<release> on its own: while that is live, a sync
+# here changes nothing the pod sees, so --restart is skipped and the way to roll a change out is
+# printed instead.
 set -euo pipefail
 
 # hutbot's secret material is a closed set — unlike mping there is no name pattern to
@@ -44,7 +50,7 @@ readonly FAIL_BYTES=98304
 
 NAMESPACE=${NAMESPACE:-mw-internal}
 EXPECTED_CONTEXT=${EXPECTED_CONTEXT:-coabkube-prod}
-VAULT_MOUNT=${VAULT_MOUNT:-secrets-coabkube/production}
+VAULT_MOUNT=${VAULT_MOUNT:-secrets-tools}
 
 environment=prod
 secret_name=${SECRET_NAME:-}
@@ -65,7 +71,8 @@ Rebuilds the Kubernetes Secret the hutbot chart reads through \`existingSecret\`
 Options:
   --env prod|dev  Which release to sync: "hutbot" (default) or "hutbot-dev".
   --local         Read values from the environment instead of Vault.
-  --restart       Roll the deployment afterwards so the new values take effect.
+  --restart       Roll the deployment afterwards so the new values take effect
+                  (skipped while deploy-tools deploys the release; see the note it prints).
   --dry-run       Print the keys that would be written, change nothing.
   --allow-drop    Allow removing keys the live Secret has and this sync does not.
   --drop KEY      Retire one key on purpose (repeatable).
@@ -389,6 +396,31 @@ kubectl -n "$NAMESPACE" create secret generic "$secret_name" \
   | kubectl -n "$NAMESPACE" apply --server-side --field-manager=hutbot-sync-secret -f -
 
 echo "Secret ${NAMESPACE}/${secret_name} synced."
+
+# Which Secret the live pod reads: <release>-secret means deploy-tools deployed it, and the pod
+# never sees the Secret synced above — a restart would cost the Recreate gap and apply nothing.
+# Empty when there is no Deployment yet.
+live_secret=$(kubectl -n "$NAMESPACE" get deployment "$deployment" \
+  -o 'jsonpath={.spec.template.spec.containers[*].env[?(@.name=="SLACK_BOT_TOKEN")].valueFrom.secretKeyRef.name}' \
+  2>/dev/null || true)
+if [[ "$live_secret" == "${release}-secret" && "$live_secret" != "$secret_name" ]]; then
+  if $restart; then
+    echo "note: not restarting deploy/${deployment}; it would not read what was just synced."
+  fi
+  cat <<EOF
+note: deploy/${deployment} is deployed by deploy-tools and reads ${NAMESPACE}/${live_secret}, not
+      ${NAMESPACE}/${secret_name}, which only a self-deploy (deploy-*.sh) uses. To roll a change out:
+        1. make it in Vault secrets-tools/${release} (KV v1: a \`put\` replaces every field)
+        2. deploy-tools renders that into ${live_secret} on its next apply: after a change to
+           its prod branch, or now with
+           kubectl -n mw-internal rollout restart deploy/deploy-tools-deployment
+        3. restart the bot, which reads its environment at startup — an apply that changes only
+           the Secret does not roll the pod until deploy-tools sets a checksum/secret annotation:
+           kubectl -n ${NAMESPACE} rollout restart deploy/${deployment}
+EOF
+  exit 0
+fi
+
 if $restart; then
   kubectl -n "$NAMESPACE" rollout restart "deploy/${deployment}"
   kubectl -n "$NAMESPACE" rollout status "deploy/${deployment}" --timeout=180s

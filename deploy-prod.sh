@@ -133,6 +133,18 @@ echo "==> namespace:   ${namespace}"
 echo "==> secret:      ${secret_name}"
 echo "==> command:     helmfile -e ${HELM_ENV} ${helmfile_args[*]}"
 
+# Deploying from here works whoever deployed last. A release deployed by deploy-tools reads
+# <release>-secret, which deploy-tools renders from Vault; this deploy points it back at the Secret
+# above, this checkout's chart and the env file, and deploy-tools' next apply puts its own back.
+live_secret=$(kubectl -n "$namespace" get deployment "$release" \
+  -o 'jsonpath={.spec.template.spec.containers[*].env[?(@.name=="SLACK_BOT_TOKEN")].valueFrom.secretKeyRef.name}' \
+  2>/dev/null || true)
+if [[ "$live_secret" == "${release}-secret" && "$live_secret" != "$secret_name" ]]; then
+  echo "note: ${namespace}/${release} is deployed by deploy-tools and reads ${live_secret}. Deploying"
+  echo "      from here switches it to ${secret_name}, this checkout's chart and ${ENV_FILE}'s values"
+  echo "      until deploy-tools' next apply puts its own back; the pin and values live there."
+fi
+
 if [[ "$assume_yes" -ne 1 && "${helmfile_args[0]}" != "diff" ]]; then
   read -r -p "Deploy to PRODUCTION? [y/N] " answer
   if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
