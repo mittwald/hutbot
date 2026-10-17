@@ -839,8 +839,10 @@ This repository includes a Helm chart under `charts/hutbot` and a Helmfile confi
 
 **Credentials are never Helm values.** The chart requires `existingSecret` and reads a Kubernetes
 Secret it does not manage, synced from Vault out of band before deploying — so no token ends up in
-a values file, in the release metadata Helm keeps in the cluster, or in a pipeline variable. `.env`
-holds only the non-secret deploy settings and is optional:
+a values file, in the release metadata Helm keeps in the cluster, or in a pipeline variable. That
+holds for deploys from this repository; deploy-tools passes them through Helm, see
+[Deployed from deploy-tools](#deployed-from-deploy-tools). `.env` holds only the non-secret deploy
+settings and is optional:
 
 ```bash
 # Slash command this instance listens on; must match the Slack app. Default: /hutbot
@@ -901,13 +903,19 @@ Both releases, `hutbot` and `hutbot-dev`, are deployed by
 - **Credentials:** Vault `secrets-tools/hutbot` and `secrets-tools/hutbot-dev` (KV v1, the fields
   listed under [Secret sync](#secret-sync)). deploy-tools renders each into a Helm-managed Secret,
   `mw-internal/hutbot-secret` and `mw-internal/hutbot-dev-secret`, and points `existingSecret` at it.
+  So under deploy-tools the credentials are Helm values after all: they are also in the release
+  records of those Secret releases (`sh.helm.release.v1.hutbot-secret.v<N>` and
+  `sh.helm.release.v1.hutbot-dev-secret.v<N>` in `mw-internal`), which need the same access
+  restrictions as the Secrets themselves. `historyMax: 1` limits them to the current and the
+  previous revision (Helm keeps the last deployed one while it upgrades), so after a rotation the old
+  token stays in the previous record until that release changes again; delete that
+  `sh.helm.release.v1.<release>.v<N>` Secret to purge it right away. deploy-baremetal handles Vault
+  values the same way.
 - **When a Vault change rolls out:** deploy-tools does not watch Vault. It applies when `prod` (or
   its pin in `mittwald/infrastructure/deployment-version`) changes, or when its operator restarts —
-  `kubectl -n mw-internal rollout restart deploy/deploy-tools-deployment`. An apply that changes
-  only the Secret does not roll the bot, which reads its environment at startup, so restart it
-  afterwards: `kubectl -n mw-internal rollout restart deploy/hutbot`. The chart's `podAnnotations`
-  (chart 0.5.0) lets deploy-tools set a `checksum/secret` annotation that rolls the pod on its own,
-  once a tag containing it is pinned.
+  `kubectl -n mw-internal rollout restart deploy/deploy-tools-deployment`. Both releases use the
+  chart from v1.1.10 (0.5.0, `podAnnotations`), and deploy-tools sets a `checksum/secret` pod
+  annotation on them, so the apply that changes a Secret also restarts the bot that reads it.
 - **Self-deploy still works:** `./deploy-prod.sh`, `./deploy-dev.sh` and `helmfile` here deploy
   exactly as before — this checkout's chart, the env file's values and the out-of-band Secret
   `mw-internal/hutbot` (`hutbot-dev`) that `make sync-secret` writes. That holds until deploy-tools'
