@@ -34,6 +34,12 @@ spec:
     metadata:
       labels:
         app: {{ .Release.Name }}
+      {{- with .Values.podAnnotations }}
+      # Set by whoever deploys the release, e.g. a checksum of the out-of-band Secret: a changed
+      # value rolls the pod, which a change to the Secret alone never does.
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       {{- if .Values.hostAliases }}
       hostAliases:

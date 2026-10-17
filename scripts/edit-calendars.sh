@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Edit the calendars this instance offers *on top of* the ones the calendar bridge serves. They
-# live in Vault as the field HUTBOT_BUILTIN_CALENDARS of secrets-coabkube/production/hutbot
-# (or .../hutbot-dev).
+# live in Vault as the field HUTBOT_BUILTIN_CALENDARS of secrets-tools/hutbot (or .../hutbot-dev),
+# the path deploy-tools renders the release's Secret from as well.
 #
 # The bridge is the source of the built-in calendars: it publishes which ones it serves at
 # HUTBOT_CALENDAR_BRIDGE_URL, and the bot reads that listing on a timer. This registry is only
@@ -20,7 +20,7 @@ set -euo pipefail
 
 readonly FIELD=HUTBOT_BUILTIN_CALENDARS
 
-VAULT_MOUNT=${VAULT_MOUNT:-secrets-coabkube/production}
+VAULT_MOUNT=${VAULT_MOUNT:-secrets-tools}
 
 environment=prod
 vault_path=${VAULT_PATH:-}
@@ -210,7 +210,29 @@ write_field "$file"
 echo "Vault field ${FIELD} of ${vault_path} updated."
 
 if $sync; then
+  # sync-secret.sh notices a release deployed by deploy-tools on its own and prints how to roll
+  # the change out there instead of restarting.
   exec "${root_dir}/scripts/sync-secret.sh" --env "$environment" --restart
 fi
-echo "note: the bot reads the list at startup; apply it with:"
-echo "      ./scripts/sync-secret.sh --env ${environment} --restart"
+# Only to pick the right advice, so best effort on whatever kube-context is current: a release
+# deployed by deploy-tools reads <release>-secret, which deploy-tools renders from Vault
+# secrets-tools/<release> itself, and a sync plus restart would not reach the pod. No kubectl, no
+# Deployment or another cluster falls back to the self-deploy advice; sync-secret.sh checks again.
+live_secret=""
+if command -v kubectl >/dev/null 2>&1; then
+  live_secret=$(kubectl -n "${NAMESPACE:-mw-internal}" get deployment "$release" \
+    -o 'jsonpath={.spec.template.spec.containers[*].env[?(@.name=="SLACK_BOT_TOKEN")].valueFrom.secretKeyRef.name}' \
+    2>/dev/null || true)
+fi
+if [[ "$live_secret" == "${release}-secret" ]]; then
+  echo "note: deploy/${release} is deployed by deploy-tools and reads ${live_secret}, which deploy-tools"
+  echo "      renders from Vault secrets-tools/${release} on its next apply: after a change to its prod"
+  echo "      branch, or now with"
+  echo "      kubectl -n mw-internal rollout restart deploy/deploy-tools-deployment"
+  echo "      The bot reads the list at startup, and an apply that changes only the Secret does not"
+  echo "      roll the pod, so restart it after that apply:"
+  echo "      kubectl -n ${NAMESPACE:-mw-internal} rollout restart deploy/${release}"
+else
+  echo "note: the bot reads the list at startup; apply it with:"
+  echo "      ./scripts/sync-secret.sh --env ${environment} --restart"
+fi

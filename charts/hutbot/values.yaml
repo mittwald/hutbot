@@ -9,13 +9,21 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# Kubernetes Secret holding every credential, managed out of band by scripts/sync-secret.sh
-# (sourced from Vault) and only read here. It must carry SLACK_APP_TOKEN and SLACK_BOT_TOKEN;
+# Kubernetes Secret holding every credential, managed out of band — by scripts/sync-secret.sh for
+# a self-deploy, by deploy-tools for the releases it deploys, both sourced from Vault — and only
+# read here. It must carry SLACK_APP_TOKEN and SLACK_BOT_TOKEN;
 # OPSGENIE_*, EMPLOYEE_LIST_* and HUTBOT_BUILTIN_CALENDARS are optional additions. Runtime
 # variables use individual key references; the potentially large calendar value is mounted
 # only as a file. Rendering fails while this is empty, on purpose: there is no fallback that
 # would template credentials back into the release.
 existingSecret: ""
+
+# Extra annotations on the pod template, rendered verbatim. Changing one rolls the pod, and that
+# is what a credential change needs: the bot reads its environment at startup, and the Secret
+# above is no part of this chart, so the chart has nothing of its own to hash. Whoever writes the
+# Secret can put the hash here instead — deploy-tools, which renders it from Vault, as a
+# `checksum/secret` annotation. Empty renders no annotations at all.
+podAnnotations: {}
 
 # The built-in ICS calendar feeds a channel can point at by name come from the calendar
 # bridge, which publishes the ones it serves at HUTBOT_CALENDAR_BRIDGE_URL — a Secret key,

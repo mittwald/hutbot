@@ -24,7 +24,7 @@ readonly SECRET_KEYS=(
 )
 readonly REQUIRED_KEYS=(SLACK_APP_TOKEN SLACK_BOT_TOKEN)
 
-VAULT_MOUNT=${VAULT_MOUNT:-secrets-coabkube/production}
+VAULT_MOUNT=${VAULT_MOUNT:-secrets-tools}
 
 environment=prod
 env_file=""

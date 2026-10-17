@@ -181,6 +181,22 @@ def test_deployment_recreates_rather_than_rolls():
     assert "type: Recreate" in result.stdout
 
 
+def test_pod_annotations_are_absent_by_default():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "annotations" not in _deployment(result)["spec"]["template"]["metadata"]
+
+
+def test_pod_annotations_reach_the_pod_template():
+    """How deploy-tools can roll the pod on a credential change: a checksum of its Secret."""
+    result = _render("v1.2.3", "--set-string", "podAnnotations.checksum/secret=abc123")
+
+    assert result.returncode == 0, result.stderr
+    assert _deployment(result)["spec"]["template"]["metadata"]["annotations"] == {
+        "checksum/secret": "abc123"}
+
+
 # ----- egress policy -----
 
 def _egress(result):
@@ -391,8 +407,12 @@ def _stub(directory, name, body):
     return path
 
 
-def _stub_cluster(tmp_path, vault_fields=None, live_secret=None, context="coabkube-prod"):
-    """A PATH holding fake `kubectl` and `vault`, plus the file recording kubectl's argv."""
+def _stub_cluster(tmp_path, vault_fields=None, live_secret=None, context="coabkube-prod",
+                  deployment_secret=""):
+    """A PATH holding fake `kubectl` and `vault`, plus the file recording kubectl's argv.
+
+    `deployment_secret` is the Secret the live Deployment reads its tokens from.
+    """
     import json as _json
 
     bin_dir = tmp_path / "bin"
@@ -425,14 +445,16 @@ case "$*" in
 JSON
     ;;
   *"get secret"*) exit 0 ;;
+  *"get deployment"*) printf '%s' '{deployment_secret}' ;;
 esac
 exit 0
 ''')
     return bin_dir, calls
 
 
-def _run_sync(tmp_path, *args, vault_fields=None, live_secret=None, context="coabkube-prod", env=None):
-    bin_dir, calls = _stub_cluster(tmp_path, vault_fields, live_secret, context)
+def _run_sync(tmp_path, *args, vault_fields=None, live_secret=None, context="coabkube-prod", env=None,
+              deployment_secret=""):
+    bin_dir, calls = _stub_cluster(tmp_path, vault_fields, live_secret, context, deployment_secret)
     import os
 
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
@@ -599,6 +621,28 @@ def test_sync_secret_dry_run_writes_nothing(tmp_path):
     assert "apply" not in result.kubectl_calls
 
 
+def test_sync_secret_restarts_a_self_deployed_release(tmp_path):
+    result = _run_sync(tmp_path, "--restart", deployment_secret="hutbot")
+
+    assert result.returncode == 0, result.stderr
+    assert "from Vault: secrets-tools/hutbot" in result.stdout
+    assert "rollout restart deploy/hutbot" in result.kubectl_calls
+    assert "deploy-tools" not in result.stdout
+
+
+def test_sync_secret_does_not_restart_a_release_deployed_by_deploy_tools(tmp_path):
+    """deploy-tools points the pod at <release>-secret, so a restart would apply nothing."""
+    result = _run_sync(tmp_path, "--restart", deployment_secret="hutbot-secret")
+
+    assert result.returncode == 0, result.stderr
+    # Still synced: it is what a self-deploy reads.
+    assert "Secret mw-internal/hutbot synced." in result.stdout
+    assert "rollout restart" not in result.kubectl_calls
+    assert "deployed by deploy-tools" in result.stdout
+    assert "Vault secrets-tools/hutbot" in result.stdout
+    assert "rollout restart deploy/deploy-tools-deployment" in result.stdout
+
+
 @pytest.mark.parametrize("script", ["deploy-dev.sh", "deploy-prod.sh"])
 def test_deploy_scripts_require_the_secret(tmp_path, script):
     import os
@@ -742,7 +786,7 @@ def test_seed_vault_never_puts_a_value_on_the_command_line(tmp_path):
     result = _run_seed(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert "kv put secrets-coabkube/production/hutbot-dev @" in result.vault_calls
+    assert "kv put secrets-tools/hutbot-dev @" in result.vault_calls
     for value in ("xoxb-secretbot", "xapp-secretapp", "og-secret", "employee-pass"):
         assert value not in result.vault_calls
         assert value not in result.stdout
@@ -826,8 +870,11 @@ CALENDARS_JSON = ('[{"name":"notfallhotline","title":"Notfallhotline",'
                   '"url":"https://bridge.example.com/calendars/notfallhotline.ics?token=SECRETTOKEN"}]')
 
 
-def _run_edit_calendars(tmp_path, state, edit=CALENDARS_JSON, *args):
-    """Run the editor flow against a stub `vault` and a non-interactive $EDITOR."""
+def _run_edit_calendars(tmp_path, state, edit=CALENDARS_JSON, *args, deployment_secret=""):
+    """Run the editor flow against a stub `vault` and a non-interactive $EDITOR.
+
+    A stub `kubectl` answers the Deployment's secret reference with `deployment_secret`.
+    """
     import json as _json
     import os
 
@@ -850,6 +897,10 @@ exit 0
 cat > "$1" <<'JSON'
 {edit}
 JSON
+''')
+    _stub(bin_dir, "kubectl", f'''
+[[ "$*" == *"get deployment"* ]] && printf '%s' '{deployment_secret}'
+exit 0
 ''')
     result = subprocess.run([str(EDIT_CALENDARS), "--env", "dev", *args], cwd=ROOT,
                             capture_output=True, text=True, check=False,
@@ -958,6 +1009,27 @@ def test_edit_calendars_writes_nothing_when_the_list_is_unchanged(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "unchanged; nothing was written." in result.stdout
     assert "kv put" not in result.vault_calls and "kv patch" not in result.vault_calls
+
+
+def test_edit_calendars_advises_a_sync_and_restart_for_a_self_deployed_release(tmp_path):
+    result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}},
+                                 deployment_secret="hutbot-dev")
+
+    assert result.returncode == 0, result.stderr
+    assert "kv put secrets-tools/hutbot-dev @" in result.vault_calls
+    assert "./scripts/sync-secret.sh --env dev --restart" in result.stdout
+
+
+def test_edit_calendars_points_a_deploy_tools_release_at_its_next_apply(tmp_path):
+    """deploy-tools renders its own Secret from this Vault path; a sync would not reach the pod."""
+    result = _run_edit_calendars(tmp_path, {"data": {"SLACK_APP_TOKEN": "xapp-a"}},
+                                 deployment_secret="hutbot-dev-secret")
+
+    assert result.returncode == 0, result.stderr
+    assert "deployed by deploy-tools" in result.stdout
+    assert "Vault secrets-tools/hutbot-dev" in result.stdout
+    assert "rollout restart deploy/deploy-tools-deployment" in result.stdout
+    assert "sync-secret.sh --env dev --restart" not in result.stdout
 
 
 def test_edit_calendars_show_prints_the_current_list(tmp_path):
@@ -1094,6 +1166,37 @@ def test_deploy_patches_nothing_on_a_first_install(tmp_path, script):
 
     assert result.returncode == 0, result.stderr
     assert "patch deployment" not in result.kubectl_calls
+
+
+@pytest.mark.parametrize("script,release,args", [
+    ("deploy-dev.sh", "hutbot-dev", ["v1.2.3"]),
+    ("deploy-prod.sh", "hutbot", ["-y", "v1.2.3"]),
+])
+def test_deploy_still_deploys_a_release_deploy_tools_took_over(tmp_path, script, release, args):
+    """Self-deploy keeps working; it only says that deploy-tools' next apply undoes it."""
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    _stub(bin_dir, "kubectl", f'''
+case "$*" in
+  *"get secret"*jsonpath*) echo -n "eA==" ;;
+  *"get secret"*) exit 0 ;;
+  *"get deployment"*SLACK_BOT_TOKEN*) printf '%s' "{release}-secret" ;;
+  *"get deployment"*) printf '%s' "Recreate" ;;
+esac
+exit 0
+''')
+    helmfile_calls = tmp_path / "helmfile-calls"
+    _stub(bin_dir, "helmfile", f'printf "%s\\n" "$*" >> {helmfile_calls}\n')
+    result = subprocess.run([str(ROOT / script), *args], cwd=ROOT, capture_output=True, text=True,
+                            check=False,
+                            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+    assert result.returncode == 0, result.stderr
+    assert f"is deployed by deploy-tools and reads {release}-secret" in result.stdout
+    assert "secret:      " + release + "\n" in result.stdout
+    assert helmfile_calls.read_text().rstrip().endswith(" sync")
 
 
 def test_state_import_absent_by_default():
