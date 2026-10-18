@@ -19,8 +19,11 @@ from . import persistence
 from . import buttons
 from . import commands
 from . import messaging
+from .apphome import handlers as apphome
 from .constants import (
     BUTTON_ACTION_PREFIX,
+    CONFIG_UI_ACTION_PREFIX,
+    CONFIG_UI_VIEW_PREFIX,
     DISABLED_REASON_REMOVED,
     IGNORED_MESSAGE_SUBTYPES,
     SLACK_SYSTEM_USER_IDS,
@@ -407,3 +410,30 @@ def register_app_handlers(app: AsyncApp, opsgenie_tokens: OpsGenieTokens = OpsGe
         await ack()
         with log_origin(buttons.describe_button_press(body or {}, action or {})):
             await buttons.handle_button_press(app, opsgenie_tokens, body, action)
+
+    @app.event("app_home_opened")
+    async def handle_app_home_opened_events(body, logger):
+        event = body.get('event', {}) if body else {}
+        with log_origin(apphome.describe_home_opened(event)):
+            await apphome.handle_app_home_opened(app, event)
+
+    # The config UI's own three surfaces. Anchored on the `:` after the prefix, so none of
+    # them can catch a `hutbot_btn:` message button, and the modal callback_ids
+    # (`hutbot_cfg_view:…`) stay out of the action listener's reach.
+    @app.action(re.compile(rf"^{CONFIG_UI_ACTION_PREFIX}:"))
+    async def handle_config_ui_action(ack, body, action, logger):
+        await ack()
+        with log_origin(apphome.describe_action(body or {}, action or {})):
+            await apphome.handle_action(app, body, action, opsgenie_tokens)
+
+    @app.view(re.compile(rf"^{CONFIG_UI_VIEW_PREFIX}:"))
+    async def handle_config_ui_submission(ack, body, logger):
+        # Raw `ack`, unlike every other listener here: a submission answers with the errors to
+        # show or the view to land on, and that answer *is* the ack.
+        with log_origin(apphome.describe_submission(body or {})):
+            await apphome.handle_view_submission(app, ack, body)
+
+    @app.options(re.compile(rf"^{CONFIG_UI_ACTION_PREFIX}:"))
+    async def handle_config_ui_options(ack, body, logger):
+        with log_origin(apphome.describe_options(body or {})):
+            await apphome.handle_options(app, ack, body)

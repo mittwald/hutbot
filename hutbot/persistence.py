@@ -147,7 +147,17 @@ async def load_configuration(app: AsyncApp) -> None:
 
 
 async def save_configuration() -> None:
-    await fileutil.write_json_file(constants.CONFIG_FILE_NAME, state.channel_config, "Saving the configuration")
+    """Write every conversation that has at least one rule.
+
+    `slackcache.get_channel_by_id` adds an empty entry for any conversation the bot sees a
+    message in — every DM, every group DM — and that entry carries no information: it is
+    created again on the next message, and `ui_create_config` makes its own with `setdefault`.
+    Persisting them grew the file by a key per conversation forever and put DMs in both UIs'
+    channel pickers.
+    """
+    configured = {channel_id: configs for channel_id, configs in state.channel_config.items()
+                  if configs}
+    await fileutil.write_json_file(constants.CONFIG_FILE_NAME, configured, "Saving the configuration")
 
 
 async def load_replies_cache() -> None:

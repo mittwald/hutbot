@@ -17,12 +17,21 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 try:  # pragma: no cover - logging is best-effort if logutil is unavailable
-    from logutil import log, log_error
+    from logutil import log, log_error, log_origin, set_log_origin
 except Exception:  # pragma: no cover
+    import contextlib as _contextlib
+
     def log(*args, **kwargs):
         pass
 
     def log_error(*args, **kwargs):
+        pass
+
+    @_contextlib.contextmanager
+    def log_origin(_description):
+        yield
+
+    def set_log_origin(_description):
         pass
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui_static")
@@ -60,8 +69,13 @@ class WebUIContext:
     bot_name: str = "Hutbot"
 
 
+# A typed key rather than a bare string: aiohttp warns about the latter, and the warning is
+# fair — a plain key collides silently with anything else stored on the application.
+CTX_KEY: web.AppKey = web.AppKey("ctx", WebUIContext)
+
+
 def _ctx(request) -> WebUIContext:
-    return request.app["ctx"]
+    return request.app[CTX_KEY]
 
 
 def _forbidden(message: str = "You don't have access to this."):
@@ -78,7 +92,13 @@ async def _current_user(request):
     email = email.split(",")[0].strip()
     user = await ctx.resolve_user(email)
     if not user or not getattr(user, "id", None):
+        # Left un-refined on purpose: the only identity there is here is the address, and no
+        # log line anywhere else in the bot carries one. The proxy in front of this server
+        # records the address for the requests it lets through.
         return None, email
+    # Now that the caller has a Slack identity, the origin can name it the way every other
+    # log line names a user (see `logutil.log_origin`).
+    set_log_origin(f"web UI {request.method} {request.path} from {user.id}")
     return user, email
 
 
@@ -223,6 +243,19 @@ async def handle_rename_config(request):
 
 
 @web.middleware
+async def _log_request_origin(request, handler):
+    """Tag every WARN/ERROR/DEBUG line written while serving a request with the request.
+
+    The counterpart of what `hutbot.routing` does for Slack events. Both surfaces call the
+    same lookups — resolving a channel, listing the channels a user is in — so without this a
+    failure in one of them reads identically whichever surface asked, and only one of the two
+    has a Slack event to blame. `_current_user` sharpens it once the caller is resolved.
+    """
+    with log_origin(f"web UI {request.method} {request.path}"):
+        return await handler(request)
+
+
+@web.middleware
 async def _security_headers(request, handler):
     try:
         response = await handler(request)
@@ -236,8 +269,11 @@ async def _security_headers(request, handler):
 
 
 def create_app(ctx: WebUIContext) -> web.Application:
-    app = web.Application(middlewares=[_security_headers])
-    app["ctx"] = ctx
+    # The origin first, so it is the outermost: a failure raised while the security-header
+    # middleware is finishing a response belongs to the request just as much as one from the
+    # handler does.
+    app = web.Application(middlewares=[_log_request_origin, _security_headers])
+    app[CTX_KEY] = ctx
     app.router.add_get("/healthz", handle_healthz)
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/me", handle_me)
