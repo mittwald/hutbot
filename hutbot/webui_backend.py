@@ -623,5 +623,7 @@ async def maybe_start_web_ui(app: AsyncApp):
         rename_config=lambda channel_id, name, new_name: ui_rename_config(app, channel_id, name, new_name),
         meta=ui_meta,
         bot_name=state.bot_name,
+        proxy_secret=os.environ.get('HUTBOT_UI_PROXY_SECRET', '').strip(),
+        proxy_secret_header=os.environ.get('HUTBOT_UI_PROXY_SECRET_HEADER', '').strip() or 'X-Hutbot-Proxy-Secret',
     )
     return await start_web_ui(ctx, host, port)

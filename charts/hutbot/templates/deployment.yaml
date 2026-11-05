@@ -7,6 +7,9 @@
 {{- fail "builtinCalendars.mountPath must differ from persistence.mountPath; mounting the Secret there would hide the state volume" }}
 {{- end }}
 {{- end }}
+{{- if and .Values.ui.enabled (not .Values.ui.allowAllIngress) (or (not .Values.networkPolicy.enabled) (empty .Values.ui.allowedIngress)) }}
+{{- fail "ui.enabled=true trusts a proxy-set identity header, so the UI port must only be reachable from that proxy: list it in ui.allowedIngress (with networkPolicy.enabled=true), or set ui.allowAllIngress=true to accept that any pod in the cluster can act as any Slack user" }}
+{{- end }}
 {{- if and .Values.stateImport.enabled (not .Values.persistence.enabled) }}
 {{- fail "stateImport.enabled requires persistence.enabled: the import seeds the state volume, and without one there is nowhere to import to" }}
 {{- end }}
@@ -213,6 +216,17 @@ spec:
               value: {{ .Values.ui.host | quote }}
             - name: HUTBOT_UI_USER_HEADER
               value: {{ .Values.ui.userHeader | quote }}
+            # The shared secret the authenticating proxy sends; absent = not required.
+            - name: HUTBOT_UI_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hutbot.secretName" . }}
+                  key: HUTBOT_UI_PROXY_SECRET
+                  optional: true
+            {{- if .Values.ui.proxySecretHeader }}
+            - name: HUTBOT_UI_PROXY_SECRET_HEADER
+              value: {{ .Values.ui.proxySecretHeader | quote }}
+            {{- end }}
             {{- end }}
           {{- if or .Values.persistence.enabled (include "hutbot.mountBuiltinCalendars" .) }}
           volumeMounts:

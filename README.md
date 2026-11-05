@@ -654,6 +654,16 @@ Editing is gated by channel membership.
 > **Security model:** Hutbot **trusts** the configured header. You **must** ensure the bot's HTTP port
 > is only reachable through the authenticating proxy (in Kubernetes the Helm chart's NetworkPolicy plus
 > a ClusterIP Service + Ingress do this). Anyone able to reach the port directly could spoof the header.
+>
+> - The proxy must **replace** the header, not append to it: a request carrying the header twice,
+>   or a comma-separated list of addresses, is refused rather than read as its first entry (which
+>   would be the one the client sent).
+> - Set `HUTBOT_UI_PROXY_SECRET` (and have the proxy send it in `X-Hutbot-Proxy-Secret`, or the
+>   header named in `HUTBOT_UI_PROXY_SECRET_HEADER`) to refuse every API request that did not come
+>   through the proxy, whatever the network allows. With oauth2-proxy's alpha config that is an
+>   `injectRequestHeaders` entry with a static value; with ingress-nginx a `proxy_set_header`.
+> - `POST`, `PUT` and `DELETE` must be same-origin `application/json` requests (what the bundled
+>   editor sends), so another site cannot make a signed-in browser change rules.
 
 ### Enabling it locally
 
@@ -701,14 +711,22 @@ Enable the UI through the chart with the following `values.yaml` keys under `ui:
 ui:
   enabled: true
   port: 8080
-  userHeader: "X-Forwarded-Email"
+  userHeader: "X-Auth-Request-Email"   # what the auth-response-headers annotation below sets
+  # Required: who may reach the UI port (your ingress controller / auth proxy).
+  allowedIngress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
   service:
     type: ClusterIP
   ingress:
     enabled: true
     className: "nginx"
     host: "hutbot.internal.example.com"
-    annotations: {}   # put your Keycloak/oauth2-proxy auth annotations here
+    annotations:   # REQUIRED in practice: your Keycloak/oauth2-proxy auth annotations, e.g.
+      nginx.ingress.kubernetes.io/auth-url: "https://oauth2.internal.example.com/oauth2/auth"
+      nginx.ingress.kubernetes.io/auth-signin: "https://oauth2.internal.example.com/oauth2/start?rd=$scheme://$host$request_uri"
+      nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-Email"
     tls: []
 ```
 
@@ -718,16 +736,17 @@ when `ui.ingress.enabled` is also `true`. The Keycloak integration itself (oauth
 is the operator's responsibility — Hutbot only consumes the resulting header.
 
 > **Security:** the UI trusts the proxy-set email header, so any pod able to reach the UI port can
-> spoof it and edit configs. Restrict the NetworkPolicy ingress to your auth proxy / ingress
-> controller with `ui.allowedIngress` (a list of NetworkPolicy peers rendered into the rule's `from:`).
-> Leaving it empty allows all sources (back-compat) and is not recommended:
-> ```yaml
-> ui:
->   allowedIngress:
->     - namespaceSelector:
->         matchLabels:
->           kubernetes.io/metadata.name: ingress-nginx
-> ```
+> spoof it and edit configs. The NetworkPolicy ingress must therefore be restricted to your auth
+> proxy / ingress controller with `ui.allowedIngress` (a list of NetworkPolicy peers rendered into
+> the rule's `from:`): with `ui.enabled` the chart **refuses to render** while that list is empty or
+> `networkPolicy.enabled` is false. `ui.allowAllIngress: true` is the explicit opt-out for a cluster
+> where nothing but the proxy can reach the pod anyway.
+>
+> The chart cannot check that the Ingress authenticates: without auth annotations (or an
+> equivalent in front of it) the UI is open to everyone who can reach `ui.ingress.host`. The auth
+> response header must end up in `ui.userHeader` (here `X-Auth-Request-Email`), replacing whatever
+> the client sent. The optional `HUTBOT_UI_PROXY_SECRET` field of the Secret (header name in
+> `ui.proxySecretHeader`) adds a check that does not depend on the network at all.
 
 ## Step 1: Set Up the Slack App
 
@@ -970,6 +989,7 @@ large lists do not hit the process environment's size limit.
 | `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record |
 | `HUTBOT_CALENDAR_BRIDGE_URL` | no | The calendar bridge's listing endpoint, token included (see below) |
 | `HUTBOT_BUILTIN_CALENDARS` | no | Calendars offered on top of the bridge's, and overrides of them (see below) |
+| `HUTBOT_UI_PROXY_SECRET` | no | Shared secret the web UI's authenticating proxy must send (see [Web configuration UI](#web-configuration-ui)) |
 
 Opsgenie's two key types are not interchangeable, which is why alerts and on-call lookups have a
 field each. Creating an alert (`POST /v2/alerts`) and pinging a heartbeat go through an

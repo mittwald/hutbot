@@ -211,6 +211,64 @@ def test_pod_annotations_reach_the_pod_template():
         "checksum/secret": "abc123"}
 
 
+# ----- web UI exposure -----
+
+INGRESS_PEER = "ui.allowedIngress[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=ingress-nginx"
+
+
+def test_the_ui_refuses_to_render_open_to_the_whole_cluster():
+    """The UI trusts a proxy-set identity header; an open port lets any pod be anyone."""
+    result = _render("v1.2.3", "--set", "ui.enabled=true", show_only=None)
+
+    assert result.returncode != 0
+    assert "ui.allowedIngress" in result.stderr and "ui.allowAllIngress" in result.stderr
+
+
+def test_the_ui_refuses_to_render_without_a_network_policy():
+    result = _render("v1.2.3", "--set", "ui.enabled=true", "--set", INGRESS_PEER,
+                     "--set", "networkPolicy.enabled=false", show_only=None)
+
+    assert result.returncode != 0
+    assert "ui.allowedIngress" in result.stderr
+
+
+def test_the_ui_port_admits_only_the_listed_peers():
+    result = _render("v1.2.3", "--set", "ui.enabled=true", "--set", INGRESS_PEER,
+                     show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    ingress = yaml.safe_load(result.stdout)["spec"]["ingress"]
+    assert ingress == [{"ports": [{"port": 8080, "protocol": "TCP"}],
+                        "from": [{"namespaceSelector": {"matchLabels": {
+                            "kubernetes.io/metadata.name": "ingress-nginx"}}}]}]
+
+
+def test_an_open_ui_port_is_an_explicit_choice():
+    result = _render("v1.2.3", "--set", "ui.enabled=true", "--set", "ui.allowAllIngress=true",
+                     show_only="templates/networkpolicy.yaml")
+
+    assert result.returncode == 0, result.stderr
+    assert yaml.safe_load(result.stdout)["spec"]["ingress"] == [{"ports": [{"port": 8080, "protocol": "TCP"}]}]
+
+
+def test_the_ui_reads_its_proxy_secret_from_the_out_of_band_secret():
+    result = _render("v1.2.3", "--set", "ui.enabled=true", "--set", INGRESS_PEER,
+                     "--set", "ui.proxySecretHeader=X-Proxy-Token")
+
+    assert result.returncode == 0, result.stderr
+    env = {item["name"]: item for item in _container(result)["env"]}
+    assert env["HUTBOT_UI_PROXY_SECRET"]["valueFrom"]["secretKeyRef"] == {
+        "name": SECRET_NAME, "key": "HUTBOT_UI_PROXY_SECRET", "optional": True}
+    assert env["HUTBOT_UI_PROXY_SECRET_HEADER"]["value"] == "X-Proxy-Token"
+
+
+def test_no_ui_means_no_proxy_secret():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_UI_PROXY_SECRET" not in result.stdout
+
+
 # ----- egress policy -----
 
 def _egress(result):
