@@ -298,6 +298,14 @@ otherwise quietly become "not on vacation" for as long as the host is down. Past
 dropped. A feed that just failed is not asked again until its TTL is up, so a host that is down
 costs three attempts per TTL rather than three per message.
 
+A feed is whatever document a channel member points a rule at, so what it can cost is bounded.
+Events that recur more often than hourly (`FREQ=SECONDLY`, `MINUTELY`, or `BYMINUTE`/`BYSECOND`
+lists) and every recurring series past the first 2000 are left out when the feed is parsed, with a
+warning in the log. Expanding the recurrences and picking the events runs on a worker thread, never
+on the event loop that serves Slack, and is stopped after 10 seconds
+(`HUTBOT_CALENDAR_EVALUATION_TIMEOUT`); a feed that runs out of time answers with no event and is
+not evaluated again until its TTL is up.
+
 A remote feed must be `https://`, and URLs pointing at any non-global address — including private,
 link-local and the shared `100.64.0.0/10` range — are refused because the bot fetches them from
 inside the cluster. The host name is resolved and checked too, at every redirect hop, so a public

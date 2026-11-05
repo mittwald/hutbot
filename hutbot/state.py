@@ -114,6 +114,15 @@ _calendar_failures: dict[str, float] = {}
 # every message: {(pattern, case_sensitive): monotonic time of the timeout}. See `userpattern`.
 _timed_out_patterns: dict[tuple[str, bool], float] = {}
 
+# When each feed URL's evaluation last ran out of time (see `calendarfeed._select_events_bounded`), so
+# a feed too costly to expand is left alone for a TTL rather than tried on every message. Keyed by
+# the resolved URL like the two maps above, and secret in the same way.
+_calendar_evaluation_failures: dict[str, float] = {}
+
+# Bounds how many calendar evaluations run at once; created on first use, because a semaphore
+# binds to the loop that first waits on it and the test suite runs a loop per test.
+_calendar_evaluation_slots: asyncio.Semaphore | None = None
+
 # Serializes web-UI config writes (mutate channel_config + save_configuration).
 _config_write_lock = asyncio.Lock()
 
@@ -125,7 +134,7 @@ current_command: ContextVar[str] = ContextVar('current_command', default='')
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, bot_user_id, bot_user_name, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, _bridge_roster_ready, slash_command, bot_name, default_datetime_locale, version
+    global _scheduler_last_check, _calendar_evaluation_slots, bot_user_id, bot_user_name, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, _bridge_roster_ready, slash_command, bot_name, default_datetime_locale, version
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -140,10 +149,12 @@ def reset() -> None:
     _channel_members_cache.clear()
     _calendar_cache.clear()
     _calendar_failures.clear()
+    _calendar_evaluation_failures.clear()
     _timed_out_patterns.clear()
     bridge_calendar_titles.clear()
     current_command.set('')
     _scheduler_last_check = None
+    _calendar_evaluation_slots = None
     bot_user_id = None
     bot_user_name = DEFAULT_BOT_NAME
     opsgenie_configured = False
