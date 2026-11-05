@@ -115,6 +115,28 @@ networkPolicy:
 
 resources: {}
 
+# Pod security context. The image runs as UID/GID 10001; `fsGroup` makes the state volume — and the
+# files an earlier, root-run image left on it — readable and writable for that group, and
+# `OnRootMismatch` limits the recursive ownership change to the first start after the switch. A
+# volume type without ownership management (NFS, say) needs a one-time
+# `chown -R 10001:10001` of its files instead.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container security context, for the bot and the state-import init container. The root
+# filesystem is read-only: the only place either writes is the state volume.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
 # Web UI served by the bot over HTTP. It does no authentication of its own: it trusts the email
 # in `userHeader`, which an authenticating proxy (oauth2-proxy / Keycloak) must set, so whoever
 # can reach the port directly can act as any Slack user.
@@ -154,7 +176,8 @@ ui:
     annotations: {}
     tls: []   # list of {secretName, hosts: []}
 
-# Persistence configuration for storing the bot config file on a PersistentVolumeClaim
+# Persistence configuration for storing the bot config file on a PersistentVolumeClaim. With
+# `enabled: false` the state lives in an emptyDir at `mountPath` instead, for the pod's lifetime.
 persistence:
   enabled: true
   accessModes:

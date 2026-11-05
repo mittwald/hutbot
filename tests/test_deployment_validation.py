@@ -450,8 +450,46 @@ def test_the_builtin_calendar_mount_survives_persistence_being_off():
 
     assert result.returncode == 0, result.stderr
     spec = _deployment(result)["spec"]["template"]["spec"]
-    assert [v["name"] for v in spec["volumes"]] == ["builtin-calendars"]
-    assert [m["name"] for m in spec["containers"][0]["volumeMounts"]] == ["builtin-calendars"]
+    assert [v["name"] for v in spec["volumes"]] == ["config", "builtin-calendars"]
+    assert [m["name"] for m in spec["containers"][0]["volumeMounts"]] == ["config", "builtin-calendars"]
+
+
+def test_without_persistence_the_state_lives_in_an_empty_dir():
+    """The root filesystem is read-only, so even ephemeral state needs a volume to be written to."""
+    result = _render("v1.2.3", "--set", "persistence.enabled=false")
+
+    assert result.returncode == 0, result.stderr
+    spec = _deployment(result)["spec"]["template"]["spec"]
+    assert {"name": "config", "emptyDir": {}} in spec["volumes"]
+    assert {"name": "HUTBOT_CONFIG_FILE", "value": "/data/bot.json"} in _container(result)["env"]
+    assert "persistentVolumeClaim" not in result.stdout
+
+
+# ----- the pod runs unprivileged -----
+
+def test_the_pod_runs_as_an_unprivileged_user():
+    result = _render("v1.2.3", "--set", "stateImport.enabled=true")
+
+    assert result.returncode == 0, result.stderr
+    spec = _deployment(result)["spec"]["template"]["spec"]
+    pod = spec["securityContext"]
+    assert pod["runAsNonRoot"] is True
+    assert (pod["runAsUser"], pod["runAsGroup"], pod["fsGroup"]) == (10001, 10001, 10001)
+    assert pod["seccompProfile"] == {"type": "RuntimeDefault"}
+    for container in spec["containers"] + spec["initContainers"]:
+        context = container["securityContext"]
+        assert context["allowPrivilegeEscalation"] is False
+        assert context["readOnlyRootFilesystem"] is True
+        assert context["capabilities"] == {"drop": ["ALL"]}
+
+
+def test_the_image_runs_unprivileged_without_network_tooling():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "\nUSER 10001:10001\n" in dockerfile
+    assert "python:3.12-slim@sha256:" in dockerfile
+    for tool in ("curl", "wget", "iputils-ping", "traceroute"):
+        assert tool not in dockerfile.split("RUN apt-get", 1)[1].split("\n\n", 1)[0]
 
 
 def test_the_builtin_calendar_mount_must_not_shadow_the_data_volume():
