@@ -68,6 +68,14 @@ def test_series_past_the_cap_are_dropped():
     assert _uids(calendar) == ["s0", "s1", "s2", "single"]
 
 
+def test_a_dropped_series_without_a_uid_takes_no_other_event_with_it():
+    calendar = _calendar(_vevent("", "FREQ=SECONDLY"), _vevent(""), _vevent("single"))
+
+    assert bound_recurrences(calendar) == 1
+    assert _uids(calendar) == ["", "single"]
+    assert calendar.walk("VEVENT")[0].get("RRULE") is None
+
+
 def test_an_ordinary_feed_is_left_alone():
     calendar = _calendar(_vevent("weekly", "FREQ=WEEKLY;BYDAY=MO"), _vevent("single"))
 

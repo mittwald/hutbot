@@ -517,16 +517,21 @@ def bound_recurrences(calendar) -> int:
     many events were dropped; the caller says so, since a feed that loses events reads differently.
     """
     dropped_uids: set[str] = set()
+    # A series without a UID shares it with nothing, so only that one event goes.
+    dropped_events: set[int] = set()
     series = 0
     for component in calendar.walk("VEVENT"):
         if component.get("RRULE") is None or component.get("RECURRENCE-ID") is not None:
             continue
         uid = str(component.get("UID") or "")
         if _expands_too_finely(component) or series >= _MAX_RECURRING_SERIES:
-            dropped_uids.add(uid)
+            if uid:
+                dropped_uids.add(uid)
+            else:
+                dropped_events.add(id(component))
             continue
         series += 1
-    if not dropped_uids:
+    if not dropped_uids and not dropped_events:
         return 0
 
     dropped = 0
@@ -535,7 +540,8 @@ def bound_recurrences(calendar) -> int:
         nonlocal dropped
         kept = []
         for child in component.subcomponents:
-            if child.name == "VEVENT" and str(child.get("UID") or "") in dropped_uids:
+            if child.name == "VEVENT" and (id(child) in dropped_events
+                                           or str(child.get("UID") or "") in dropped_uids):
                 dropped += 1
                 continue
             prune(child)
