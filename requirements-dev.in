@@ -1,0 +1,8 @@
+# Development and CI dependencies on top of the runtime ones, pinned to the same versions as
+# the runtime lock. `requirements-dev.txt` is compiled from this file — regenerate with `make lock`.
+-c requirements.txt
+-r requirements.in
+pytest
+pytest-asyncio
+# Parses rendered chart manifests in tests/test_deployment_validation.py.
+PyYAML

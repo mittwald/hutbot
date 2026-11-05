@@ -1,0 +1,12 @@
+# Direct runtime dependencies. `requirements.txt` is the lock compiled from this file (pinned,
+# with hashes) and is what the image installs — regenerate it with `make lock`.
+slack_sdk
+slack_bolt
+aiohttp
+aiofiles
+unidecode
+croniter
+icalendar~=7.2
+recurring-ical-events~=3.8
+# Time-bounded matching of member-written regular expressions (see hutbot/userpattern.py).
+regex

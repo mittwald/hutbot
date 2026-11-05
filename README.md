@@ -840,7 +840,7 @@ is the operator's responsibility — Hutbot only consumes the resulting header.
 ```
 export SLACK_BOT_TOKEN='xoxb-your-bot-token'
 export SLACK_APP_TOKEN='xapp-your-app-level-token'
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
 python -m hutbot
 ```
 
@@ -1535,9 +1535,15 @@ channel's `debug` flag.
 ### Running tests
 
 ```bash
-pip install -r requirements-dev.txt
+pip install --require-hashes -r requirements-dev.txt
 pytest
 ```
+
+`requirements.txt` and `requirements-dev.txt` are locks — every package pinned, with hashes — that
+the image and CI install with `--require-hashes`. Change the direct dependencies in
+`requirements.in` / `requirements-dev.in` and re-pin with `make lock` (needs
+[uv](https://docs.astral.sh/uv/)); Dependabot proposes updates to the pins, the workflow's actions
+(pinned to commit SHAs) and the base image digest.
 
 Tests live in `tests/` (one file per module) and run automatically in CI before
 the Docker image is built. `make check` additionally runs `shellcheck` on the deploy and secret

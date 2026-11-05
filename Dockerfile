@@ -7,8 +7,10 @@ WORKDIR /app
 # ping or traceroute, and each would only help whoever managed to run code in here.
 RUN apt-get update && apt-get install --no-install-recommends -y procps \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+# requirements.txt is a lock: every package pinned, with its hashes, so a build installs exactly
+# what was reviewed and nothing PyPI swaps in later.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 # The bot runs unprivileged. Its code stays root-owned and read-only to it; the one place it
 # writes is the state directory, which the chart mounts a volume over (its fsGroup keeps files
