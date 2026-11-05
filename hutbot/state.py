@@ -59,6 +59,13 @@ team_cache: set = set()
 bot_user_id = None
 # The bot's Slack handle from auth.test; used for the `@mention` examples in the help text.
 bot_user_name = DEFAULT_BOT_NAME
+# The workspace (and Enterprise Grid organization, if any) the bot is installed in, from auth.test.
+# Only accounts of this workspace may run commands (see `access`).
+bot_team_id = ""
+bot_enterprise_id = ""
+
+# `users.info` records of command senders, cached briefly: {user_id: (monotonic, record)}.
+_command_actor_cache: dict[str, tuple[float, dict]] = {}
 
 # True once an OpsGenie token + heartbeat name are configured.
 opsgenie_configured = False
@@ -134,7 +141,7 @@ current_command: ContextVar[str] = ContextVar('current_command', default='')
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, _calendar_evaluation_slots, bot_user_id, bot_user_name, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, _bridge_roster_ready, slash_command, bot_name, default_datetime_locale, version
+    global _scheduler_last_check, _calendar_evaluation_slots, bot_user_id, bot_user_name, bot_team_id, bot_enterprise_id, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, _bridge_roster_ready, slash_command, bot_name, default_datetime_locale, version
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -157,6 +164,9 @@ def reset() -> None:
     _calendar_evaluation_slots = None
     bot_user_id = None
     bot_user_name = DEFAULT_BOT_NAME
+    bot_team_id = ""
+    bot_enterprise_id = ""
+    _command_actor_cache.clear()
     opsgenie_configured = False
     builtin_calendars = []
     bridge_calendars = []

@@ -105,6 +105,20 @@ def test_chart_omits_timezone_and_locale_by_default():
     assert "HUTBOT_DEFAULT_DATETIME_LOCALE" not in result.stdout
 
 
+def test_chart_keeps_guests_out_of_commands_by_default():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_ALLOW_GUEST_COMMANDS" not in result.stdout
+
+
+def test_chart_can_let_guests_run_commands():
+    result = _render("v1.2.3", "--set", "slack.allowGuestCommands=true")
+
+    assert result.returncode == 0, result.stderr
+    assert {"name": "HUTBOT_ALLOW_GUEST_COMMANDS", "value": "true"} in _container(result)["env"]
+
+
 def test_chart_passes_the_image_tag_as_the_bot_version():
     result = subprocess.run(
         _helm_template_command("v1.2.3"),

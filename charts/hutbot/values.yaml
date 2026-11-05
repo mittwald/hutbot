@@ -71,6 +71,9 @@ slack:
   # Name the bot calls itself in user-facing text, e.g. "Hutbot (DEV)".
   # Empty = the bot's default ("Hutbot").
   botName: ""
+  # Commands are taken only from full members of the bot's own workspace. `true` also lets the
+  # workspace's guest accounts run them; Slack Connect members and bots stay refused regardless.
+  allowGuestCommands: false
 
 # Timezone and date/time locale the whole instance runs in.
 time:

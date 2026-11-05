@@ -10,6 +10,15 @@ looks like — `/hutbot delete config alarms` names `/hutbot <config> config del
 the plain "type `/hutbot help`" nudge when it could be anything. Any argument may be quoted
 with `"`, `'` or backticks — handy since Slack renders a backticked value as code as you type it.
 
+**Who may run commands.** Commands — the slash command and @mentions alike — are taken only from
+full members of the workspace the bot is installed in (or of its Enterprise Grid organization).
+Guest accounts, members of other organizations in a Slack Connect channel, and bots or
+integrations whose message mentions the bot are refused: a person is told so privately, a bot is
+ignored. A command reconfigures the channel's rules, pages on-call through OpsGenie, and reads
+on-call rotas, team membership and internal calendars, none of which is meant for outsiders. Set
+`HUTBOT_ALLOW_GUEST_COMMANDS=true` (chart value `slack.allowGuestCommands`) to let guest accounts
+of the workspace in; external and bot senders stay refused regardless.
+
 A reply message can span several lines: a command arrives as a single line, so type `\n`
 where the break belongs — `/hutbot set message "First line.\nSecond line."` — and `\\n` when a
 literal backslash-n is what you want. Every other backslash is left alone. The web UI takes
@@ -861,6 +870,8 @@ settings and is optional:
 export HUTBOT_SLASH_COMMAND='/hutbot'
 # Name the bot uses for itself in help/news messages. Default: Hutbot
 export HUTBOT_BOT_NAME='Hutbot'
+# Let guest accounts of the workspace run commands. Default: false (full members only)
+export HUTBOT_ALLOW_GUEST_COMMANDS=false
 # Timezone and date/time locale of the instance. Empty means UTC and English names.
 export HUTBOT_TIMEZONE='Europe/Berlin'
 export HUTBOT_DEFAULT_DATETIME_LOCALE='de_DE'
