@@ -1,0 +1,25 @@
+# Keeps the pinned versions moving: the workflow's actions are pinned to commit SHAs, the Python
+# dependencies to a hashed lock (requirements*.txt, compiled from requirements*.in), and the base
+# image to a digest. None of those update on their own.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
