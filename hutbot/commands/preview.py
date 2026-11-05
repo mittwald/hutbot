@@ -13,7 +13,6 @@ with, and finally the whole namespace.
 
 import copy
 import datetime
-import re
 
 from slack_bolt.async_app import AsyncApp
 
@@ -29,6 +28,7 @@ from .. import slackcache
 from .. import state
 from .. import targets
 from .. import templating
+from .. import userpattern
 from ..buttonutil import button_config_names, normalize_button, parse_config_list
 from ..constants import (
     ACTION_DM_USER,
@@ -420,8 +420,8 @@ def _message_gates(config: dict, user, text: str) -> list[tuple[bool, str, str]]
     if pattern:
         casing = "case-sensitive" if config.get('pattern_case_sensitive') else "case-insensitive"
         try:
-            matched = bool(re.search(pattern, text or '', 0 if config.get('pattern_case_sensitive') else re.IGNORECASE))
-        except re.error:
+            matched = userpattern.search(pattern, text or '', bool(config.get('pattern_case_sensitive')))
+        except (userpattern.PatternTimeout, userpattern.regex.error):
             matched = False
         failed = f"the message does not match `{pattern}` ({casing})"
         if not text:

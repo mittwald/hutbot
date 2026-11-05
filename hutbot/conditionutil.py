@@ -1,7 +1,8 @@
 """Normalization and evaluation of a rule's condition chain.
 
-Nearly a leaf, like ``buttonutil``: it imports ``re``, ``constants`` and ``datetimefmt`` —
-the last one only to judge an `at` expression, which owns that grammar — so every consumer
+Nearly a leaf, like ``buttonutil``: it imports ``re``, ``constants``, ``userpattern`` (the
+time-bounded matcher for member-written patterns) and ``datetimefmt`` — the last one only to
+judge an `at` expression, which owns that grammar — so every consumer
 (``persistence``, ``actions``, ``calendarfeed``, the setters, ``info``, ``webui_backend``) can use it without
 touching the ``actions`` <-> ``buttons`` import cycle.
 
@@ -14,6 +15,7 @@ which is exactly the race the gate exists to prevent.
 import re
 
 from . import datetimefmt
+from . import userpattern
 from .constants import (
     CONDITION_MODE_ALIASES,
     CONDITION_MODE_ALL,
@@ -277,10 +279,15 @@ def _test_condition(operator: str, resolved: str, value: str, case_sensitive: bo
         return not _resolved_is_empty(resolved), ""
 
     if operator in (CONDITION_OP_REGEX, CONDITION_OP_NOT_REGEX):
+        # Time-bounded: the value is member-written and `resolved` may come from a message or a
+        # calendar feed, so a pattern that backtracks catastrophically must not stall the bot.
+        # Either way of not getting an answer fails closed, for `not_regex` too.
         try:
-            matched = re.search(value, resolved, 0 if case_sensitive else re.IGNORECASE) is not None
-        except re.error as e:
+            matched = userpattern.search(value, resolved, case_sensitive)
+        except userpattern.regex.error as e:
             return False, f"invalid pattern `{value}`: {e}"
+        except userpattern.PatternTimeout as e:
+            return False, str(e)
         return (matched if operator == CONDITION_OP_REGEX else not matched), ""
 
     left, right = (resolved, value) if case_sensitive else (resolved.casefold(), value.casefold())

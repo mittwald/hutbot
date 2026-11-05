@@ -5,7 +5,6 @@ live bot state and reuse the same validation as the slash-command setters.
 """
 
 import os
-import re
 import copy
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -23,6 +22,7 @@ from . import datetimefmt
 from . import persistence
 from . import renaming
 from . import targets
+from . import userpattern
 from .buttonutil import format_config_list, parse_config_list
 from .constants import (
     ACTION_DM_USER,
@@ -286,10 +286,9 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
                 errors[f'conditions.{i}'] = f"`{operator}` needs a value."
                 continue
             if operator in ('regex', 'not_regex'):
-                try:
-                    re.compile(value)
-                except re.error as e:
-                    errors[f'conditions.{i}'] = f"Invalid pattern: {e}"
+                pattern_problem = userpattern.pattern_error(value)
+                if pattern_problem:
+                    errors[f'conditions.{i}'] = f"Invalid pattern: {pattern_problem}"
                     continue
             clean = {'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive}
             if at:
@@ -357,11 +356,11 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     elif not isinstance(pattern, str):
         errors['pattern'] = "Pattern must be text."
     else:
-        try:
-            re.compile(pattern)
+        pattern_problem = userpattern.pattern_error(pattern)
+        if pattern_problem:
+            errors['pattern'] = f"Invalid pattern: {pattern_problem}"
+        else:
             cfg['pattern'] = pattern
-        except re.error as e:
-            errors['pattern'] = f"Invalid pattern: {e}"
 
 
     await slackcache.update_user_cache(app)

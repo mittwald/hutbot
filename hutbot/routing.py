@@ -7,7 +7,7 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
-from logutil import log, log_origin, set_log_origin
+from logutil import log, log_origin, log_warning, set_log_origin
 
 from . import state
 from . import slackcache
@@ -19,6 +19,7 @@ from . import persistence
 from . import buttons
 from . import commands
 from . import messaging
+from . import userpattern
 from .constants import (
     BUTTON_ACTION_PREFIX,
     DISABLED_REASON_REMOVED,
@@ -173,8 +174,14 @@ async def handle_channel_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens,
             continue
 
         if pattern:
-            flags = 0 if pattern_case_sensitive else re.IGNORECASE
-            if not re.search(pattern, text, flags):
+            # A member-written pattern, run on every message: time-bounded, and a match that
+            # runs out of time (or a stored pattern that no longer compiles) fails closed.
+            try:
+                matched = userpattern.search(pattern, text, bool(pattern_case_sensitive))
+            except (userpattern.PatternTimeout, userpattern.regex.error) as e:
+                log_warning(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because its pattern could not be matched: {e}.")
+                continue
+            if not matched:
                 log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because it does not match pattern '{pattern}'.")
                 continue
 

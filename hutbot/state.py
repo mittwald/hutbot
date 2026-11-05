@@ -110,6 +110,10 @@ _calendar_cache: dict[str, tuple[float, object, str]] = {}
 # and therefore secret in the same way.
 _calendar_failures: dict[str, float] = {}
 
+# User-written patterns that recently ran out of time, so they are skipped rather than run again on
+# every message: {(pattern, case_sensitive): monotonic time of the timeout}. See `userpattern`.
+_timed_out_patterns: dict[tuple[str, bool], float] = {}
+
 # Serializes web-UI config writes (mutate channel_config + save_configuration).
 _config_write_lock = asyncio.Lock()
 
@@ -136,6 +140,7 @@ def reset() -> None:
     _channel_members_cache.clear()
     _calendar_cache.clear()
     _calendar_failures.clear()
+    _timed_out_patterns.clear()
     bridge_calendar_titles.clear()
     current_command.set('')
     _scheduler_last_check = None

@@ -435,6 +435,10 @@ existing configs keep working unchanged.
     `add condition message contains "deploy to prod" 1`.
   - A condition that cannot be judged (an unknown variable, an invalid regex) counts as **not
     met**, whatever its operator — so a broken config stays quiet instead of paging someone.
+  - Regular expressions — `set pattern` and the `regex`/`not_regex` operators — are limited to
+    1000 characters and get 50 ms per match. A pattern that runs out of time (catastrophic
+    backtracking, e.g. `(x+x+)+y`) counts as **not matched** and is skipped for ten minutes
+    afterwards, so one broken pattern cannot stall the bot for every other channel.
   - Conditions are evaluated **when the rule fires** — for a `message` rule that is *after*
     the reminder delay, so a calendar or on-call condition is asked about the moment the
     reply would go out, not the moment the message arrived.

@@ -5,7 +5,6 @@ The `test` command is a report rather than a change, so it lives in ``preview``.
 
 import copy
 import json
-import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from slack_bolt.async_app import AsyncApp
@@ -22,6 +21,7 @@ from .. import slackcache
 from .. import actions
 from .. import renaming
 from .. import targets
+from .. import userpattern
 from .. import webui_backend
 from ..buttonutil import _find_button_index, format_config_list, normalize_button, parse_config_list
 from ..constants import (
@@ -299,10 +299,9 @@ async def set_pattern(app: AsyncApp, channel, config_name: str, pattern_str: str
     pattern_str = strip_quotes(pattern_str)
 
     # Validate the regex pattern
-    try:
-        re.compile(pattern_str)
-    except re.error as e:
-        await messaging.send_message(app, channel, user, f"Invalid pattern: `{e}`", thread_ts)
+    pattern_problem = userpattern.pattern_error(pattern_str)
+    if pattern_problem:
+        await messaging.send_message(app, channel, user, f"Invalid pattern: `{pattern_problem}`", thread_ts)
         return
 
     case_sensitive = case_sensitive_str is not None and case_sensitive_str.lower() in ['true', '1']
@@ -606,10 +605,9 @@ async def add_condition(app: AsyncApp, channel, config_name: str, spec: str, use
         await messaging.send_message(app, channel, user, f"Invalid *condition*. `{operator}` needs a value.", thread_ts)
         return
     if operator in ('regex', 'not_regex'):
-        try:
-            re.compile(value)
-        except re.error as e:
-            await messaging.send_message(app, channel, user, f"Invalid pattern: `{e}`", thread_ts)
+        pattern_problem = userpattern.pattern_error(value)
+        if pattern_problem:
+            await messaging.send_message(app, channel, user, f"Invalid pattern: `{pattern_problem}`", thread_ts)
             return
 
     condition = {'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive}

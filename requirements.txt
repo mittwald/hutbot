@@ -7,3 +7,4 @@ unidecode
 croniter
 icalendar~=7.2
 recurring-ical-events~=3.8
+regex>=2024.11.6
