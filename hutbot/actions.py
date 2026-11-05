@@ -288,6 +288,10 @@ def missing_target_reason(config: dict) -> str:
     target = (config.get('action_target') or '').strip()
     if not target:
         return f"action `{action}` has no target"
+    if action == ACTION_POST_CHANNEL and target_is_templated(target):
+        # A channel rendered from variables could be anything a message or a feed says, and the
+        # bot posts into every conversation it belongs to; the setters refuse such a target.
+        return f"action `{action}` needs a fixed channel, not `{target}`"
     if target_is_templated(target):
         return ""
     if action == ACTION_POST_CHANNEL and not targets.parse_channel_ref(target):

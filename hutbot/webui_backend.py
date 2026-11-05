@@ -97,11 +97,14 @@ def _ui_team_list(value) -> list[str]:
     return cleaned
 
 
-async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str = "", existing: dict | None = None) -> tuple[dict | None, dict]:
+async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str = "", existing: dict | None = None,
+                                  actor_id: str | None = None) -> tuple[dict | None, dict]:
     """Validate a config dict from the web UI, mirroring the slash-command setters.
 
     Returns ``(clean_config, {})`` on success or ``(None, {field: message})`` on failure.
     Values use the persisted shape: ``wait_time`` and ``escalation_timeout`` are in seconds.
+    `actor_id` is the Slack user saving it; a `post_channel` target outside `channel_id` must be a
+    channel they are a member of (see `targets.post_channel_refusal`).
     """
     if not isinstance(payload, dict):
         return None, {'_': "Expected a configuration object."}
@@ -341,12 +344,19 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
 
     action_target = str(get('action_target') or "").strip()
     target_template_error = templating.validate_template_expressions(action_target) if "{{" in action_target else ""
+    previous_target = (str((existing or {}).get('action_target') or "")
+                       if (existing or {}).get('action') == ACTION_POST_CHANNEL else "")
     if action in (ACTION_DM_USER, ACTION_GROUP_DM, ACTION_POST_CHANNEL) and not action_target:
         errors['action_target'] = "This action needs a target (a user, user group, or channel)."
+    elif action == ACTION_POST_CHANNEL and "{{" in action_target:
+        errors['action_target'] = "Posting to a channel needs a fixed channel, not a variable. Pick one from Slack's autocomplete, or enter its C… id."
     elif target_template_error:
         errors['action_target'] = target_template_error
-    elif action == ACTION_POST_CHANNEL and "{{" not in action_target and not targets.parse_channel_ref(action_target):
+    elif action == ACTION_POST_CHANNEL and not targets.parse_channel_ref(action_target):
         errors['action_target'] = "Pick a channel from Slack's autocomplete, or enter its C… id."
+    elif action == ACTION_POST_CHANNEL and (refusal := await targets.post_channel_refusal(
+            app, channel_id, action_target, actor_id, previous_target)):
+        errors['action_target'] = refusal[0].upper() + refusal[1:] + "."
     else:
         cfg['action_target'] = action_target
 
@@ -460,13 +470,14 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     return cfg, {}
 
 
-async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payload: dict) -> tuple[bool, dict]:
-    """Validate and persist a single config (rule). Returns (ok, errors)."""
+async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payload: dict,
+                          actor_id: str | None = None) -> tuple[bool, dict]:
+    """Validate and persist a single config (rule) saved by `actor_id`. Returns (ok, errors)."""
     config_name = (config_name or "").strip()
     if not CONFIG_NAME_PATTERN.fullmatch(config_name):
         return False, {'name': "Names may use letters, numbers, and - _ . : / only."}
     existing = state.channel_config.get(channel_id, {}).get(config_name)
-    clean, errors = await validate_config_payload(payload, app, channel_id, existing)
+    clean, errors = await validate_config_payload(payload, app, channel_id, existing, actor_id=actor_id)
     if errors:
         return False, errors
     async with state._config_write_lock:
@@ -606,7 +617,7 @@ async def maybe_start_web_ui(app: AsyncApp):
         list_channels=lambda user: list_user_config_channels(app, user),
         is_member=lambda channel_id, user_id: slackcache.is_user_in_channel(app, channel_id, user_id),
         get_configs=ui_snapshot_configs,
-        apply_config=lambda channel_id, name, payload: ui_apply_config(app, channel_id, name, payload),
+        apply_config=lambda channel_id, name, payload, user_id: ui_apply_config(app, channel_id, name, payload, user_id),
         create_config=lambda channel_id, name: ui_create_config(app, channel_id, name),
         delete_config=lambda channel_id, name: ui_delete_config(app, channel_id, name),
         rename_config=lambda channel_id, name, new_name: ui_rename_config(app, channel_id, name, new_name),

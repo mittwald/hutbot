@@ -436,7 +436,8 @@ async def import_config(app: AsyncApp, channel, addressed_name: str, json_text: 
             settings = dict(settings)
             settings['calendar_url'] = unwrap_slack_link(settings['calendar_url'])
 
-        clean, refused = await webui_backend.validate_config_payload(settings, app, channel.id, channel.configs.get(name))
+        clean, refused = await webui_backend.validate_config_payload(settings, app, channel.id, channel.configs.get(name),
+                                                                     actor_id=getattr(user, 'id', None))
         errors.extend(f"• {about(name)}`{field}`: {problem}" for field, problem in sorted(refused.items()))
         if not refused:
             planned.append((name, clean))
@@ -726,6 +727,9 @@ async def set_action(app: AsyncApp, channel, config_name: str, value: str, targe
     elif not target:
         await messaging.send_message(app, channel, user, f"Action `{value}` needs a target: `{state.slash_command} {config_name} set action {value.replace('_', '-')} {ACTION_TARGET_HINTS[value]}`.", thread_ts)
         return
+    elif value == ACTION_POST_CHANNEL and actions.target_is_templated(target):
+        await messaging.send_message(app, channel, user, f"Invalid *target* `{target}` for action `{value}`: it needs a fixed channel. Pick the channel from Slack's autocomplete so it becomes a link, or pass its `C…` id.", thread_ts)
+        return
     elif actions.target_is_templated(target):
         # A target built from variables only names someone once the rule runs, so what can be
         # checked now is the template itself.
@@ -736,6 +740,13 @@ async def set_action(app: AsyncApp, channel, config_name: str, value: str, targe
     elif value == ACTION_POST_CHANNEL and not targets.parse_channel_ref(target):
         await messaging.send_message(app, channel, user, f"Invalid *target* `{target}` for action `{value}`. Pick the channel from Slack's autocomplete so it becomes a link, or pass its `C…` id.", thread_ts)
         return
+    elif value == ACTION_POST_CHANNEL:
+        existing = channel.configs.get(config_name) or {}
+        previous = (existing.get('action_target') or "") if existing.get('action') == ACTION_POST_CHANNEL else ""
+        refusal = await targets.post_channel_refusal(app, channel.id, target, getattr(user, 'id', None), previous)
+        if refusal:
+            await messaging.send_message(app, channel, user, f"Invalid *target* `{target}` for action `{value}`: {refusal}.", thread_ts)
+            return
 
     config = _ensure_config(channel, config_name)
     config['action'] = value

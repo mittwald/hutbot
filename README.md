@@ -496,7 +496,10 @@ existing configs keep working unchanged.
   - A target built from variables is resolved when the rule runs, and the rule simply does not
     send when it resolves to nobody.
   - `set action post-channel #<channel>` — post to another channel. Pick the channel from Slack's
-    autocomplete so it arrives as a link, or pass its `C…` id.
+    autocomplete so it arrives as a link, or pass its `C…` id. The bot posts there with its own
+    identity, so the target must be the rule's own channel or a channel **you** are a member of
+    (checked when the target is set, in the web UI and on import), and it must be a fixed channel
+    rather than a `{{variable}}`.
 
 - **Buttons** attach interactive buttons to the message a rule sends (including the classic
   unanswered-message reply). Each button is added incrementally with a typed action (the leading

@@ -51,7 +51,8 @@ class WebUIContext:
     list_channels: Callable[[Any], Awaitable[list]]
     is_member: Callable[[str, str], Awaitable[bool]]
     get_configs: Callable[[str], dict]
-    apply_config: Callable[[str, str, dict], Awaitable[tuple]]
+    # (channel_id, rule name, payload, Slack user id of whoever saves it)
+    apply_config: Callable[[str, str, dict, str], Awaitable[tuple]]
     create_config: Callable[[str, str], Awaitable[tuple]]
     delete_config: Callable[[str, str], Awaitable[tuple]]
     rename_config: Callable[[str, str, str], Awaitable[tuple]]
@@ -149,7 +150,7 @@ async def handle_put_config(request):
         payload = await request.json()
     except Exception:
         return web.json_response({"error": "The request body wasn't valid JSON."}, status=400)
-    ok, errors = await _ctx(request).apply_config(channel_id, name, payload)
+    ok, errors = await _ctx(request).apply_config(channel_id, name, payload, user.id)
     if not ok:
         return web.json_response({"errors": errors}, status=422)
     return web.json_response({"ok": True, "config": _ctx(request).get_configs(channel_id).get(name)})
