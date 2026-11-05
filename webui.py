@@ -76,8 +76,12 @@ class WebUIContext:
     proxy_secret_header: str = "X-Hutbot-Proxy-Secret"
 
 
+# Typed application key for the context (a plain string key draws aiohttp's NotAppKeyWarning).
+_CTX_KEY = web.AppKey("ctx", WebUIContext)
+
+
 def _ctx(request) -> WebUIContext:
-    return request.app["ctx"]
+    return request.app[_CTX_KEY]
 
 
 def _forbidden(message: str = "You don't have access to this."):
@@ -296,7 +300,7 @@ async def _security_headers(request, handler):
 
 def create_app(ctx: WebUIContext) -> web.Application:
     app = web.Application(middlewares=[_security_headers, _same_origin_writes])
-    app["ctx"] = ctx
+    app[_CTX_KEY] = ctx
     app.router.add_get("/healthz", handle_healthz)
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/me", handle_me)
