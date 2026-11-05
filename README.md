@@ -1429,6 +1429,13 @@ persistence:
 ```
 
 When persistence is enabled (default: `true`), the chart will automatically set the `HUTBOT_CONFIG_FILE` environment variable so Hutbot reads and writes its config from the mounted volume (at `<mountPath>/bot.json`).
+Without persistence the same files live in an `emptyDir` for the life of the pod.
+
+The bot runs as the unprivileged UID/GID `10001` on a read-only root filesystem with every
+capability dropped (`podSecurityContext` / `securityContext` in the chart values); the state volume
+is the only place it writes. `fsGroup: 10001` makes Kubernetes hand the volume — including files an
+earlier, root-run image wrote there — to that group on the first start. A volume type without
+ownership management (NFS, for one) needs a one-time `chown -R 10001:10001` of its files instead.
 Additionally, Hutbot stores its employee list cache in a JSON file (`employees.json`) on the same mounted volume. The chart will set the `HUTBOT_EMPLOYEE_CACHE_FILE` environment variable so Hutbot reads and writes its employee cache from the mounted volume (at `<mountPath>/employees.json`).
 
 Beside that cache the chart also points `HUTBOT_EMPLOYEE_FALLBACK_FILE` at
