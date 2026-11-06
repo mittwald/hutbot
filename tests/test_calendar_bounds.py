@@ -83,6 +83,92 @@ def test_an_ordinary_feed_is_left_alone():
     assert _uids(calendar) == ["weekly", "single"]
 
 
+@pytest.mark.parametrize("rrule", ["RRULE:FREQ=SECONDLY", " FREQ=SECONDLY", "freq=minutely",
+                                   "FREQ=SECONDLY;WKST=XX"])
+def test_a_rule_is_judged_the_way_dateutil_will_expand_it(rrule):
+    """icalendar files `RRULE:RRULE:FREQ=SECONDLY` under a key other than FREQ, dateutil does not."""
+    calendar = _calendar(_vevent("odd", rrule), _vevent("single"))
+
+    assert bound_recurrences(calendar) == 1
+    assert _uids(calendar) == ["single"]
+
+
+def test_an_empty_rrule_is_a_single_event_as_the_recurrence_library_reads_it():
+    holiday = _vevent("holiday")
+    calendar = _calendar(holiday[:-1] + ["RRULE:"] + holiday[-1:], _vevent("single"))
+
+    assert bound_recurrences(calendar) == 0
+    assert _uids(calendar) == ["holiday", "single"]
+
+
+# ----- time zones a feed defines itself -----
+
+def _vtimezone(tzid, standard_rrule="FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU", offset="+0100",
+               start="16010101T030000", extra=()):
+    return ["BEGIN:VTIMEZONE", f"TZID:{tzid}",
+            "BEGIN:STANDARD", f"DTSTART:{start}", f"TZOFFSETFROM:{offset[0]}0200",
+            f"TZOFFSETTO:{offset}", f"RRULE:{standard_rrule}", *extra, "END:STANDARD",
+            "BEGIN:DAYLIGHT", "DTSTART:16010101T020000", f"TZOFFSETFROM:{offset}",
+            f"TZOFFSETTO:{offset[0]}0200", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU", "END:DAYLIGHT",
+            "END:VTIMEZONE"]
+
+
+def _feed_text(*components):
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//test//EN"]
+    for component in components:
+        lines += component
+    return "\r\n".join(lines + ["END:VCALENDAR"])
+
+
+def _zoned_event(tzid, start="20260115T120000"):
+    return ["BEGIN:VEVENT", "UID:zoned", "DTSTAMP:20260101T000000Z", f"DTSTART;TZID={tzid}:{start}",
+            "DURATION:PT1H", "SUMMARY:zoned", "END:VEVENT"]
+
+
+def test_an_outlook_style_time_zone_is_accepted():
+    calendar, dropped = calendarfeed._parse_calendar(
+        _feed_text(_vtimezone("W. Europe Standard Time"), _zoned_event("W. Europe Standard Time")))
+
+    assert dropped == 0
+    assert calendar.walk("VEVENT")[0]["DTSTART"].dt.utcoffset() == datetime.timedelta(hours=1)
+
+
+@pytest.mark.parametrize("rule, extra", [
+    ("FREQ=SECONDLY", ()),
+    ("FREQ=DAILY", ()),
+    ("FREQ=YEARLY;BYHOUR=" + ",".join(map(str, range(24))) + ";BYMINUTE=" + ",".join(map(str, range(60))), ()),
+    ("RRULE:FREQ=SECONDLY", ()),
+    ("FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU", ("EXRULE:FREQ=SECONDLY",)),
+])
+def test_a_time_zone_that_changes_offset_too_often_refuses_the_feed(rule, extra):
+    """dateutil keeps every transition it expands, so one such zone would hold gigabytes."""
+    text = _feed_text(_vtimezone("Custom/Zone", rule, extra=extra), _zoned_event("Custom/Zone"))
+
+    with pytest.raises(ValueError, match="time zone definitions"):
+        calendarfeed._parse_calendar(text)
+
+
+def test_many_time_zones_together_are_bounded_too():
+    zones = [_vtimezone(f"Custom/Zone{i}") for i in range(5)]
+
+    with patch.object(calendarfeed, "_MAX_TIMEZONE_TRANSITIONS", 50_000):
+        with pytest.raises(ValueError, match="time zone definitions"):
+            calendarfeed._parse_calendar(_feed_text(*zones))
+    with patch.object(calendarfeed, "_MAX_TIMEZONE_TRANSITIONS", 100_000):
+        calendarfeed._parse_calendar(_feed_text(*zones))
+
+
+def test_a_feed_keeps_its_own_time_zone_definition():
+    """icalendar caches zones process-wide by TZID; one feed must not set another's offsets."""
+    first, _ = calendarfeed._parse_calendar(
+        _feed_text(_vtimezone("Customized Time Zone", offset="+0100"), _zoned_event("Customized Time Zone")))
+    second, _ = calendarfeed._parse_calendar(
+        _feed_text(_vtimezone("Customized Time Zone", offset="+0500"), _zoned_event("Customized Time Zone")))
+
+    assert first.walk("VEVENT")[0]["DTSTART"].dt.utcoffset() == datetime.timedelta(hours=1)
+    assert second.walk("VEVENT")[0]["DTSTART"].dt.utcoffset() == datetime.timedelta(hours=5)
+
+
 @pytest.mark.asyncio
 async def test_a_secondly_feed_is_answered_quickly_instead_of_expanded():
     """The reported attack: one `FREQ=SECONDLY` event from 1970 used to pin the loop for days."""

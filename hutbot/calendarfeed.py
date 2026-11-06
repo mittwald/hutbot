@@ -15,6 +15,7 @@ import functools
 import ipaddress
 import itertools
 import json
+import math
 import os
 import re
 import threading
@@ -23,7 +24,9 @@ import urllib.parse
 from collections.abc import Callable, Sequence
 
 import aiohttp
+import dateutil.rrule
 import icalendar
+import icalendar.timezone
 import recurring_ical_events
 
 from employee_list import get_env_var
@@ -93,6 +96,12 @@ _MAX_RECURRING_SERIES = 2000
 # finer than hourly, and `FREQ=SECONDLY` from an old DTSTART is what turns a lookup into hours of
 # iteration and gigabytes of cached occurrences.
 _MAX_OCCURRENCES_PER_DAY = 24
+# Offset changes the time zones a feed defines itself (VTIMEZONE) may add up to, counted from each
+# observance's start to its UNTIL, COUNT or the year 9999. dateutil expands an observance up to
+# any moment an event names and keeps every transition for as long as the zone lives, so one
+# `FREQ=SECONDLY` observance would hold gigabytes. A real zone changes offset once or twice a
+# year, about 17,000 transitions counted this way, so dozens of zones fit.
+_MAX_TIMEZONE_TRANSITIONS = 1_000_000
 # Hosts the operator vouches for even though they resolve to an internal address — an
 # in-cluster feed bridge, say, which the address checks below cannot tell from a target an
 # attacker picked. Comma-separated host names, matched exactly and case-folded; https is
@@ -472,7 +481,8 @@ _EXPANDING_PARTS = (("BYHOUR", ("DAILY", "WEEKLY", "MONTHLY", "YEARLY")),
 
 def _recurrence_rules(component) -> list:
     rules = component.get("RRULE")
-    if rules is None:
+    if not rules:
+        # Absent, or an empty `RRULE:`, which the recurrence library reads as a single event.
         return []
     return list(rules) if isinstance(rules, list) else [rules]
 
@@ -484,8 +494,26 @@ def _first(rule, key: str):
     return value
 
 
+def _rule_parts(rule) -> dict[str, list[str]]:
+    """The parts of an RRULE (or EXRULE) as dateutil, which expands it, reads them.
+
+    icalendar keeps what it cannot place under the key it saw: `RRULE:RRULE:FREQ=SECONDLY` or a
+    leading space files the frequency under a key other than `FREQ`, while dateutil, which reads
+    the rule's text again, upper-cases it, splits it on whitespace and accepts the `RRULE:`
+    prefix. So the rule is parsed by dateutil and read back from its canonical form. Raises for a
+    rule dateutil cannot parse, or text that holds more than one rule.
+    """
+    text = rule.to_ical().decode("utf-8", "replace") if hasattr(rule, "to_ical") else str(rule)
+    parsed = dateutil.rrule.rrulestr(text, dtstart=datetime.datetime(2000, 1, 1), ignoretz=True)
+    if not isinstance(parsed, dateutil.rrule.rrule):
+        raise ValueError("more than one rule in one property")
+    canonical = str(parsed).rsplit("RRULE:", 1)[1]
+    return {key: value.split(",") for key, _, value in (part.partition("=") for part in canonical.split(";"))}
+
+
 def _occurrences_per_day(rule) -> float:
     """An upper bound on how many occurrences one RRULE produces per day."""
+    rule = _rule_parts(rule)
     freq = str(_first(rule, "FREQ") or "").upper()
     try:
         interval = max(int(_first(rule, "INTERVAL") or 1), 1)
@@ -504,15 +532,17 @@ def _expands_too_finely(component) -> bool:
         return any(_occurrences_per_day(rule) > _MAX_OCCURRENCES_PER_DAY
                    for rule in _recurrence_rules(component))
     except Exception:
-        # A rule this cannot read is left to the recurrence library, which skips bad series.
-        return False
+        # A rule dateutil cannot read would not expand anyway (the recurrence library skips bad
+        # series), and one it reads differently from this check must not slip through.
+        return True
 
 
 def bound_recurrences(calendar) -> int:
     """Drop the recurring events a feed has no business making the bot expand.
 
     That is a series that recurs more often than hourly — no calendar application writes one —
-    and every series past the first `_MAX_RECURRING_SERIES`. The overrides of a dropped series
+    or whose rule dateutil cannot read, and every series past the first `_MAX_RECURRING_SERIES`.
+    The overrides of a dropped series
     (its `RECURRENCE-ID` events) go with it, so none of them turns up as a lone event. Returns how
     many events were dropped; the caller says so, since a feed that loses events reads differently.
     """
@@ -521,7 +551,7 @@ def bound_recurrences(calendar) -> int:
     dropped_events: set[int] = set()
     series = 0
     for component in calendar.walk("VEVENT"):
-        if component.get("RRULE") is None or component.get("RECURRENCE-ID") is not None:
+        if not _recurrence_rules(component) or component.get("RECURRENCE-ID") is not None:
             continue
         uid = str(component.get("UID") or "")
         if _expands_too_finely(component) or series >= _MAX_RECURRING_SERIES:
@@ -552,9 +582,90 @@ def bound_recurrences(calendar) -> int:
     return dropped
 
 
+def _values(rule: dict, key: str) -> list:
+    return [value for value in rule.get(key, []) if value != ""]
+
+
+def _transitions_per_year(rule: dict) -> float:
+    """An upper bound on the offset changes one time zone observance rule makes per year.
+
+    A zone's rules are yearly (`FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU`); anything finer is unbounded.
+    """
+    if _first(rule, "FREQ") != "YEARLY":
+        return math.inf
+    if _values(rule, "BYYEARDAY"):
+        days = len(_values(rule, "BYYEARDAY"))
+    elif _values(rule, "BYWEEKNO"):
+        days = 7 * len(_values(rule, "BYWEEKNO"))
+    elif _values(rule, "BYMONTHDAY") or _values(rule, "BYDAY"):
+        # A weekday with an ordinal (-1SU) falls once a month, a bare one (SU) up to five times.
+        per_month = len(_values(rule, "BYMONTHDAY")) or sum(
+            1 if day.lstrip("+-")[:1].isdigit() else 5 for day in _values(rule, "BYDAY"))
+        days = (len(_values(rule, "BYMONTH")) or 12) * per_month
+    else:
+        days = max(len(_values(rule, "BYMONTH")), 1)
+    for part in ("BYHOUR", "BYMINUTE", "BYSECOND"):
+        days *= max(len(_values(rule, part)), 1)
+    return days
+
+
+def timezone_transitions(calendar) -> float:
+    """An upper bound on the offset changes the feed's own time zones (VTIMEZONE) can expand to.
+
+    Every observance (STANDARD/DAYLIGHT) counts its rules' transitions from its DTSTART to their
+    UNTIL, COUNT or the year 9999, and its RDATEs. An observance with an EXRULE (which dateutil
+    would have to walk in full) or a rule dateutil cannot read counts as unbounded.
+    """
+    total = 0.0
+    for zone in calendar.walk("VTIMEZONE"):
+        for observance in zone.subcomponents:
+            if observance.get("EXRULE") is not None:
+                return math.inf
+            start = getattr(observance.get("DTSTART"), "dt", None)
+            first_year = getattr(start, "year", 1)
+            try:
+                rules = [_rule_parts(rule) for rule in _recurrence_rules(observance)]
+            except Exception:
+                return math.inf
+            for rule in rules:
+                until = _first(rule, "UNTIL")
+                last_year = int(until[:4]) if until and until[:4].isdigit() else 9999
+                transitions = _transitions_per_year(rule) * max(last_year - first_year + 1, 1)
+                count = _first(rule, "COUNT")
+                if count and count.isdigit():
+                    transitions = min(transitions, int(count))
+                total += transitions
+            rdates = observance.get("RDATE")
+            for rdate in (rdates if isinstance(rdates, list) else [rdates] if rdates is not None else []):
+                total += len(getattr(rdate, "dts", None) or [1])
+    return total
+
+
+# icalendar caches every VTIMEZONE it parses in one process-wide map keyed by TZID, and a later
+# parse uses the cached zone instead of its own definition. So without care one feed would decide
+# the offsets of another feed's events, and zones under fresh TZIDs would pile up for the life of
+# the process together with every transition they ever expanded. Parses therefore take turns and
+# empty that cache when they are done; the parsed events keep their own zone objects.
+_PARSE_LOCK = threading.Lock()
+
+
+def _parse_isolated(text: str):
+    with _PARSE_LOCK:
+        try:
+            return icalendar.Calendar.from_ical(text)
+        finally:
+            # Selecting the provider again is icalendar's public way to start a fresh cache.
+            icalendar.timezone.tzp.use(icalendar.timezone.tzp.name)
+
+
 def _parse_calendar(text: str):
     """Parse a feed and bound what it can cost to expand. Runs on a worker thread."""
-    calendar = icalendar.Calendar.from_ical(text)
+    calendar = _parse_isolated(text)
+    transitions = timezone_transitions(calendar)
+    if transitions > _MAX_TIMEZONE_TRANSITIONS:
+        raise ValueError(f"its own time zone definitions would expand to more than "
+                         f"{_MAX_TIMEZONE_TRANSITIONS} offset changes; a time zone's rules recur "
+                         f"yearly at most")
     return calendar, bound_recurrences(calendar)
 
 
@@ -651,8 +762,12 @@ class _DeadlineThread(threading.Thread):
             if interrupted:
                 # The interrupt was raised just as the job returned and has not landed yet. It
                 # lands at the next instruction boundary, which this loop's back-edge provides,
-                # and is caught below rather than escaping into the thread's bootstrap.
-                while True:
+                # and is caught below rather than escaping into the thread's bootstrap. Had it
+                # landed inside the job and been swallowed there (a finalizer reports and drops
+                # exceptions), nothing is pending: give up after a second rather than spin, with
+                # the evaluation slot taken, forever.
+                give_up = time.monotonic() + 1.0
+                while time.monotonic() < give_up:
                     pass
             _call_on_loop(self._loop, _settle, self._future, value, error)
         except _EvaluationAbandoned:
@@ -1481,8 +1596,8 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
         return stale("The feed did not parse")
     if dropped:
         log_warning(f"Calendar feed {describe_calendar_url(url)}: left out {dropped} event(s) of "
-                    f"recurring series that repeat more often than hourly or exceed "
-                    f"{_MAX_RECURRING_SERIES} series.")
+                    f"recurring series that repeat more often than hourly, have an unreadable "
+                    f"rule or exceed {_MAX_RECURRING_SERIES} series.")
 
     name = ""
     try:
