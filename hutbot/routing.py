@@ -7,9 +7,10 @@ import datetime
 
 from slack_bolt.async_app import AsyncApp
 
-from logutil import log, log_origin, set_log_origin
+from logutil import log, log_origin, log_warning, set_log_origin
 
 from . import state
+from . import access
 from . import slackcache
 from . import datetimefmt
 from . import actions
@@ -19,6 +20,7 @@ from . import persistence
 from . import buttons
 from . import commands
 from . import messaging
+from . import userpattern
 from .constants import (
     BUTTON_ACTION_PREFIX,
     DISABLED_REASON_REMOVED,
@@ -73,7 +75,11 @@ async def route_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, event: d
         previous_user = await slackcache.get_user_by_id(app, previous_message.get('user'))
         await handle_message_deletion(app, channel, previous_user, previous_message.get('ts'))
     elif user and is_command(text):
-        # command
+        # command — only from a full member of this workspace, never from a bot or integration
+        refusal = await access.command_refusal(app, user_id, actor_is_bot)
+        if refusal:
+            await refuse_command(app, channel, user, refusal, notify=not actor_is_bot)
+            return
         await commands.process_command(app, text, channel, user, ts, opsgenie_tokens, command_ts=ts)
     elif user and thread_ts:
         # thread
@@ -81,6 +87,16 @@ async def route_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens, event: d
     elif user and ts:
         # channel message
         await handle_channel_message(app, opsgenie_tokens, channel, user, text, ts, actor_is_bot)
+
+
+async def refuse_command(app: AsyncApp, channel, user, reason: str, notify: bool = True) -> None:
+    """Log a refused command and, for a person, tell them privately why nothing happened.
+
+    A bot is not answered: a reply to an integration is at best noise and at worst a loop.
+    """
+    log_warning(f"Refused a command from @{getattr(user, 'name', '?')} ({getattr(user, 'id', '?')}) in #{channel.name}: {reason}.")
+    if notify:
+        await messaging.send_message(app, channel, user, f"Sorry, {state.bot_name} only takes commands from full members of this workspace: {reason}.")
 
 
 def user_matches_actor_criteria(config: dict | None, user, actor_is_bot: bool = False) -> bool:
@@ -173,8 +189,14 @@ async def handle_channel_message(app: AsyncApp, opsgenie_tokens: OpsGenieTokens,
             continue
 
         if pattern:
-            flags = 0 if pattern_case_sensitive else re.IGNORECASE
-            if not re.search(pattern, text, flags):
+            # A member-written pattern, run on every message: time-bounded, and a match that
+            # runs out of time (or a stored pattern that no longer compiles) fails closed.
+            try:
+                matched = userpattern.search(pattern, text, bool(pattern_case_sensitive))
+            except (userpattern.PatternTimeout, userpattern.regex.error) as e:
+                log_warning(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because its pattern could not be matched: {e}.")
+                continue
+            if not matched:
                 log(f"Message from user @{user.name} in #{channel.name} will be ignored for config '{config_name}' because it does not match pattern '{pattern}'.")
                 continue
 
@@ -356,6 +378,10 @@ async def handle_command_event(app: AsyncApp, command: dict, opsgenie_tokens: Op
     channel = await slackcache.get_channel_by_id(app, channel_id)
     set_log_origin(f"slash command in {channel_label(channel_id, channel.name)} from {user_id or 'unknown sender'}")
     user = await slackcache.get_user_by_id(app, user_id)
+    refusal = await access.command_refusal(app, user_id)
+    if refusal:
+        await refuse_command(app, channel, user, refusal)
+        return
     await commands.process_command(app, text, channel, user, opsgenie_tokens=opsgenie_tokens)
 
 

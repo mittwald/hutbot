@@ -9,18 +9,24 @@ it is directly testable.
 """
 
 import asyncio
+import contextvars
 import datetime
+import functools
 import ipaddress
 import itertools
 import json
+import math
 import os
 import re
+import threading
 import time
 import urllib.parse
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import aiohttp
+import dateutil.rrule
 import icalendar
+import icalendar.timezone
 import recurring_ical_events
 
 from employee_list import get_env_var
@@ -73,6 +79,29 @@ _CALENDAR_STALE_GRACE = float(os.environ.get('HUTBOT_CALENDAR_STALE_GRACE', str(
 # previous event is found by scanning a window; env-tunable because a sparse calendar may
 # need a wider one. Read at import; tests patch the module attribute.
 _CALENDAR_LOOKBACK_DAYS = int(os.environ.get('HUTBOT_CALENDAR_LOOKBACK_DAYS', '90'))
+# How long expanding one feed's recurrences and picking its events may take, in seconds. The feed
+# is whatever document a channel member pointed a rule at, and the recurrence library walks every
+# series from its DTSTART: a `FREQ=DAILY` rule from 1970 costs seconds per lookup, and a few
+# thousand of them would cost hours. So the work runs on a thread of its own, and past this
+# deadline it is stopped and the feed is not evaluated again until `_CALENDAR_TTL` has passed.
+# Real feeds take milliseconds. Read at import; tests patch the module attribute.
+_CALENDAR_EVALUATION_TIMEOUT = float(os.environ.get('HUTBOT_CALENDAR_EVALUATION_TIMEOUT', '10'))
+# How many feed evaluations run at once. More would only compete for the same interpreter lock;
+# a lookup that cannot get a slot within `_CALENDAR_EVALUATION_TIMEOUT` gives up for now.
+_CALENDAR_EVALUATION_SLOTS = 2
+# Recurring series kept per feed. Every series costs a walk from its start on every lookup, and a
+# 5 MB document holds tens of thousands; a real calendar has a few hundred at most.
+_MAX_RECURRING_SERIES = 2000
+# Occurrences per day a recurrence rule may produce. No calendar application writes anything
+# finer than hourly, and `FREQ=SECONDLY` from an old DTSTART is what turns a lookup into hours of
+# iteration and gigabytes of cached occurrences.
+_MAX_OCCURRENCES_PER_DAY = 24
+# Offset changes the time zones a feed defines itself (VTIMEZONE) may add up to, counted from each
+# observance's start to its UNTIL, COUNT or the year 9999. dateutil expands an observance up to
+# any moment an event names and keeps every transition for as long as the zone lives, so one
+# `FREQ=SECONDLY` observance would hold gigabytes. A real zone changes offset once or twice a
+# year, about 17,000 transitions counted this way, so dozens of zones fit.
+_MAX_TIMEZONE_TRANSITIONS = 1_000_000
 # Hosts the operator vouches for even though they resolve to an internal address — an
 # in-cluster feed bridge, say, which the address checks below cannot tell from a target an
 # attacker picked. Comma-separated host names, matched exactly and case-folded; https is
@@ -437,6 +466,393 @@ def select_event(query, config: dict | None, instant: datetime.datetime, offset:
         log_error(f"Failed to resolve the calendar event at offset {offset}:", e)
         return None
     return build_calendar_event(found, config) if found is not None else None
+
+
+# ----- bounding what a feed can cost -----
+
+
+_PERIODS_PER_DAY = {"SECONDLY": 86400, "MINUTELY": 1440, "HOURLY": 24}
+# The parts of a rule that multiply its occurrences within each period, per frequency coarser
+# than the part itself (RFC 5545 section 3.3.10: BYxxx parts finer than FREQ expand it).
+_EXPANDING_PARTS = (("BYHOUR", ("DAILY", "WEEKLY", "MONTHLY", "YEARLY")),
+                    ("BYMINUTE", ("HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY")),
+                    ("BYSECOND", ("MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY")))
+
+
+def _recurrence_rules(component) -> list:
+    rules = component.get("RRULE")
+    if not rules:
+        # Absent, or an empty `RRULE:`, which the recurrence library reads as a single event.
+        return []
+    return list(rules) if isinstance(rules, list) else [rules]
+
+
+def _first(rule, key: str):
+    value = rule.get(key)
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else None
+    return value
+
+
+def _rule_parts(rule) -> dict[str, list[str]]:
+    """The parts of an RRULE (or EXRULE) as dateutil, which expands it, reads them.
+
+    icalendar keeps what it cannot place under the key it saw: `RRULE:RRULE:FREQ=SECONDLY` or a
+    leading space files the frequency under a key other than `FREQ`, while dateutil, which reads
+    the rule's text again, upper-cases it, splits it on whitespace and accepts the `RRULE:`
+    prefix. So the rule is parsed by dateutil and read back from its canonical form. Raises for a
+    rule dateutil cannot parse, or text that holds more than one rule.
+    """
+    text = rule.to_ical().decode("utf-8", "replace") if hasattr(rule, "to_ical") else str(rule)
+    parsed = dateutil.rrule.rrulestr(text, dtstart=datetime.datetime(2000, 1, 1), ignoretz=True)
+    if not isinstance(parsed, dateutil.rrule.rrule):
+        raise ValueError("more than one rule in one property")
+    canonical = str(parsed).rsplit("RRULE:", 1)[1]
+    return {key: value.split(",") for key, _, value in (part.partition("=") for part in canonical.split(";"))}
+
+
+def _occurrences_per_day(rule) -> float:
+    """An upper bound on how many occurrences one RRULE produces per day."""
+    rule = _rule_parts(rule)
+    freq = str(_first(rule, "FREQ") or "").upper()
+    try:
+        interval = max(int(_first(rule, "INTERVAL") or 1), 1)
+    except (TypeError, ValueError):
+        interval = 1
+    per_day = _PERIODS_PER_DAY.get(freq, 1) / interval
+    for part, expanded_by in _EXPANDING_PARTS:
+        values = rule.get(part)
+        if freq in expanded_by and isinstance(values, (list, tuple)) and len(values) > 1:
+            per_day *= len(values)
+    return per_day
+
+
+def _expands_too_finely(component) -> bool:
+    try:
+        return any(_occurrences_per_day(rule) > _MAX_OCCURRENCES_PER_DAY
+                   for rule in _recurrence_rules(component))
+    except Exception:
+        # A rule dateutil cannot read would not expand anyway (the recurrence library skips bad
+        # series), and one it reads differently from this check must not slip through.
+        return True
+
+
+def bound_recurrences(calendar) -> int:
+    """Drop the recurring events a feed has no business making the bot expand.
+
+    That is a series that recurs more often than hourly — no calendar application writes one —
+    or whose rule dateutil cannot read, and every series past the first `_MAX_RECURRING_SERIES`.
+    The overrides of a dropped series
+    (its `RECURRENCE-ID` events) go with it, so none of them turns up as a lone event. Returns how
+    many events were dropped; the caller says so, since a feed that loses events reads differently.
+    """
+    dropped_uids: set[str] = set()
+    # A series without a UID shares it with nothing, so only that one event goes.
+    dropped_events: set[int] = set()
+    series = 0
+    for component in calendar.walk("VEVENT"):
+        if not _recurrence_rules(component) or component.get("RECURRENCE-ID") is not None:
+            continue
+        uid = str(component.get("UID") or "")
+        if _expands_too_finely(component) or series >= _MAX_RECURRING_SERIES:
+            if uid:
+                dropped_uids.add(uid)
+            else:
+                dropped_events.add(id(component))
+            continue
+        series += 1
+    if not dropped_uids and not dropped_events:
+        return 0
+
+    dropped = 0
+
+    def prune(component) -> None:
+        nonlocal dropped
+        kept = []
+        for child in component.subcomponents:
+            if child.name == "VEVENT" and (id(child) in dropped_events
+                                           or str(child.get("UID") or "") in dropped_uids):
+                dropped += 1
+                continue
+            prune(child)
+            kept.append(child)
+        component.subcomponents[:] = kept
+
+    prune(calendar)
+    return dropped
+
+
+def _values(rule: dict, key: str) -> list:
+    return [value for value in rule.get(key, []) if value != ""]
+
+
+def _transitions_per_year(rule: dict) -> float:
+    """An upper bound on the offset changes one time zone observance rule makes per year.
+
+    A zone's rules are yearly (`FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU`); anything finer is unbounded.
+    """
+    if _first(rule, "FREQ") != "YEARLY":
+        return math.inf
+    if _values(rule, "BYYEARDAY"):
+        days = len(_values(rule, "BYYEARDAY"))
+    elif _values(rule, "BYWEEKNO"):
+        days = 7 * len(_values(rule, "BYWEEKNO"))
+    elif _values(rule, "BYMONTHDAY") or _values(rule, "BYDAY"):
+        # A weekday with an ordinal (-1SU) falls once a month, a bare one (SU) up to five times.
+        per_month = len(_values(rule, "BYMONTHDAY")) or sum(
+            1 if day.lstrip("+-")[:1].isdigit() else 5 for day in _values(rule, "BYDAY"))
+        days = (len(_values(rule, "BYMONTH")) or 12) * per_month
+    else:
+        days = max(len(_values(rule, "BYMONTH")), 1)
+    for part in ("BYHOUR", "BYMINUTE", "BYSECOND"):
+        days *= max(len(_values(rule, part)), 1)
+    return days
+
+
+def timezone_transitions(calendar) -> float:
+    """An upper bound on the offset changes the feed's own time zones (VTIMEZONE) can expand to.
+
+    Every observance (STANDARD/DAYLIGHT) counts its rules' transitions from its DTSTART to their
+    UNTIL, COUNT or the year 9999, and its RDATEs. An observance with an EXRULE (which dateutil
+    would have to walk in full) or a rule dateutil cannot read counts as unbounded.
+    """
+    total = 0.0
+    for zone in calendar.walk("VTIMEZONE"):
+        for observance in zone.subcomponents:
+            if observance.get("EXRULE") is not None:
+                return math.inf
+            start = getattr(observance.get("DTSTART"), "dt", None)
+            first_year = getattr(start, "year", 1)
+            try:
+                rules = [_rule_parts(rule) for rule in _recurrence_rules(observance)]
+            except Exception:
+                return math.inf
+            for rule in rules:
+                until = _first(rule, "UNTIL")
+                last_year = int(until[:4]) if until and until[:4].isdigit() else 9999
+                transitions = _transitions_per_year(rule) * max(last_year - first_year + 1, 1)
+                count = _first(rule, "COUNT")
+                if count and count.isdigit():
+                    transitions = min(transitions, int(count))
+                total += transitions
+            rdates = observance.get("RDATE")
+            for rdate in (rdates if isinstance(rdates, list) else [rdates] if rdates is not None else []):
+                total += len(getattr(rdate, "dts", None) or [1])
+    return total
+
+
+# icalendar caches every VTIMEZONE it parses in one process-wide map keyed by TZID, and a later
+# parse uses the cached zone instead of its own definition. So without care one feed would decide
+# the offsets of another feed's events, and zones under fresh TZIDs would pile up for the life of
+# the process together with every transition they ever expanded. Parses therefore take turns and
+# empty that cache when they are done; the parsed events keep their own zone objects.
+_PARSE_LOCK = threading.Lock()
+
+
+def _parse_isolated(text: str):
+    with _PARSE_LOCK:
+        try:
+            return icalendar.Calendar.from_ical(text)
+        finally:
+            # Selecting the provider again is icalendar's public way to start a fresh cache.
+            icalendar.timezone.tzp.use(icalendar.timezone.tzp.name)
+
+
+def _parse_calendar(text: str):
+    """Parse a feed and bound what it can cost to expand. Runs on a worker thread."""
+    calendar = _parse_isolated(text)
+    transitions = timezone_transitions(calendar)
+    if transitions > _MAX_TIMEZONE_TRANSITIONS:
+        raise ValueError(f"its own time zone definitions would expand to more than "
+                         f"{_MAX_TIMEZONE_TRANSITIONS} offset changes; a time zone's rules recur "
+                         f"yearly at most")
+    return calendar, bound_recurrences(calendar)
+
+
+class CalendarEvaluationTimeout(Exception):
+    """Expanding a feed's recurrences took longer than `_CALENDAR_EVALUATION_TIMEOUT`."""
+
+
+class _EvaluationAbandoned(BaseException):
+    """Raised into a calendar worker thread whose result nobody is waiting for any more.
+
+    A `BaseException`, like `KeyboardInterrupt`, so the `except Exception` blocks in the selection
+    code and the recurrence library cannot swallow it and carry on.
+    """
+
+
+def _interrupt_thread(thread_id: int | None) -> bool:
+    """Raise `_EvaluationAbandoned` in another thread at its next Python instruction.
+
+    The expansion is pure Python (dateutil's rrule), so it is interruptible; this is CPython's
+    documented C-API for it. Returns False where that is unavailable, and the thread then runs to
+    its end while its evaluation slot stays taken, which still keeps it off the event loop.
+    """
+    if not thread_id:
+        return False
+    try:
+        import ctypes
+        set_async_exc = ctypes.PYFUNCTYPE(ctypes.c_int, ctypes.c_ulong, ctypes.py_object)(
+            ("PyThreadState_SetAsyncExc", ctypes.pythonapi))
+    except (ImportError, AttributeError, OSError):
+        return False
+    modified = set_async_exc(thread_id, _EvaluationAbandoned)
+    if modified > 1:  # pragma: no cover - cannot happen for one live thread id
+        set_async_exc(thread_id, None)
+        return False
+    return modified == 1
+
+
+def _call_on_loop(loop: asyncio.AbstractEventLoop, callback: Callable, *args) -> None:
+    try:
+        loop.call_soon_threadsafe(callback, *args)
+    except RuntimeError:
+        # The loop is closed: the process is shutting down and nothing waits for this any more.
+        pass
+
+
+def _settle(future: asyncio.Future, value, error: BaseException | None) -> None:
+    if future.done():
+        return
+    if error is not None:
+        future.set_exception(error)
+    else:
+        future.set_result(value)
+
+
+class _DeadlineThread(threading.Thread):
+    """Runs one blocking job off the event loop, and can be stopped once nobody waits for it."""
+
+    def __init__(self, job: Callable, loop: asyncio.AbstractEventLoop, future: asyncio.Future,
+                 on_exit: Callable[[], None]):
+        super().__init__(name="hutbot-calendar", daemon=True)
+        self._job = job
+        self._loop = loop
+        self._future = future
+        self._on_exit = on_exit
+        # Log lines from the job keep the origin of the event that asked for it.
+        self._context = contextvars.copy_context()
+        self._lock = threading.Lock()
+        self._in_job = False
+        self._abandoned = False
+        self._interrupted = False
+
+    def abandon(self) -> None:
+        """Stop the job if it is running, or keep it from starting if it is not yet."""
+        with self._lock:
+            self._abandoned = True
+            if self._in_job:
+                self._interrupted = _interrupt_thread(self.ident)
+
+    def run(self) -> None:
+        try:
+            with self._lock:
+                if self._abandoned:
+                    return
+                self._in_job = True
+            try:
+                value, error = self._context.run(self._job), None
+            except _EvaluationAbandoned:
+                raise
+            except BaseException as e:
+                value, error = None, e
+            with self._lock:
+                self._in_job = False
+                interrupted = self._interrupted
+            if interrupted:
+                # The interrupt was raised just as the job returned and has not landed yet. It
+                # lands at the next instruction boundary, which this loop's back-edge provides,
+                # and is caught below rather than escaping into the thread's bootstrap. Had it
+                # landed inside the job and been swallowed there (a finalizer reports and drops
+                # exceptions), nothing is pending: give up after a second rather than spin, with
+                # the evaluation slot taken, forever.
+                give_up = time.monotonic() + 1.0
+                while time.monotonic() < give_up:
+                    pass
+            _call_on_loop(self._loop, _settle, self._future, value, error)
+        except _EvaluationAbandoned:
+            pass
+        finally:
+            _call_on_loop(self._loop, self._on_exit)
+
+
+def _evaluation_slots() -> asyncio.Semaphore:
+    if state._calendar_evaluation_slots is None:
+        state._calendar_evaluation_slots = asyncio.Semaphore(_CALENDAR_EVALUATION_SLOTS)
+    return state._calendar_evaluation_slots
+
+
+async def run_calendar_job(job: Callable, timeout: float, release: Callable[[], None]):
+    """Run blocking `job` on a thread of its own and wait at most `timeout` seconds for it.
+
+    Raises `CalendarEvaluationTimeout` past the deadline, after stopping the thread. `release` is
+    called once that thread has really ended — not when the wait ends — so an evaluation slot
+    stays taken by work that is still burning CPU.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    worker = _DeadlineThread(job, loop, future, release)
+    try:
+        worker.start()
+    except BaseException:
+        release()
+        raise
+    try:
+        return await asyncio.wait_for(future, timeout)
+    except asyncio.TimeoutError:
+        worker.abandon()
+        raise CalendarEvaluationTimeout(f"took longer than {timeout:g}s") from None
+    except asyncio.CancelledError:
+        worker.abandon()
+        raise
+
+
+def _evaluation_failed_recently(url: str) -> bool:
+    failed_at = state._calendar_evaluation_failures.get(url)
+    return failed_at is not None and (time.monotonic() - failed_at) < _CALENDAR_TTL
+
+
+def _select_events(calendar, config: dict | None, selectors: Sequence[tuple[datetime.datetime, int | str]]):
+    """Index `calendar` once and pick one event per selector. Blocking; see `_select_events_bounded`."""
+    query = index_calendar(calendar)
+    if query is None:
+        return None
+    return [select_event(query, config, instant, offset) for instant, offset in selectors]
+
+
+async def _select_events_bounded(url: str, calendar, config: dict | None,
+                                 selectors: Sequence[tuple[datetime.datetime, int | str]]):
+    """`_select_events` off the event loop and under a deadline, or ``None`` when it cannot run.
+
+    A feed whose evaluation ran out of time is left alone for `_CALENDAR_TTL`, like a feed that
+    could not be fetched, so a costly document cannot claim a slot on every message.
+    """
+    if _evaluation_failed_recently(url):
+        return None
+    slots = _evaluation_slots()
+    try:
+        await asyncio.wait_for(slots.acquire(), _CALENDAR_EVALUATION_TIMEOUT)
+    except asyncio.TimeoutError:
+        log_warning(f"No free slot to evaluate the calendar feed {describe_calendar_url(url)} "
+                    f"within {_CALENDAR_EVALUATION_TIMEOUT:g}s; answering without it this time.")
+        return None
+    # Checked again now that it is this lookup's turn: the one it queued behind may have been
+    # the same feed running out of time.
+    if _evaluation_failed_recently(url):
+        slots.release()
+        return None
+    try:
+        return await run_calendar_job(
+            functools.partial(_select_events, calendar, config, list(selectors)),
+            _CALENDAR_EVALUATION_TIMEOUT, slots.release)
+    except CalendarEvaluationTimeout as e:
+        state._calendar_evaluation_failures[url] = time.monotonic()
+        log_error(f"Evaluating the calendar feed {describe_calendar_url(url)} {e}; it is skipped "
+                  f"for the next {_CALENDAR_TTL:g}s. Its recurring events are too costly to expand.")
+        return None
+    except Exception as e:
+        log_error(f"Failed to evaluate the calendar feed {describe_calendar_url(url)}:", e)
+        return None
 
 
 # ----- URL validation and display -----
@@ -1174,10 +1590,14 @@ async def fetch_calendar(url: str) -> tuple[object | None, str]:
     try:
         # Parsing a real feed takes tens of milliseconds, which is long enough to be worth
         # keeping off the event loop while Slack events are queueing.
-        calendar = await asyncio.to_thread(icalendar.Calendar.from_ical, text)
+        calendar, dropped = await asyncio.to_thread(_parse_calendar, text)
     except Exception as e:
         log_error(f"Failed to parse the calendar feed {describe_calendar_url(url)}:", e)
         return stale("The feed did not parse")
+    if dropped:
+        log_warning(f"Calendar feed {describe_calendar_url(url)}: left out {dropped} event(s) of "
+                    f"recurring series that repeat more often than hourly, have an unreadable "
+                    f"rule or exceed {_MAX_RECURRING_SERIES} series.")
 
     name = ""
     try:
@@ -1351,34 +1771,45 @@ async def get_calendar_template_variables(app, config: dict, now: datetime.datet
     if not resolve_calendar_feed(config).url:
         return variables
 
-    name, query = await _fetch_and_index(config)
-    if name:
-        variables["calendar_name"] = name
-    if query is None:
-        return variables
-
-    # The default selection first, then one slice per selector.
+    # The default selection first, then one slice per selector. Every moment is resolved before
+    # the feed is evaluated, so the whole selection is one job off the event loop.
     requests = [("", "", "", 0)] + [(event_slice_prefix(at, offset), at, offset, normalize_selector(at, offset)[1])
                                     for at, offset in selectors]
+    resolved = []
+    unusable = []
     for prefix, at, offset, count in requests:
         instant = now
         if at:
             instant = datetimefmt.resolve_at_time(at, config, now)
             if instant is None:
-                # Same reasoning: rather than quietly answering about the present, leave the
-                # slice as placeholders.
-                log_warning(f"Ignoring an unusable `at` value in a calendar variable: {at}")
+                unusable.append(at)
                 continue
+        resolved.append((prefix, at, offset, count, instant))
+
+    name, events = await _fetch_and_select(config, [(instant, count) for _, _, _, count, instant in resolved])
+    if name:
+        variables["calendar_name"] = name
+    if events is None:
+        return variables
+    for at in unusable:
+        # Same reasoning: rather than quietly answering about the present, leave the slice as
+        # placeholders.
+        log_warning(f"Ignoring an unusable `at` value in a calendar variable: {at}")
+
+    for (prefix, at, offset, _, instant), event in zip(resolved, events):
         keys = _slice_keys(prefix)
-        event = select_event(query, config, instant, count)
         selections.append(CalendarSelection(at, offset, prefix, instant, event))
         fill_calendar_event_variables(variables, config, keys, event)
         await fill_calendar_user_variables(app, variables, keys, event)
     return variables
 
 
-async def _fetch_and_index(config: dict) -> tuple[str, object]:
-    """The feed's display name and its recurrence index, fetched and built once."""
+async def _fetch_and_select(config: dict, selectors: Sequence[tuple[datetime.datetime, int | str]]) -> tuple[str, list[CalendarEvent | None] | None]:
+    """The feed's display name and one event per selector, fetched and indexed once.
+
+    The events are ``None`` when there is no feed, it cannot be fetched, or evaluating it failed
+    or ran out of time; the name is still there in the last case.
+    """
     feed = resolve_calendar_feed(config)
     if not feed.url:
         return "", None
@@ -1389,7 +1820,7 @@ async def _fetch_and_index(config: dict) -> tuple[str, object]:
     # itself: `X-WR-CALNAME` on a real rota feed is a bare mailbox address, which would
     # contradict what `list calendars` and the web UI show for the same calendar.
     name = feed.title if feed.builtin else (fetched_name or feed.title)
-    return name, index_calendar(calendar)
+    return name, await _select_events_bounded(feed.url, calendar, config, selectors)
 
 
 async def resolve_calendar_events(config: dict, selectors: Sequence[tuple[datetime.datetime, int]]) -> tuple[str, list[CalendarEvent | None]]:
@@ -1397,10 +1828,10 @@ async def resolve_calendar_events(config: dict, selectors: Sequence[tuple[dateti
 
     One fetch and one index for the whole list — see `get_calendar_template_variables`.
     """
-    name, query = await _fetch_and_index(config)
-    if query is None:
+    name, events = await _fetch_and_select(config, selectors)
+    if events is None:
         return name, [None for _ in selectors]
-    return name, [select_event(query, config, instant, offset) for instant, offset in selectors]
+    return name, events
 
 
 async def resolve_calendar_context(config: dict, now: datetime.datetime | None = None,

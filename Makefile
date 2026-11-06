@@ -20,7 +20,7 @@ ARGS ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install run check python-check shellcheck helm-lint test test-deployment \
+.PHONY: help install lock run check python-check shellcheck helm-lint test test-deployment \
 	image push seed-vault seed-vault-dev sync-secret sync-secret-dev calendars calendars-dev \
 	export-state import-state tags require-image-tag deploy-dev deploy-prod
 
@@ -33,7 +33,15 @@ help: ## Show available targets
 	@echo "vars: IMAGE_REPOSITORY, IMAGE_TAG (default: $(if $(LATEST_TAG),$(LATEST_TAG),none found)), BUILD_TAG, ARGS"
 
 install: ## Install runtime and development dependencies
-	$(PIP) install -r requirements-dev.txt
+	$(PIP) install --require-hashes -r requirements-dev.txt
+
+# The image and CI install from the two locks with --require-hashes; edit requirements*.in and
+# re-run this to change what they pin. Compiled for every platform, so a local install works too.
+UV_COMPILE = uv pip compile --universal --python-version 3.12 --generate-hashes
+
+lock: ## Re-pin requirements.txt and requirements-dev.txt (with hashes) from the .in files; needs uv
+	$(UV_COMPILE) requirements.in -o requirements.txt
+	$(UV_COMPILE) requirements-dev.in -o requirements-dev.txt
 
 run: ## Run the bot from source
 	$(PYTHON) -m hutbot

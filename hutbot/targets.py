@@ -23,6 +23,28 @@ def parse_channel_ref(channel_ref: str) -> str | None:
     return None
 
 
+async def post_channel_refusal(app: AsyncApp, channel_id: str, target: str, actor_id: str | None,
+                               previous_target: str = "") -> str:
+    """Why `actor_id` may not point a `post_channel` rule of `channel_id` at `target`, or "".
+
+    The bot posts with its own identity into any conversation it belongs to — private channels and
+    announcement-only ones included — so the person choosing the target must be able to read it:
+    a rule may post into its own channel or into one its author is a member of. A target that is
+    already stored unchanged is not asked about again, so editing some other part of a rule does
+    not depend on who set it up.
+    """
+    target_channel = parse_channel_ref(target)
+    if not target_channel:
+        return "that is not a channel"
+    if target_channel == channel_id:
+        return ""
+    if previous_target and parse_channel_ref(previous_target) == target_channel:
+        return ""
+    if actor_id and await slackcache.is_user_in_channel(app, target_channel, actor_id):
+        return ""
+    return "a rule can only post to its own channel or to a channel you are a member of"
+
+
 async def resolve_user_target(app: AsyncApp, target: str) -> User | None:
     target = target.strip()
     if not target:

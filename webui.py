@@ -8,8 +8,16 @@ live state and validation, so this module stays free of bot internals.
 The authenticated identity is read from a trusted reverse-proxy header
 (default ``X-Forwarded-Email``); the pod is only reachable through that proxy,
 so the header is trusted. See the README for the proxy/header setup.
+
+Two things keep that trust narrow. The header must arrive exactly once with a
+single address: a proxy that appends its value to one the client sent would
+otherwise hand over the client's choice. And when ``HUTBOT_UI_PROXY_SECRET`` is
+set, the proxy must also send that shared secret, so reaching the port is not
+enough on its own. State-changing requests must be same-origin JSON, which a
+cross-site form cannot produce.
 """
 
+import hmac
 import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -17,12 +25,15 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 try:  # pragma: no cover - logging is best-effort if logutil is unavailable
-    from logutil import log, log_error
+    from logutil import log, log_error, log_warning
 except Exception:  # pragma: no cover
     def log(*args, **kwargs):
         pass
 
     def log_error(*args, **kwargs):
+        pass
+
+    def log_warning(*args, **kwargs):
         pass
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui_static")
@@ -51,31 +62,60 @@ class WebUIContext:
     list_channels: Callable[[Any], Awaitable[list]]
     is_member: Callable[[str, str], Awaitable[bool]]
     get_configs: Callable[[str], dict]
-    apply_config: Callable[[str, str, dict], Awaitable[tuple]]
+    # (channel_id, rule name, payload, Slack user id of whoever saves it)
+    apply_config: Callable[[str, str, dict, str], Awaitable[tuple]]
     create_config: Callable[[str, str], Awaitable[tuple]]
     delete_config: Callable[[str, str], Awaitable[tuple]]
     rename_config: Callable[[str, str, str], Awaitable[tuple]]
     meta: Callable[[], dict]
     # Name of the instance behind this UI, for user-facing text (e.g. "Hutbot (DEV)").
     bot_name: str = "Hutbot"
+    # A secret the authenticating proxy sends with every request (HUTBOT_UI_PROXY_SECRET), in
+    # `proxy_secret_header`. Empty = not required, and only the network keeps others out.
+    proxy_secret: str = ""
+    proxy_secret_header: str = "X-Hutbot-Proxy-Secret"
+
+
+# Typed application key for the context (a plain string key draws aiohttp's NotAppKeyWarning).
+_CTX_KEY = web.AppKey("ctx", WebUIContext)
 
 
 def _ctx(request) -> WebUIContext:
-    return request.app["ctx"]
+    return request.app[_CTX_KEY]
 
 
 def _forbidden(message: str = "You don't have access to this."):
     return web.json_response({"error": message}, status=403)
 
 
+def _from_the_proxy(request) -> bool:
+    """Whether the request carries the proxy's shared secret, when one is configured."""
+    ctx = _ctx(request)
+    if not ctx.proxy_secret:
+        return True
+    sent = request.headers.getall(ctx.proxy_secret_header, [])
+    return len(sent) == 1 and hmac.compare_digest(sent[0].encode(), ctx.proxy_secret.encode())
+
+
 async def _current_user(request):
     """Resolve the proxy-supplied identity to a Slack user. Returns (user, email)."""
     ctx = _ctx(request)
-    email = (request.headers.get(ctx.user_header) or "").strip()
+    if not _from_the_proxy(request):
+        log_warning(f"Config UI: refused a request to {request.path} without the proxy secret.")
+        return None, ""
+    values = request.headers.getall(ctx.user_header, [])
+    if not values:
+        return None, ""
+    email = values[0].strip()
+    # Exactly one header holding exactly one address. A repeated header, or a list, is what a
+    # proxy that appends rather than replaces produces — and its first entry is whatever the
+    # client sent, so neither is taken as anybody's identity.
+    if len(values) != 1 or "," in email:
+        log_warning(f"Config UI: refused a request to {request.path} carrying {len(values)} "
+                    f"{ctx.user_header} header(s) or a list of identities; the proxy must replace it.")
+        return None, ""
     if not email:
         return None, ""
-    # Some proxies send a comma-separated list; the first value is the user's.
-    email = email.split(",")[0].strip()
     user = await ctx.resolve_user(email)
     if not user or not getattr(user, "id", None):
         return None, email
@@ -149,7 +189,7 @@ async def handle_put_config(request):
         payload = await request.json()
     except Exception:
         return web.json_response({"error": "The request body wasn't valid JSON."}, status=400)
-    ok, errors = await _ctx(request).apply_config(channel_id, name, payload)
+    ok, errors = await _ctx(request).apply_config(channel_id, name, payload, user.id)
     if not ok:
         return web.json_response({"errors": errors}, status=422)
     return web.json_response({"ok": True, "config": _ctx(request).get_configs(channel_id).get(name)})
@@ -222,6 +262,29 @@ async def handle_rename_config(request):
     return web.json_response({"ok": True, "name": new_name, "configs": _ctx(request).get_configs(channel_id)})
 
 
+# Methods that change something, which a cross-site page must not be able to send.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+@web.middleware
+async def _same_origin_writes(request, handler):
+    """Refuse state-changing requests a cross-site page could forge.
+
+    The proxy's session cookie rides along with any request the browser makes, and
+    `request.json()` does not look at the Content-Type, so a cross-site `<form
+    enctype="text/plain">` could otherwise post a valid JSON body without a CORS preflight.
+    Requiring `application/json` forces that preflight (which this app never answers), and the
+    browser's own `Sec-Fetch-Site` header names a cross-site request outright where it is sent.
+    """
+    if request.method in _UNSAFE_METHODS:
+        site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
+        if site and site not in ("same-origin", "none"):
+            return web.json_response({"error": "Cross-site requests are not accepted."}, status=403)
+        if request.method != "DELETE" and request.content_type != "application/json":
+            return web.json_response({"error": "Send the request body as application/json."}, status=415)
+    return await handler(request)
+
+
 @web.middleware
 async def _security_headers(request, handler):
     try:
@@ -236,8 +299,8 @@ async def _security_headers(request, handler):
 
 
 def create_app(ctx: WebUIContext) -> web.Application:
-    app = web.Application(middlewares=[_security_headers])
-    app["ctx"] = ctx
+    app = web.Application(middlewares=[_security_headers, _same_origin_writes])
+    app[_CTX_KEY] = ctx
     app.router.add_get("/healthz", handle_healthz)
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/me", handle_me)
@@ -260,5 +323,6 @@ async def start_web_ui(ctx: WebUIContext, host: str, port: int) -> web.AppRunner
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
-    log(f"Config UI listening on http://{host}:{port} (user header: {ctx.user_header})")
+    secret = f", proxy secret required in {ctx.proxy_secret_header}" if ctx.proxy_secret else ""
+    log(f"Config UI listening on http://{host}:{port} (user header: {ctx.user_header}{secret})")
     return runner

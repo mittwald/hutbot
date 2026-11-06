@@ -40,6 +40,7 @@ readonly KNOWN_KEYS=(
   EMPLOYEE_LIST_MAPPINGS
   HUTBOT_CALENDAR_BRIDGE_URL
   HUTBOT_BUILTIN_CALENDARS
+  HUTBOT_UI_PROXY_SECRET
 )
 readonly REQUIRED_KEYS=(SLACK_APP_TOKEN SLACK_BOT_TOKEN)
 # Values injected into the environment pass through execve, whose per-variable limit is

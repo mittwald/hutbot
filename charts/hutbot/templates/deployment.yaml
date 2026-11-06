@@ -2,10 +2,13 @@
 {{- if has (lower (toString $imageTag)) (list "latest" "main") -}}
 {{- fail "image.tag must be set to a specific image tag (e.g. v1.0.9); floating tags like 'latest' and 'main' are not allowed" -}}
 {{- end }}
-{{- if and (include "hutbot.mountBuiltinCalendars" .) .Values.persistence.enabled }}
+{{- if include "hutbot.mountBuiltinCalendars" . }}
 {{- if eq (trimSuffix "/" (clean .Values.builtinCalendars.mountPath)) (trimSuffix "/" (clean .Values.persistence.mountPath)) }}
 {{- fail "builtinCalendars.mountPath must differ from persistence.mountPath; mounting the Secret there would hide the state volume" }}
 {{- end }}
+{{- end }}
+{{- if and .Values.ui.enabled (not .Values.ui.allowAllIngress) (or (not .Values.networkPolicy.enabled) (empty .Values.ui.allowedIngress)) }}
+{{- fail "ui.enabled=true trusts a proxy-set identity header, so the UI port must only be reachable from that proxy: list it in ui.allowedIngress (with networkPolicy.enabled=true), or set ui.allowAllIngress=true to accept that any pod in the cluster can act as any Slack user" }}
 {{- end }}
 {{- if and .Values.stateImport.enabled (not .Values.persistence.enabled) }}
 {{- fail "stateImport.enabled requires persistence.enabled: the import seeds the state volume, and without one there is nowhere to import to" }}
@@ -41,6 +44,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.hostAliases }}
       hostAliases:
 {{ toYaml .Values.hostAliases | indent 8 }}
@@ -55,6 +62,10 @@ spec:
         - name: state-import
           image: "{{ .Values.image.repository }}:{{ $imageTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command:
             - /bin/sh
             - -ec
@@ -94,6 +105,10 @@ spec:
         - name: {{ .Release.Name }}
           image: "{{ .Values.image.repository }}:{{ $imageTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if .Values.ui.enabled }}
           ports:
             - name: http
@@ -144,21 +159,27 @@ spec:
             - name: HUTBOT_BOT_NAME
               value: {{ .Values.slack.botName | quote }}
             {{- end }}
-            {{- if .Values.persistence.enabled }}
+            {{- if .Values.slack.allowGuestCommands }}
+            - name: HUTBOT_ALLOW_GUEST_COMMANDS
+              value: "true"
+            {{- end }}
+            # The state volume — the PVC, or an emptyDir without persistence — is the only
+            # writable path: the root filesystem is read-only.
             - name: HUTBOT_CONFIG_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "bot.json" }}
             - name: HUTBOT_EMPLOYEE_CACHE_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "employees.json" }}
+            {{- if .Values.persistence.enabled }}
             # Hand-placed beside the cache, never written by the bot: records for people the
             # employee API does not return. The cache above is rewritten on every successful
             # fetch, so the fallback needs a file of its own.
             - name: HUTBOT_EMPLOYEE_FALLBACK_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "employees-fallback.json" }}
+            {{- end }}
             - name: HUTBOT_SCHEDULED_REPLIES_CACHE_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "scheduled_replies.json" }}
             - name: HUTBOT_BUTTON_CACHE_FILE
               value: {{ printf "%s/%s" .Values.persistence.mountPath "button_states.json" }}
-            {{- end }}
             {{- if include "hutbot.mountBuiltinCalendars" . }}
             # The built-in calendar list is a multi-line JSON document whose URLs carry feed
             # tokens. Read from a file rather than the environment: no per-variable exec
@@ -209,19 +230,26 @@ spec:
               value: {{ .Values.ui.host | quote }}
             - name: HUTBOT_UI_USER_HEADER
               value: {{ .Values.ui.userHeader | quote }}
+            # The shared secret the authenticating proxy sends; absent = not required.
+            - name: HUTBOT_UI_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hutbot.secretName" . }}
+                  key: HUTBOT_UI_PROXY_SECRET
+                  optional: true
+            {{- if .Values.ui.proxySecretHeader }}
+            - name: HUTBOT_UI_PROXY_SECRET_HEADER
+              value: {{ .Values.ui.proxySecretHeader | quote }}
             {{- end }}
-          {{- if or .Values.persistence.enabled (include "hutbot.mountBuiltinCalendars" .) }}
+            {{- end }}
           volumeMounts:
-            {{- if .Values.persistence.enabled }}
             - name: config
               mountPath: {{ .Values.persistence.mountPath }}
-            {{- end }}
             {{- if include "hutbot.mountBuiltinCalendars" . }}
             - name: builtin-calendars
               mountPath: {{ trimSuffix "/" (clean .Values.builtinCalendars.mountPath) | quote }}
               readOnly: true
             {{- end }}
-          {{- end }}
           {{- if .Values.ui.enabled }}
           readinessProbe:
             httpGet:
@@ -240,13 +268,16 @@ spec:
           resources:
             {{ toYaml .Values.resources | indent 12 }}
           {{- end }}
-      {{- if or .Values.persistence.enabled (include "hutbot.mountBuiltinCalendars" .) }}
       volumes:
-        {{- if .Values.persistence.enabled }}
         - name: config
+          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-pvc
-        {{- end }}
+          {{- else }}
+          # No persistence: the state lives as long as the pod, and the root filesystem stays
+          # read-only.
+          emptyDir: {}
+          {{- end }}
         {{- if .Values.stateImport.enabled }}
         # Deliberately not `optional`: with the import switched on, a missing or misnamed
         # Secret must hold the pod at init rather than let the bot start with an empty state
@@ -268,4 +299,3 @@ spec:
               - key: {{ .Values.builtinCalendars.secretKey | quote }}
                 path: {{ .Values.builtinCalendars.fileName | quote }}
         {{- end }}
-      {{- end }}

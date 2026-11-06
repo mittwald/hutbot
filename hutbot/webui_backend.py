@@ -5,7 +5,6 @@ live bot state and reuse the same validation as the slash-command setters.
 """
 
 import os
-import re
 import copy
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -23,6 +22,7 @@ from . import datetimefmt
 from . import persistence
 from . import renaming
 from . import targets
+from . import userpattern
 from .buttonutil import format_config_list, parse_config_list
 from .constants import (
     ACTION_DM_USER,
@@ -97,11 +97,14 @@ def _ui_team_list(value) -> list[str]:
     return cleaned
 
 
-async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str = "", existing: dict | None = None) -> tuple[dict | None, dict]:
+async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str = "", existing: dict | None = None,
+                                  actor_id: str | None = None) -> tuple[dict | None, dict]:
     """Validate a config dict from the web UI, mirroring the slash-command setters.
 
     Returns ``(clean_config, {})`` on success or ``(None, {field: message})`` on failure.
     Values use the persisted shape: ``wait_time`` and ``escalation_timeout`` are in seconds.
+    `actor_id` is the Slack user saving it; a `post_channel` target outside `channel_id` must be a
+    channel they are a member of (see `targets.post_channel_refusal`).
     """
     if not isinstance(payload, dict):
         return None, {'_': "Expected a configuration object."}
@@ -286,10 +289,9 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
                 errors[f'conditions.{i}'] = f"`{operator}` needs a value."
                 continue
             if operator in ('regex', 'not_regex'):
-                try:
-                    re.compile(value)
-                except re.error as e:
-                    errors[f'conditions.{i}'] = f"Invalid pattern: {e}"
+                pattern_problem = userpattern.pattern_error(value)
+                if pattern_problem:
+                    errors[f'conditions.{i}'] = f"Invalid pattern: {pattern_problem}"
                     continue
             clean = {'variable': variable, 'operator': operator, 'value': value, 'case_sensitive': case_sensitive}
             if at:
@@ -342,12 +344,19 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
 
     action_target = str(get('action_target') or "").strip()
     target_template_error = templating.validate_template_expressions(action_target) if "{{" in action_target else ""
+    previous_target = (str((existing or {}).get('action_target') or "")
+                       if (existing or {}).get('action') == ACTION_POST_CHANNEL else "")
     if action in (ACTION_DM_USER, ACTION_GROUP_DM, ACTION_POST_CHANNEL) and not action_target:
         errors['action_target'] = "This action needs a target (a user, user group, or channel)."
+    elif action == ACTION_POST_CHANNEL and "{{" in action_target:
+        errors['action_target'] = "Posting to a channel needs a fixed channel, not a variable. Pick one from Slack's autocomplete, or enter its C… id."
     elif target_template_error:
         errors['action_target'] = target_template_error
-    elif action == ACTION_POST_CHANNEL and "{{" not in action_target and not targets.parse_channel_ref(action_target):
+    elif action == ACTION_POST_CHANNEL and not targets.parse_channel_ref(action_target):
         errors['action_target'] = "Pick a channel from Slack's autocomplete, or enter its C… id."
+    elif action == ACTION_POST_CHANNEL and (refusal := await targets.post_channel_refusal(
+            app, channel_id, action_target, actor_id, previous_target)):
+        errors['action_target'] = refusal[0].upper() + refusal[1:] + "."
     else:
         cfg['action_target'] = action_target
 
@@ -357,11 +366,11 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     elif not isinstance(pattern, str):
         errors['pattern'] = "Pattern must be text."
     else:
-        try:
-            re.compile(pattern)
+        pattern_problem = userpattern.pattern_error(pattern)
+        if pattern_problem:
+            errors['pattern'] = f"Invalid pattern: {pattern_problem}"
+        else:
             cfg['pattern'] = pattern
-        except re.error as e:
-            errors['pattern'] = f"Invalid pattern: {e}"
 
 
     await slackcache.update_user_cache(app)
@@ -461,13 +470,14 @@ async def validate_config_payload(payload: dict, app: AsyncApp, channel_id: str 
     return cfg, {}
 
 
-async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payload: dict) -> tuple[bool, dict]:
-    """Validate and persist a single config (rule). Returns (ok, errors)."""
+async def ui_apply_config(app: AsyncApp, channel_id: str, config_name: str, payload: dict,
+                          actor_id: str | None = None) -> tuple[bool, dict]:
+    """Validate and persist a single config (rule) saved by `actor_id`. Returns (ok, errors)."""
     config_name = (config_name or "").strip()
     if not CONFIG_NAME_PATTERN.fullmatch(config_name):
         return False, {'name': "Names may use letters, numbers, and - _ . : / only."}
     existing = state.channel_config.get(channel_id, {}).get(config_name)
-    clean, errors = await validate_config_payload(payload, app, channel_id, existing)
+    clean, errors = await validate_config_payload(payload, app, channel_id, existing, actor_id=actor_id)
     if errors:
         return False, errors
     async with state._config_write_lock:
@@ -607,11 +617,13 @@ async def maybe_start_web_ui(app: AsyncApp):
         list_channels=lambda user: list_user_config_channels(app, user),
         is_member=lambda channel_id, user_id: slackcache.is_user_in_channel(app, channel_id, user_id),
         get_configs=ui_snapshot_configs,
-        apply_config=lambda channel_id, name, payload: ui_apply_config(app, channel_id, name, payload),
+        apply_config=lambda channel_id, name, payload, user_id: ui_apply_config(app, channel_id, name, payload, user_id),
         create_config=lambda channel_id, name: ui_create_config(app, channel_id, name),
         delete_config=lambda channel_id, name: ui_delete_config(app, channel_id, name),
         rename_config=lambda channel_id, name, new_name: ui_rename_config(app, channel_id, name, new_name),
         meta=ui_meta,
         bot_name=state.bot_name,
+        proxy_secret=os.environ.get('HUTBOT_UI_PROXY_SECRET', '').strip(),
+        proxy_secret_header=os.environ.get('HUTBOT_UI_PROXY_SECRET_HEADER', '').strip() or 'X-Hutbot-Proxy-Secret',
     )
     return await start_web_ui(ctx, host, port)

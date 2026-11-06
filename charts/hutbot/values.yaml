@@ -71,6 +71,9 @@ slack:
   # Name the bot calls itself in user-facing text, e.g. "Hutbot (DEV)".
   # Empty = the bot's default ("Hutbot").
   botName: ""
+  # Commands are taken only from full members of the bot's own workspace. `true` also lets the
+  # workspace's guest accounts run them; Slack Connect members and bots stay refused regardless.
+  allowGuestCommands: false
 
 # Timezone and date/time locale the whole instance runs in.
 time:
@@ -112,32 +115,69 @@ networkPolicy:
 
 resources: {}
 
-# Web UI served by the bot over HTTP
+# Pod security context. The image runs as UID/GID 10001; `fsGroup` makes the state volume — and the
+# files an earlier, root-run image left on it — readable and writable for that group, and
+# `OnRootMismatch` limits the recursive ownership change to the first start after the switch. A
+# volume type without ownership management (NFS, say) needs a one-time
+# `chown -R 10001:10001` of its files instead.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container security context, for the bot and the state-import init container. The root
+# filesystem is read-only: the only place either writes is the state volume.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Web UI served by the bot over HTTP. It does no authentication of its own: it trusts the email
+# in `userHeader`, which an authenticating proxy (oauth2-proxy / Keycloak) must set, so whoever
+# can reach the port directly can act as any Slack user.
 ui:
   enabled: false
   port: 8080
   host: "0.0.0.0"
-  # Trusted reverse-proxy header carrying the authenticated user's email.
+  # Trusted reverse-proxy header carrying the authenticated user's email. The proxy must REPLACE
+  # it: a request carrying it twice, or a comma-separated list, is refused.
   userHeader: "X-Forwarded-Email"
-  # NetworkPolicy ingress sources allowed to reach the UI port. Each entry is a
-  # NetworkPolicy peer (e.g. namespaceSelector / podSelector / ipBlock) and is
-  # rendered verbatim into the ingress rule's `from:`. STRONGLY recommended: the UI
-  # trusts a proxy-set email header, so any pod that can reach the port can spoof it.
-  # Empty list = allow all sources (back-compat, insecure). Example:
+  # Header in which the proxy sends the shared secret stored as HUTBOT_UI_PROXY_SECRET in
+  # `existingSecret`. When that key is set, every request without the secret is refused — a second
+  # factor that does not depend on the network. Empty = the bot's default, X-Hutbot-Proxy-Secret.
+  proxySecretHeader: ""
+  # NetworkPolicy ingress sources allowed to reach the UI port: your auth proxy / ingress
+  # controller. Each entry is a NetworkPolicy peer (namespaceSelector / podSelector / ipBlock),
+  # rendered verbatim into the ingress rule's `from:`. Required while `ui.enabled` is true: an empty
+  # list (or networkPolicy.enabled=false) fails rendering unless `allowAllIngress` says otherwise.
+  # Example:
   #   allowedIngress:
   #     - namespaceSelector:
   #         matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
   allowedIngress: []
+  # Explicit opt-out of the above: let every pod and node in the cluster reach the UI port. Only
+  # for a cluster where that is already true of nothing but the proxy.
+  allowAllIngress: false
   service:
     type: ClusterIP
   ingress:
     enabled: false
     className: ""
     host: ""
+    # The Ingress is the public way in, and the chart cannot check that it authenticates: put the
+    # auth annotations here (e.g. nginx `auth-url`/`auth-signin`/`auth-response-headers` pointing
+    # at oauth2-proxy, with the proxy replacing `userHeader`). Without them the UI is open to
+    # everyone who can reach the host.
     annotations: {}
     tls: []   # list of {secretName, hosts: []}
 
-# Persistence configuration for storing the bot config file on a PersistentVolumeClaim
+# Persistence configuration for storing the bot config file on a PersistentVolumeClaim. With
+# `enabled: false` the state lives in an emptyDir at `mountPath` instead, for the pod's lifetime.
 persistence:
   enabled: true
   accessModes:

@@ -10,6 +10,15 @@ looks like — `/hutbot delete config alarms` names `/hutbot <config> config del
 the plain "type `/hutbot help`" nudge when it could be anything. Any argument may be quoted
 with `"`, `'` or backticks — handy since Slack renders a backticked value as code as you type it.
 
+**Who may run commands.** Commands — the slash command and @mentions alike — are taken only from
+full members of the workspace the bot is installed in (or of its Enterprise Grid organization).
+Guest accounts, members of other organizations in a Slack Connect channel, and bots or
+integrations whose message mentions the bot are refused: a person is told so privately, a bot is
+ignored. A command reconfigures the channel's rules, pages on-call through OpsGenie, and reads
+on-call rotas, team membership and internal calendars, none of which is meant for outsiders. Set
+`HUTBOT_ALLOW_GUEST_COMMANDS=true` (chart value `slack.allowGuestCommands`) to let guest accounts
+of the workspace in; external and bot senders stay refused regardless.
+
 A reply message can span several lines: a command arrives as a single line, so type `\n`
 where the break belongs — `/hutbot set message "First line.\nSecond line."` — and `\\n` when a
 literal backslash-n is what you want. Every other backslash is left alone. The web UI takes
@@ -298,6 +307,16 @@ otherwise quietly become "not on vacation" for as long as the host is down. Past
 dropped. A feed that just failed is not asked again until its TTL is up, so a host that is down
 costs three attempts per TTL rather than three per message.
 
+A feed is whatever document a channel member points a rule at, so what it can cost is bounded.
+Events that recur more often than hourly (`FREQ=SECONDLY`, `MINUTELY`, or `BYMINUTE`/`BYSECOND`
+lists) and every recurring series past the first 2000 are left out when the feed is parsed, with a
+warning in the log. Expanding the recurrences and picking the events runs on a worker thread, never
+on the event loop that serves Slack, and is stopped after 10 seconds
+(`HUTBOT_CALENDAR_EVALUATION_TIMEOUT`); a feed that runs out of time answers with no event and is
+not evaluated again until its TTL is up. Time zones a feed defines itself (`VTIMEZONE`) apply to
+that feed only, and a feed whose time zone rules would change the offset more than a million times
+in all (a real zone changes it once or twice a year) is refused like one that does not parse.
+
 A remote feed must be `https://`, and URLs pointing at any non-global address — including private,
 link-local and the shared `100.64.0.0/10` range — are refused because the bot fetches them from
 inside the cluster. The host name is resolved and checked too, at every redirect hop, so a public
@@ -435,6 +454,11 @@ existing configs keep working unchanged.
     `add condition message contains "deploy to prod" 1`.
   - A condition that cannot be judged (an unknown variable, an invalid regex) counts as **not
     met**, whatever its operator — so a broken config stays quiet instead of paging someone.
+  - Regular expressions — `set pattern` and the `regex`/`not_regex` operators — are limited to
+    1000 characters, to repeats that unroll to at most 10,000 elements (`a{20000}` is refused,
+    `a{0,20000}` is fine), and get 50 ms per match. A pattern that runs out of time (catastrophic
+    backtracking, e.g. `(x+x+)+y`) counts as **not matched** and is skipped for ten minutes
+    afterwards, so one broken pattern cannot stall the bot for every other channel.
   - Conditions are evaluated **when the rule fires** — for a `message` rule that is *after*
     the reminder delay, so a calendar or on-call condition is asked about the moment the
     reply would go out, not the moment the message arrived.
@@ -475,7 +499,10 @@ existing configs keep working unchanged.
   - A target built from variables is resolved when the rule runs, and the rule simply does not
     send when it resolves to nobody.
   - `set action post-channel #<channel>` — post to another channel. Pick the channel from Slack's
-    autocomplete so it arrives as a link, or pass its `C…` id.
+    autocomplete so it arrives as a link, or pass its `C…` id. The bot posts there with its own
+    identity, so the target must be the rule's own channel or a channel **you** are a member of
+    (checked when the target is set, in the web UI and on import), and it must be a fixed channel
+    rather than a `{{variable}}`.
 
 - **Buttons** attach interactive buttons to the message a rule sends (including the classic
   unanswered-message reply). Each button is added incrementally with a typed action (the leading
@@ -630,6 +657,16 @@ Editing is gated by channel membership.
 > **Security model:** Hutbot **trusts** the configured header. You **must** ensure the bot's HTTP port
 > is only reachable through the authenticating proxy (in Kubernetes the Helm chart's NetworkPolicy plus
 > a ClusterIP Service + Ingress do this). Anyone able to reach the port directly could spoof the header.
+>
+> - The proxy must **replace** the header, not append to it: a request carrying the header twice,
+>   or a comma-separated list of addresses, is refused rather than read as its first entry (which
+>   would be the one the client sent).
+> - Set `HUTBOT_UI_PROXY_SECRET` (and have the proxy send it in `X-Hutbot-Proxy-Secret`, or the
+>   header named in `HUTBOT_UI_PROXY_SECRET_HEADER`) to refuse every API request that did not come
+>   through the proxy, whatever the network allows. With oauth2-proxy's alpha config that is an
+>   `injectRequestHeaders` entry with a static value; with ingress-nginx a `proxy_set_header`.
+> - `POST`, `PUT` and `DELETE` must be same-origin `application/json` requests (what the bundled
+>   editor sends), so another site cannot make a signed-in browser change rules.
 
 ### Enabling it locally
 
@@ -677,14 +714,22 @@ Enable the UI through the chart with the following `values.yaml` keys under `ui:
 ui:
   enabled: true
   port: 8080
-  userHeader: "X-Forwarded-Email"
+  userHeader: "X-Auth-Request-Email"   # what the auth-response-headers annotation below sets
+  # Required: who may reach the UI port (your ingress controller / auth proxy).
+  allowedIngress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
   service:
     type: ClusterIP
   ingress:
     enabled: true
     className: "nginx"
     host: "hutbot.internal.example.com"
-    annotations: {}   # put your Keycloak/oauth2-proxy auth annotations here
+    annotations:   # REQUIRED in practice: your Keycloak/oauth2-proxy auth annotations, e.g.
+      nginx.ingress.kubernetes.io/auth-url: "https://oauth2.internal.example.com/oauth2/auth"
+      nginx.ingress.kubernetes.io/auth-signin: "https://oauth2.internal.example.com/oauth2/start?rd=$scheme://$host$request_uri"
+      nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-Email"
     tls: []
 ```
 
@@ -694,16 +739,17 @@ when `ui.ingress.enabled` is also `true`. The Keycloak integration itself (oauth
 is the operator's responsibility — Hutbot only consumes the resulting header.
 
 > **Security:** the UI trusts the proxy-set email header, so any pod able to reach the UI port can
-> spoof it and edit configs. Restrict the NetworkPolicy ingress to your auth proxy / ingress
-> controller with `ui.allowedIngress` (a list of NetworkPolicy peers rendered into the rule's `from:`).
-> Leaving it empty allows all sources (back-compat) and is not recommended:
-> ```yaml
-> ui:
->   allowedIngress:
->     - namespaceSelector:
->         matchLabels:
->           kubernetes.io/metadata.name: ingress-nginx
-> ```
+> spoof it and edit configs. The NetworkPolicy ingress must therefore be restricted to your auth
+> proxy / ingress controller with `ui.allowedIngress` (a list of NetworkPolicy peers rendered into
+> the rule's `from:`): with `ui.enabled` the chart **refuses to render** while that list is empty or
+> `networkPolicy.enabled` is false. `ui.allowAllIngress: true` is the explicit opt-out for a cluster
+> where nothing but the proxy can reach the pod anyway.
+>
+> The chart cannot check that the Ingress authenticates: without auth annotations (or an
+> equivalent in front of it) the UI is open to everyone who can reach `ui.ingress.host`. The auth
+> response header must end up in `ui.userHeader` (here `X-Auth-Request-Email`), replacing whatever
+> the client sent. The optional `HUTBOT_UI_PROXY_SECRET` field of the Secret (header name in
+> `ui.proxySecretHeader`) adds a check that does not depend on the network at all.
 
 ## Step 1: Set Up the Slack App
 
@@ -797,7 +843,7 @@ is the operator's responsibility — Hutbot only consumes the resulting header.
 ```
 export SLACK_BOT_TOKEN='xoxb-your-bot-token'
 export SLACK_APP_TOKEN='xapp-your-app-level-token'
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
 python -m hutbot
 ```
 
@@ -849,6 +895,8 @@ settings and is optional:
 export HUTBOT_SLASH_COMMAND='/hutbot'
 # Name the bot uses for itself in help/news messages. Default: Hutbot
 export HUTBOT_BOT_NAME='Hutbot'
+# Let guest accounts of the workspace run commands. Default: false (full members only)
+export HUTBOT_ALLOW_GUEST_COMMANDS=false
 # Timezone and date/time locale of the instance. Empty means UTC and English names.
 export HUTBOT_TIMEZONE='Europe/Berlin'
 export HUTBOT_DEFAULT_DATETIME_LOCALE='de_DE'
@@ -944,6 +992,7 @@ large lists do not hit the process environment's size limit.
 | `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record |
 | `HUTBOT_CALENDAR_BRIDGE_URL` | no | The calendar bridge's listing endpoint, token included (see below) |
 | `HUTBOT_BUILTIN_CALENDARS` | no | Calendars offered on top of the bridge's, and overrides of them (see below) |
+| `HUTBOT_UI_PROXY_SECRET` | no | Shared secret the web UI's authenticating proxy must send (see [Web configuration UI](#web-configuration-ui)) |
 
 Opsgenie's two key types are not interchangeable, which is why alerts and on-call lookups have a
 field each. Creating an alert (`POST /v2/alerts`) and pinging a heartbeat go through an
@@ -1383,6 +1432,13 @@ persistence:
 ```
 
 When persistence is enabled (default: `true`), the chart will automatically set the `HUTBOT_CONFIG_FILE` environment variable so Hutbot reads and writes its config from the mounted volume (at `<mountPath>/bot.json`).
+Without persistence the same files live in an `emptyDir` for the life of the pod.
+
+The bot runs as the unprivileged UID/GID `10001` on a read-only root filesystem with every
+capability dropped (`podSecurityContext` / `securityContext` in the chart values); the state volume
+is the only place it writes. `fsGroup: 10001` makes Kubernetes hand the volume — including files an
+earlier, root-run image wrote there — to that group on the first start. A volume type without
+ownership management (NFS, for one) needs a one-time `chown -R 10001:10001` of its files instead.
 Additionally, Hutbot stores its employee list cache in a JSON file (`employees.json`) on the same mounted volume. The chart will set the `HUTBOT_EMPLOYEE_CACHE_FILE` environment variable so Hutbot reads and writes its employee cache from the mounted volume (at `<mountPath>/employees.json`).
 
 Beside that cache the chart also points `HUTBOT_EMPLOYEE_FALLBACK_FILE` at
@@ -1482,9 +1538,15 @@ channel's `debug` flag.
 ### Running tests
 
 ```bash
-pip install -r requirements-dev.txt
+pip install --require-hashes -r requirements-dev.txt
 pytest
 ```
+
+`requirements.txt` and `requirements-dev.txt` are locks — every package pinned, with hashes — that
+the image and CI install with `--require-hashes`. Change the direct dependencies in
+`requirements.in` / `requirements-dev.in` and re-pin with `make lock` (needs
+[uv](https://docs.astral.sh/uv/)); Dependabot proposes updates to the pins, the workflow's actions
+(pinned to commit SHAs) and the base image digest.
 
 Tests live in `tests/` (one file per module) and run automatically in CI before
 the Docker image is built. `make check` additionally runs `shellcheck` on the deploy and secret

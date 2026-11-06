@@ -44,6 +44,7 @@ releases:
       - slack:
           slashCommand: {{ env "HUTBOT_SLASH_COMMAND" | default .Values.slashCommand | quote }}
           botName: {{ env "HUTBOT_BOT_NAME" | default .Values.botName | quote }}
+          allowGuestCommands: {{ env "HUTBOT_ALLOW_GUEST_COMMANDS" | default "false" }}
       - time:
           timezone: {{ env "HUTBOT_TIMEZONE" | default .Values.timezone | quote }}
           locale: {{ env "HUTBOT_DEFAULT_DATETIME_LOCALE" | default .Values.datetimeLocale | quote }}

@@ -29,7 +29,10 @@ async def test_validate_config_payload_accepts_good_config():
         ],
     }
 
-    cfg, errors = await validate_config_payload(payload, app)
+    # Whoever saves a post-channel rule is a member of the channel it posts to.
+    app.client.conversations_members.return_value = {"members": ["U1"], "response_metadata": {}}
+
+    cfg, errors = await validate_config_payload(payload, app, "C1", None, actor_id="U1")
 
     assert errors == {}
     assert cfg is not None
@@ -692,3 +695,43 @@ async def test_the_ui_rejects_an_event_offset_on_a_clock_template_variable():
     _, errors = await validate_config_payload(payload, _ui_app(), "C1", None)
 
     assert "does not take `offset`" in errors["reply_message"]
+
+
+@pytest.mark.asyncio
+async def test_the_ui_refuses_a_post_channel_target_the_saver_is_not_in():
+    _seed_user_caches()
+    app = _ui_app()
+    app.client.conversations_members.return_value = {"members": ["U2"], "response_metadata": {}}
+    payload = {"reply_message": "Hi", "action": "post_channel", "action_target": "CPRIVATE"}
+
+    cfg, errors = await validate_config_payload(payload, app, "C1", None, actor_id="U1")
+
+    assert cfg is None
+    assert errors["action_target"].startswith("A rule can only post to its own channel")
+    # Without a known saver nothing outside the rule's own channel is accepted either.
+    _, errors = await validate_config_payload(payload, app, "C1", None)
+    assert "action_target" in errors
+
+
+@pytest.mark.asyncio
+async def test_the_ui_keeps_an_unchanged_post_channel_target_whoever_saves():
+    _seed_user_caches()
+    app = _ui_app()
+    existing = {**DEFAULT_CONFIG, "action": "post_channel", "action_target": "<#CPRIVATE|ops>"}
+    payload = {"reply_message": "Edited", "action": "post_channel", "action_target": "<#CPRIVATE|ops>"}
+
+    cfg, errors = await validate_config_payload(payload, app, "C1", existing, actor_id="U1")
+
+    assert errors == {}
+    assert cfg["action_target"] == "<#CPRIVATE|ops>"
+    app.client.conversations_members.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_ui_refuses_a_templated_post_channel_target():
+    _seed_user_caches()
+    payload = {"reply_message": "Hi", "action": "post_channel", "action_target": "{{message}}"}
+
+    _, errors = await validate_config_payload(payload, _ui_app(), "C1", None, actor_id="U1")
+
+    assert "fixed channel" in errors["action_target"]

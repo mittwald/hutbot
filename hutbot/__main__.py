@@ -90,6 +90,10 @@ async def main() -> None:
         await persistence.load_configuration(app)
         auth = await app.client.auth_test()
         state.bot_user_id = auth["user_id"]
+        # Whose commands count: only accounts of this workspace (or Grid organization) may
+        # configure the bot — see `access`.
+        state.bot_team_id = auth.get("team_id") or ""
+        state.bot_enterprise_id = auth.get("enterprise_id") or ""
         # The Slack handle differs per app (Hutbot vs. Hutbot_DEV), so the help
         # text's `@mention` examples have to come from the workspace, not a constant.
         # The profile display name is the handle people type; auth.test only knows

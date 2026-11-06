@@ -430,6 +430,8 @@ async def test_set_action_requires_a_target_in_the_same_command():
 ])
 async def test_set_action_stores_action_and_target_together(command, action, target):
     app = AsyncMock()
+    # The author is a member of the channel a post-channel rule posts to.
+    app.client.conversations_members.return_value = {"members": ["U1"], "response_metadata": {}}
     config = DEFAULT_CONFIG.copy()
     channel = Channel(id="C1", name="davetest", configs={"default": config})
     user = User("U1", "dave", "Dave", "T")
@@ -482,6 +484,62 @@ async def test_set_action_rejects_a_non_channel_target_for_post_channel():
 
 
 @pytest.mark.asyncio
+async def test_set_action_refuses_a_channel_the_author_is_not_in():
+    app = AsyncMock()
+    app.client.conversations_members.return_value = {"members": ["U2", "U3"], "response_metadata": {}}
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "set action post-channel <#CPRIVATE|incident-response>", channel, user)
+
+    assert "only post to its own channel or to a channel you are a member of" in mock_send_message.call_args.args[3]
+    app.client.conversations_members.assert_awaited_with(channel="CPRIVATE", cursor=None, limit=200)
+    assert config["action"] == ACTION_REPLY
+    assert config["action_target"] == ""
+
+
+@pytest.mark.asyncio
+async def test_set_action_may_post_to_the_rules_own_channel_without_a_lookup():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message'):
+        await process_command(app, "set action post-channel <#C1|davetest>", channel, user)
+
+    assert config["action"] == ACTION_POST_CHANNEL
+    app.client.conversations_members.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_action_refuses_a_templated_channel():
+    app = AsyncMock()
+    config = DEFAULT_CONFIG.copy()
+    channel = Channel(id="C1", name="davetest", configs={"default": config})
+    user = User("U1", "dave", "Dave", "T")
+
+    with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
+         patch('hutbot.messaging.send_message') as mock_send_message:
+        await process_command(app, "set action post-channel {{message}}", channel, user)
+
+    assert "needs a fixed channel" in mock_send_message.call_args.args[3]
+    assert config["action"] == ACTION_REPLY
+
+
+@pytest.mark.asyncio
+async def test_a_stored_templated_channel_does_not_run():
+    config = {**DEFAULT_CONFIG.copy(), "action": ACTION_POST_CHANNEL, "action_target": "{{message}}"}
+
+    assert hutbot.actions.missing_target_reason(config) == (
+        "action `post_channel` needs a fixed channel, not `{{message}}`")
+
+
+@pytest.mark.asyncio
 async def test_run_refuses_a_config_whose_action_has_no_target():
     import hutbot
     app = AsyncMock()
@@ -525,6 +583,7 @@ async def test_run_action_refuses_instead_of_posting_with_an_empty_target():
 ])
 async def test_action_command_works_with_and_without_set(command):
     app = AsyncMock()
+    app.client.conversations_members.return_value = {"members": ["U1"], "response_metadata": {}}
     config = DEFAULT_CONFIG.copy()
     channel = Channel(id="C1", name="davetest", configs={"default": config})
     user = User("U1", "dave", "Dave", "T")
