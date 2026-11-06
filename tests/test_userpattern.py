@@ -26,6 +26,28 @@ def test_pattern_error_caps_the_length():
     assert userpattern.pattern_error("a" * userpattern.MAX_PATTERN_LENGTH) == ""
 
 
+# Small enough that even an unguarded `regex.compile` of them stays cheap in a test run.
+@pytest.mark.parametrize("pattern", [r"a{20000}", r"(?:a{150}){150}", r"(a){10000}", r"(?=x{20000})"])
+def test_pattern_error_refuses_a_repeat_that_regex_would_unroll_too_far(pattern):
+    """`regex` copies a repeat's body `min` times when compiling: `a{4294967294}` would exhaust memory."""
+    assert "repeats too much" in userpattern.pattern_error(pattern)
+
+
+@pytest.mark.parametrize("pattern", [r"\d{4}-\d{2}-\d{2}", r"a{0,1000000}", r"[a-z]{2,10}", r"(?:ab){5000}"])
+def test_pattern_error_accepts_ordinary_repeats(pattern):
+    assert userpattern.pattern_error(pattern) == ""
+
+
+def test_search_refuses_a_stored_pattern_that_would_unroll_too_far():
+    """A pattern stored before the check existed is still never handed to `regex` to compile."""
+    with pytest.raises(userpattern.regex.error, match="repeats too much"):
+        userpattern.search(r"a{20000}", "aaa")
+
+
+def test_pattern_error_refuses_deep_nesting():
+    assert userpattern.pattern_error("(" * 499 + ")" * 499) == "the pattern nests too deeply"
+
+
 def test_search_is_case_insensitive_unless_asked():
     assert userpattern.search("ALARM", "an alarm went off") is True
     assert userpattern.search("ALARM", "an alarm went off", case_sensitive=True) is False
