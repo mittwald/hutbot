@@ -313,7 +313,9 @@ lists) and every recurring series past the first 2000 are left out when the feed
 warning in the log. Expanding the recurrences and picking the events runs on a worker thread, never
 on the event loop that serves Slack, and is stopped after 10 seconds
 (`HUTBOT_CALENDAR_EVALUATION_TIMEOUT`); a feed that runs out of time answers with no event and is
-not evaluated again until its TTL is up.
+not evaluated again until its TTL is up. Time zones a feed defines itself (`VTIMEZONE`) apply to
+that feed only, and a feed whose time zone rules would change the offset more than a million times
+in all (a real zone changes it once or twice a year) is refused like one that does not parse.
 
 A remote feed must be `https://`, and URLs pointing at any non-global address — including private,
 link-local and the shared `100.64.0.0/10` range — are refused because the bot fetches them from
@@ -453,7 +455,8 @@ existing configs keep working unchanged.
   - A condition that cannot be judged (an unknown variable, an invalid regex) counts as **not
     met**, whatever its operator — so a broken config stays quiet instead of paging someone.
   - Regular expressions — `set pattern` and the `regex`/`not_regex` operators — are limited to
-    1000 characters and get 50 ms per match. A pattern that runs out of time (catastrophic
+    1000 characters, to repeats that unroll to at most 10,000 elements (`a{20000}` is refused,
+    `a{0,20000}` is fine), and get 50 ms per match. A pattern that runs out of time (catastrophic
     backtracking, e.g. `(x+x+)+y`) counts as **not matched** and is skipped for ten minutes
     afterwards, so one broken pattern cannot stall the bot for every other channel.
   - Conditions are evaluated **when the rule fires** — for a `message` rule that is *after*
