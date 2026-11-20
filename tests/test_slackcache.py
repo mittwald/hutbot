@@ -95,3 +95,184 @@ async def test_a_bot_lookup_that_fails_still_leaves_a_usable_user(capsys):
     # The same fallback a failed user lookup gets: the id stands in for the name.
     assert user == User(id="B08BSKV9CMB", name="B08BSKV9CMB", real_name="", team=TEAM_UNKNOWN)
     assert "Failed to fetch bot `B08BSKV9CMB`:" in capsys.readouterr().err
+
+
+# ----- user cache refresh -----
+
+def _member(uid, name, real_name, email):
+    return {"id": uid, "name": name, "real_name": real_name, "profile": {"email": email}}
+
+
+def _users_list(*members):
+    return {"members": list(members), "response_metadata": {"next_cursor": ""}}
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_picks_up_a_team_change_and_drops_departed_accounts(capsys):
+    app = AsyncMock()
+    app.client.users_list.return_value = _users_list(
+        _member("U1", "a.alpha", "Anna Alpha", "a.alpha@example.com"),
+        _member("U2", "b.beta", "Bert Beta", "b.beta@example.com"))
+    employees = {"a.alpha": {"fullname": "Anna Alpha", "group": "Support"},
+                 "b.beta": {"fullname": "Bert Beta", "group": "Platform"}}
+    with patch('hutbot.slackcache.load_employees', new=AsyncMock(return_value=employees)), \
+         patch('hutbot.slackcache.load_employee_mappings', return_value={}):
+        await hutbot.slackcache.update_user_cache(app)
+        assert hutbot.state.id_user_cache["U1"].team == "Support"
+
+        # Anna moves team, Bert leaves the workspace.
+        employees = {"a.alpha": {"fullname": "Anna Alpha", "group": "Software"}}
+        app.client.users_list.return_value = _users_list(
+            _member("U1", "a.alpha", "Anna Alpha", "a.alpha@example.com"))
+        with patch('hutbot.slackcache.fetch_employees', new=AsyncMock(return_value=employees)):
+            assert await hutbot.slackcache.refresh_user_cache(app) is True
+
+    assert hutbot.state.id_user_cache["U1"].team == "Software"
+    assert hutbot.state.user_id_cache["a.alpha"].team == "Software"
+    assert hutbot.state.user_email_cache["a.alpha@example.com"].team == "Software"
+    assert "U2" not in hutbot.state.id_user_cache
+    assert "b.beta" not in hutbot.state.user_id_cache
+    assert hutbot.state.team_cache == {"Software"}
+    assert "User cache refreshed: 1 users, 1 team changes." in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_keeps_bots_that_users_list_leaves_out():
+    app = AsyncMock()
+    bot = User(id="B1", name="alertmanager", real_name="Alertmanager", team=TEAM_UNKNOWN, is_bot=True)
+    hutbot.slackcache.cache_user("", bot)
+    app.client.users_list.return_value = _users_list(
+        _member("U1", "a.alpha", "Anna Alpha", "a.alpha@example.com"))
+    with patch('hutbot.slackcache.fetch_employees', new=AsyncMock(return_value={})), \
+         patch('hutbot.slackcache.load_employee_mappings', return_value={}):
+        assert await hutbot.slackcache.refresh_user_cache(app) is True
+
+    assert hutbot.state.id_user_cache["B1"] == bot
+    assert hutbot.state.user_id_cache["alertmanager"] == bot
+    assert "U1" in hutbot.state.id_user_cache
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_keeps_the_caches_it_had():
+    app = AsyncMock()
+    anna = User(id="U1", name="a.alpha", real_name="Anna Alpha", team="Support")
+    hutbot.slackcache.cache_user("a.alpha@example.com", anna)
+    app.client.users_list.side_effect = SlackApiError("nope", {"ok": False, "error": "invalid_auth"})
+    with patch('hutbot.slackcache.fetch_employees', new=AsyncMock(return_value={"a.alpha": {"group": "X"}})), \
+         patch('hutbot.slackcache.load_employee_mappings', return_value={}):
+        assert await hutbot.slackcache.refresh_user_cache(app) is False
+
+    assert hutbot.state.id_user_cache == {"U1": anna}
+    assert hutbot.state.team_cache == {"Support"}
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_keeps_the_caches_while_the_employee_directory_is_down(capsys):
+    """Its disk cache may be gone too, and fallback records alone would wipe the other teams."""
+    app = AsyncMock()
+    anna = User(id="U1", name="a.alpha", real_name="Anna Alpha", team="Support")
+    hutbot.slackcache.cache_user("a.alpha@example.com", anna)
+    with patch('hutbot.slackcache.fetch_employees', new=AsyncMock(return_value=None)), \
+         patch('hutbot.slackcache.employee_credentials', return_value=("ak", "sk")):
+        assert await hutbot.slackcache.refresh_user_cache(app) is False
+
+    app.client.users_list.assert_not_awaited()
+    assert hutbot.state.id_user_cache["U1"].team == "Support"
+    assert "Keeping the user cache: the employee directory could not be read." in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_without_a_directory_reads_the_disk_cache():
+    app = AsyncMock()
+    app.client.users_list.return_value = _users_list(
+        _member("U1", "a.alpha", "Anna Alpha", "a.alpha@example.com"))
+    from_disk = {"a.alpha": {"fullname": "Anna Alpha", "group": "Support"}}
+    with patch('hutbot.slackcache.fetch_employees', new=AsyncMock(return_value=None)), \
+         patch('hutbot.slackcache.employee_credentials', return_value=("", "")), \
+         patch('hutbot.slackcache.load_employees_from_disk', new=AsyncMock(return_value=from_disk)), \
+         patch('hutbot.slackcache.load_employee_mappings', return_value={}):
+        assert await hutbot.slackcache.refresh_user_cache(app) is True
+
+    assert hutbot.state.id_user_cache["U1"].team == "Support"
+
+
+def test_an_unmapped_user_is_warned_about_once():
+    employees = {"other": {"fullname": "Someone Else", "group": "Support"}}
+    member = _member("U1", "e.binek", "Eva Binek", "e.binek@example.com")
+    with patch('hutbot.slackcache.log_warning') as mock_log_warning:
+        hutbot.slackcache.build_user(member, employees, {})
+        hutbot.slackcache.build_user(member, employees, {})
+
+    assert mock_log_warning.call_count == 1
+
+
+_DEFAULT_TIMES = (datetime.time(6), datetime.time(12), datetime.time(20))
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, _DEFAULT_TIMES),
+    ("", _DEFAULT_TIMES),
+    ("off", ()),
+    ("OFF", ()),
+    ("19:30, 07:00", (datetime.time(7), datetime.time(19, 30))),
+    ("07:00,bogus", (datetime.time(7),)),
+    ("bogus", _DEFAULT_TIMES),
+    ("06:00Z,12:00", (datetime.time(12),)),
+    ("06:00+01:00", _DEFAULT_TIMES),
+])
+def test_the_user_cache_refresh_times_are_read_from_the_environment(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv('HUTBOT_USER_CACHE_REFRESH_TIMES', raising=False)
+    else:
+        monkeypatch.setenv('HUTBOT_USER_CACHE_REFRESH_TIMES', raw)
+    assert hutbot.slackcache.user_cache_refresh_times() == expected
+
+
+@pytest.mark.parametrize("now, expected", [
+    ("2026-11-20 05:59", "2026-11-20 06:00"),
+    ("2026-11-20 06:00", "2026-11-20 12:00"),
+    ("2026-11-20 13:15", "2026-11-20 20:00"),
+    ("2026-11-20 20:00", "2026-11-21 06:00"),
+    ("2026-11-20 23:59", "2026-11-21 06:00"),
+])
+def test_the_next_refresh_is_the_next_time_of_day(now, expected):
+    parse = lambda v: datetime.datetime.strptime(v, "%Y-%m-%d %H:%M")
+    assert hutbot.slackcache.next_user_cache_refresh(parse(now), _DEFAULT_TIMES) == parse(expected)
+
+
+@pytest.mark.asyncio
+async def test_off_starts_no_refresh_loop(monkeypatch):
+    monkeypatch.setenv('HUTBOT_USER_CACHE_REFRESH_TIMES', 'off')
+    with patch('hutbot.slackcache.refresh_user_cache', new=AsyncMock()) as refresh:
+        await hutbot.slackcache.run_user_cache_refresh_loop(AsyncMock())
+    refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_loop_waits_for_the_next_time_and_retries_a_failed_turn(monkeypatch):
+    monkeypatch.setenv('HUTBOT_USER_CACHE_REFRESH_TIMES', '06:00,12:00,20:00')
+    clock = {"now": datetime.datetime(2026, 11, 20, 5, 0)}
+    sleeps = []
+
+    class _Clock(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+
+    async def fake_sleep(seconds):
+        sleeps.append(round(seconds))
+        if len(sleeps) > 3:
+            raise asyncio.CancelledError
+        clock["now"] += datetime.timedelta(seconds=seconds)
+
+    refresh = AsyncMock(side_effect=[RuntimeError("boom"), False, True])
+    with patch('hutbot.slackcache.datetime.datetime', _Clock), \
+         patch('hutbot.slackcache.time.time', side_effect=lambda: clock["now"].timestamp()), \
+         patch('hutbot.slackcache.asyncio.sleep', new=fake_sleep), \
+         patch('hutbot.slackcache.refresh_user_cache', new=refresh):
+        with pytest.raises(asyncio.CancelledError):
+            await hutbot.slackcache.run_user_cache_refresh_loop(AsyncMock())
+
+    # 05:00 -> 06:00; it fails and is tried 15 minutes later, twice; the success waits for 12:00.
+    assert sleeps == [3600, 900, 900, 5 * 3600 + 1800]
+    assert refresh.await_count == 3

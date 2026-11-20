@@ -74,6 +74,11 @@ slack:
   # Commands are taken only from full members of the bot's own workspace. `true` also lets the
   # workspace's guest accounts run them; Slack Connect members and bots stay refused regardless.
   allowGuestCommands: false
+  # Local times of day (the instance's timezone, see `time.timezone`) the bot rebuilds its user
+  # cache from Slack and the employee list, as comma-separated HH:MM, e.g. "06:00,12:00,20:00".
+  # Empty = the bot's default (06:00, 12:00 and 20:00); "off" keeps what startup read until the
+  # next restart.
+  userCacheRefreshTimes: ""
 
 # Timezone and date/time locale the whole instance runs in.
 time:

@@ -1,20 +1,26 @@
 """Slack channel/user/usergroup lookups backed by the in-memory caches in ``state``."""
 
+import asyncio
+import datetime
 import json
+import os
 import time
 
 from slack_bolt.async_app import AsyncApp
 
 from employee_list import (
     EMPLOYEE_MAPPING_IGNORE,
+    employee_credentials,
+    fetch_employees,
     load_employee_mappings,
     load_employees,
+    load_employees_from_disk,
     normalize_id,
     normalize_real_name,
     normalize_real_name_with_diagraphs,
     normalize_user_name,
 )
-from logutil import log, log_error, log_warning
+from logutil import log, log_error, log_origin, log_warning
 import retryutil
 
 from . import state
@@ -25,6 +31,13 @@ from .textutil import log_debug
 # Slack member ids per channel, cached briefly so listing a user's
 # channels doesn't hammer conversations.members on every UI request.
 _CHANNEL_MEMBERS_TTL = 300.0
+
+# Local times of day (the container's TZ) the user caches are rebuilt at, so team changes and new
+# employee records reach a running process; `off` keeps what startup read.
+USER_CACHE_REFRESH_ENV = 'HUTBOT_USER_CACHE_REFRESH_TIMES'
+_USER_CACHE_REFRESH_TIMES = (datetime.time(6, 0), datetime.time(12, 0), datetime.time(20, 0))
+# A rebuild that fails is tried again this soon rather than at the next time of day.
+_USER_CACHE_RETRY_SECONDS = 15 * 60
 
 
 async def get_channel_by_id(app: AsyncApp, channel_id: str) -> Channel:
@@ -125,7 +138,10 @@ def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
                     user_key = employee_key
                     # finally!
                     break
-            if not user_key and not user_is_ignored:
+            # Once per account and process: the user cache is rebuilt on a timer, and an
+            # account the employee list does not know stays unknown turn after turn.
+            if not user_key and not user_is_ignored and user_id not in state.unmapped_user_warnings:
+                state.unmapped_user_warnings.add(user_id)
                 user_json = json.dumps(user)
                 if len(user_json) > 100:
                     user_json = user_json[:97] + '...'
@@ -156,31 +172,157 @@ async def update_user_cache(app: AsyncApp) -> None:
     Everything is therefore collected first and committed in one go, once every page is in.
     """
     if not state.user_id_cache or not state.user_email_cache or not state.id_user_cache:
-        employees = await load_employees()
-        mappings = load_employee_mappings()
-        fetched: list[tuple[str, User]] = []
-        try:
-            cursor = None
-            while True:
-                response = await retryutil.retry_async(
-                    lambda cursor=cursor: app.client.users_list(cursor=cursor, limit=200),
-                    what="Fetching the Slack user list")
-                for user in response['members']:
-                    if not user.get('deleted') and \
-                       not user.get('is_bot', False) and \
-                       not user.get('is_restricted', False) and \
-                       user.get('id', '') != 'USLACKBOT':
-                        fetched.append(build_user(user, employees, mappings))
-                cursor = response.get('response_metadata', {}).get('next_cursor')
-                if not cursor:
-                    break
-        except Exception as e:
+        fetched = await _fetch_workspace_users(app, await load_employees())
+        if fetched is None:
             # Nothing has been written yet, so the caches stay empty and the next lookup
             # runs this again rather than settling for what one page happened to carry.
-            log_error("Failed to fetch user list:", e)
             return
         for user_email, user in fetched:
             cache_user(user_email, user)
+
+
+async def _fetch_workspace_users(app: AsyncApp, employees: dict) -> list[tuple[str, User]] | None:
+    """Every human member of the workspace from `users.list`, or ``None`` when a page failed."""
+    mappings = load_employee_mappings()
+    fetched: list[tuple[str, User]] = []
+    try:
+        cursor = None
+        while True:
+            response = await retryutil.retry_async(
+                lambda cursor=cursor: app.client.users_list(cursor=cursor, limit=200),
+                what="Fetching the Slack user list")
+            for user in response['members']:
+                if not user.get('deleted') and \
+                   not user.get('is_bot', False) and \
+                   not user.get('is_restricted', False) and \
+                   user.get('id', '') != 'USLACKBOT':
+                    fetched.append(build_user(user, employees, mappings))
+            cursor = response.get('response_metadata', {}).get('next_cursor')
+            if not cursor:
+                break
+    except Exception as e:
+        log_error("Failed to fetch user list:", e)
+        return None
+    return fetched
+
+
+def user_cache_refresh_times() -> tuple[datetime.time, ...]:
+    """The local times of day the user caches are rebuilt at; empty for `off`.
+
+    Read from a comma-separated `HH:MM` list. An unusable entry is reported and skipped; a value
+    with no usable entry at all falls back to the default times.
+    """
+    raw = (os.environ.get(USER_CACHE_REFRESH_ENV) or "").strip()
+    if not raw:
+        return _USER_CACHE_REFRESH_TIMES
+    if raw.lower() == "off":
+        return ()
+    times = set()
+    for entry in raw.split(","):
+        try:
+            parsed = datetime.time.fromisoformat(entry.strip())
+            # Local wall-clock times only: an offset (`06:00Z`) would make the comparison with
+            # the naive local clock raise outside the loop's handler and end the refresh task.
+            if parsed.tzinfo is not None:
+                raise ValueError(entry)
+            times.add(parsed.replace(second=0, microsecond=0))
+        except ValueError:
+            log_warning(f"Ignoring invalid time `{entry.strip()}` in {USER_CACHE_REFRESH_ENV}; "
+                        "expected HH:MM.")
+    if not times:
+        return _USER_CACHE_REFRESH_TIMES
+    return tuple(sorted(times))
+
+
+def next_user_cache_refresh(now: datetime.datetime, times: tuple[datetime.time, ...]) -> datetime.datetime:
+    """The first of `times` after `now`, both naive local time; tomorrow's first once today's are past."""
+    for day in (now.date(), now.date() + datetime.timedelta(days=1)):
+        for at in times:
+            candidate = datetime.datetime.combine(day, at)
+            if candidate > now:
+                return candidate
+    raise ValueError("no refresh times")
+
+
+async def refresh_user_cache(app: AsyncApp) -> bool:
+    """Rebuild the user caches from a fresh employee list and `users.list`.
+
+    `update_user_cache` fills the caches only while they are empty, so without this a team
+    change, a new hire's employee record or a deactivated account would wait for the next
+    restart. The new caches are built aside and swapped in without an `await` in between, so
+    no lookup sees them half-filled; a failed fetch keeps the old ones whole.
+
+    Bots are carried over: `users.list` leaves them out, and they enter the caches only on
+    demand. Guests and accounts gone from the workspace are dropped; a guest is looked up by
+    id again the next time one writes. Returns whether the caches were replaced.
+    """
+    employees = await fetch_employees()
+    if employees is None:
+        if employee_credentials()[0]:
+            # The directory is down. Its disk cache may be gone too and leave only the fallback
+            # records, and rebuilding from those would wipe every other team the caches know.
+            # The next turn tries again.
+            log_warning("Keeping the user cache: the employee directory could not be read.")
+            return False
+        # No directory configured: the disk cache and the fallback file are all there is.
+        employees = await load_employees_from_disk()
+    fetched = await _fetch_workspace_users(app, employees)
+    if not fetched:
+        # An empty member list is no answer either: keep the caches the process already has.
+        return False
+
+    def _bots(cache: dict) -> dict:
+        return {key: u for key, u in cache.items() if u.is_bot}
+
+    by_name, by_email, by_id = _bots(state.user_id_cache), _bots(state.user_email_cache), _bots(state.id_user_cache)
+    for user_email, u in fetched:
+        by_name[u.name] = u
+        if user_email:
+            by_email[user_email] = u
+        by_id[u.id] = u
+    team_changes = sum(1 for uid, u in by_id.items()
+                       if uid in state.id_user_cache and state.id_user_cache[uid].team != u.team)
+
+    for cache, fresh in ((state.user_id_cache, by_name), (state.user_email_cache, by_email),
+                         (state.id_user_cache, by_id)):
+        cache.clear()
+        cache.update(fresh)
+    state.team_cache.clear()
+    state.team_cache.update(u.team for u in by_id.values())
+    log(f"User cache refreshed: {len(fetched)} users, {team_changes} team changes.")
+    return True
+
+
+async def run_user_cache_refresh_loop(app: AsyncApp) -> None:
+    """Rebuild the user caches at the refresh times; the startup fill is `update_user_cache`.
+
+    Never lets a failure end the loop. A failed rebuild is tried again after
+    `_USER_CACHE_RETRY_SECONDS` (or at the next refresh time, if that comes first), and until one
+    succeeds the caches from the last good rebuild stay in place.
+    """
+    times = user_cache_refresh_times()
+    if not times:
+        return
+    log(f"User cache refresh scheduled daily at {', '.join(t.strftime('%H:%M') for t in times)} local time.")
+    retry_at = None
+    while True:
+        # Naive local time, turned into a timestamp through the local zone: a day that changes
+        # to or from daylight saving time still refreshes at the wall-clock times asked for.
+        target = next_user_cache_refresh(datetime.datetime.now(), times).timestamp()
+        if retry_at is not None:
+            target = min(target, retry_at)
+        await asyncio.sleep(max(0.0, target - time.time()))
+        # A background task with no inbound event behind it, so it names itself for the log
+        # lines its refresh writes (see `logutil.log_origin`).
+        with log_origin("user cache refresh"):
+            try:
+                refreshed = await refresh_user_cache(app)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log_error("Failed to refresh the user cache:", e)
+                refreshed = False
+        retry_at = None if refreshed else time.time() + _USER_CACHE_RETRY_SECONDS
 
 
 async def fetch_user_by_id(app: AsyncApp, id: str, channel: Channel | None = None) -> User | None:

@@ -908,7 +908,7 @@ export HUTBOT_DEFAULT_DATETIME_LOCALE='de_DE'
 # to drop the policy entirely.
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
-export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
+export HOST_ALIASES='internal.example.systems=192.168.0.15'
 # Calendar feed hosts that resolve to an internal address and are meant to be fetched anyway.
 # Without an entry the bot refuses the fetch and logs the address it resolved to. Needs the
 # matching NETWORKPOLICY_RULES entry (and HOST_ALIASES, if cluster DNS does not serve the zone).
@@ -921,6 +921,9 @@ export HUTBOT_CALENDAR_STALE_GRACE=86400
 # Minutes between reads of the calendar bridge's listing; unset means 60, `0` reads it once at
 # startup. The listing URL itself carries a token and lives in the Secret, not here.
 export HUTBOT_CALENDAR_BRIDGE_REFRESH=60
+# Local times of day the user cache is rebuilt from Slack and the employee list; unset means
+# 06:00,12:00,20:00, `off` keeps what startup read.
+export HUTBOT_USER_CACHE_REFRESH_TIMES='06:00,12:00,20:00'
 ```
 
 To query the employee list locally from your terminal, you can use the standalone helper script:
@@ -987,8 +990,8 @@ large lists do not hit the process environment's size limit.
 | `OPSGENIE_TOKEN` | no | Opsgenie alerts and heartbeat — an *integration* API key (a team's API integration) |
 | `OPSGENIE_API_TOKEN` | no | Opsgenie on-call lookups — an *account* API key (Settings → API key management) with read access; falls back to `OPSGENIE_TOKEN` |
 | `OPSGENIE_HEARTBEAT_NAME` | no | Heartbeat to ping; empty on dev so it cannot ping production's |
-| `EMPLOYEE_LIST_USERNAME` | no | Employee-list credentials for team lookups |
-| `EMPLOYEE_LIST_PASSWORD` | no | " |
+| `EMPLOYEE_LIST_ACCESS_KEY_ID` | no | Access key ID of the mittwald service the employee directory (Atlas) is read with, for team lookups |
+| `EMPLOYEE_LIST_SECRET_ACCESS_KEY` | no | That service's secret access key |
 | `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record |
 | `HUTBOT_CALENDAR_BRIDGE_URL` | no | The calendar bridge's listing endpoint, token included (see below) |
 | `HUTBOT_BUILTIN_CALENDARS` | no | Calendars offered on top of the bridge's, and overrides of them (see below) |
@@ -1439,6 +1442,16 @@ capability dropped (`podSecurityContext` / `securityContext` in the chart values
 is the only place it writes. `fsGroup: 10001` makes Kubernetes hand the volume — including files an
 earlier, root-run image wrote there — to that group on the first start. A volume type without
 ownership management (NFS, for one) needs a one-time `chown -R 10001:10001` of its files instead.
+Teams come from the employee directory, Atlas, read through mittwald's internal API
+(`GET https://api.prod.mittwald.systems/internal-v2/employees`, group names from `…/groups`). The
+bot authenticates as a mittwald **service**: it trades `EMPLOYEE_LIST_ACCESS_KEY_ID` and
+`EMPLOYEE_LIST_SECRET_ACCESS_KEY` for a service token at
+`POST https://api-public.prod.mittwald.systems/v2/services/<accessKeyId>/actions/authenticate`
+before each read, the same way mPing reads Nexus. The service needs a capability that may list
+Atlas employees and groups. An employee's team is the name of their primary group (`groupId`);
+archived and ignored employees are left out. Without the pair, the bot reads only the disk cache and
+the fallback file below.
+
 Additionally, Hutbot stores its employee list cache in a JSON file (`employees.json`) on the same mounted volume. The chart will set the `HUTBOT_EMPLOYEE_CACHE_FILE` environment variable so Hutbot reads and writes its employee cache from the mounted volume (at `<mountPath>/employees.json`).
 
 Beside that cache the chart also points `HUTBOT_EMPLOYEE_FALLBACK_FILE` at
@@ -1456,12 +1469,21 @@ matter:
 
 The employee list wins every collision: a fallback entry is used only for an `ad_name` the API
 has no live record for. Set `is_deleted` to `true` to retire an entry without removing it. Place
-the file and restart, since the employee list is read when the user cache is cold:
+the file and the next user-cache refresh picks it up (see below); restart to apply it at once:
 
 ```bash
 kubectl -n mw-internal cp employees-fallback.json <hutbot-pod>:/data/employees-fallback.json
 kubectl -n mw-internal rollout restart deploy/hutbot
 ```
+
+The bot fills its user cache — every Slack member with their team from the employee list — at
+startup, and rebuilds it daily at the local times in `HUTBOT_USER_CACHE_REFRESH_TIMES`
+(comma-separated `HH:MM` in the container's timezone; default `06:00,12:00,20:00`, `off` keeps
+what startup read until the next restart; `slack.userCacheRefreshTimes` is the chart value). Each
+rebuild reads the employee list again, so a team change or a new employee record reaches the
+running bot by the next of those times. A rebuild that fails keeps the previous cache and is tried
+again 15 minutes later; each one that works logs a line such as `User cache refreshed: 412 users, 2 team changes.` An account the employee list does
+not know is warned about once per process, not on every rebuild.
 
 Accounts that are nobody — shared or functional Slack users — belong in `EMPLOYEE_LIST_MAPPINGS`
 as `user=-` instead, which silences the "cannot be mapped" warning without inventing a record.
@@ -1479,7 +1501,7 @@ export PERSISTENCE_MOUNT_PATH=/data
 # by the chart defaults.
 export NETWORKPOLICY_RULES='443:192.168.0.15/32 80:10.0.0.0/24,10.0.1.0/24'
 # To define host aliases for the pod (/etc/hosts entries), you can set a comma-separated list of <hostname>=<ip> entries:
-export HOST_ALIASES='lb.mittwald.it=192.168.0.15'
+export HOST_ALIASES='internal.example.systems=192.168.0.15'
 # Calendar feed hosts that resolve to an internal address and are meant to be fetched anyway.
 # Without an entry the bot refuses the fetch and logs the address it resolved to. Needs the
 # matching NETWORKPOLICY_RULES entry (and HOST_ALIASES, if cluster DNS does not serve the zone).
@@ -1492,6 +1514,9 @@ export HUTBOT_CALENDAR_STALE_GRACE=86400
 # Minutes between reads of the calendar bridge's listing; unset means 60, `0` reads it once at
 # startup. The listing URL itself carries a token and lives in the Secret, not here.
 export HUTBOT_CALENDAR_BRIDGE_REFRESH=60
+# Local times of day the user cache is rebuilt from Slack and the employee list; unset means
+# 06:00,12:00,20:00, `off` keeps what startup read.
+export HUTBOT_USER_CACHE_REFRESH_TIMES='06:00,12:00,20:00'
 ./deploy-prod.sh v1.1.0
 ```
 

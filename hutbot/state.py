@@ -54,6 +54,9 @@ id_user_cache: dict = {}
 usergroup_id_cache: dict = {}
 id_usergroup_cache: dict = {}
 team_cache: set = set()
+# Slack user ids already warned about as having no employee record. The user cache is rebuilt
+# on a timer, and the same unmapped accounts would otherwise repeat their warning every turn.
+unmapped_user_warnings: set = set()
 
 # Resolved on startup from auth.test.
 bot_user_id = None
@@ -153,6 +156,7 @@ def reset() -> None:
     usergroup_id_cache.clear()
     id_usergroup_cache.clear()
     team_cache.clear()
+    unmapped_user_warnings.clear()
     _channel_members_cache.clear()
     _calendar_cache.clear()
     _calendar_failures.clear()
