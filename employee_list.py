@@ -2,6 +2,7 @@ import base64
 import binascii
 import json
 import os
+import urllib.parse
 
 import aiofiles
 import aiohttp
@@ -204,69 +205,139 @@ async def save_employees_to_disk(users: list) -> None:
     await fileutil.write_json_file(get_employee_cache_file_name(), users, "Writing the employee cache")
 
 
-async def load_employees() -> dict:
-    username = get_env_var("EMPLOYEE_LIST_USERNAME")
-    password = get_env_var("EMPLOYEE_LIST_PASSWORD")
-    if not username or not password:
-        return await load_employees_from_disk()
+# The employee directory is Atlas, read through mittwald's internal API. Its token comes from a
+# service key pair, traded at the public API the way any mittwald service authenticates.
+EMPLOYEE_API_URL = "https://api.prod.mittwald.systems/internal-v2"
+EMPLOYEE_AUTH_URL = "https://api-public.prod.mittwald.systems/v2"
+EMPLOYEE_ACCESS_KEY_ENV = "EMPLOYEE_LIST_ACCESS_KEY_ID"
+EMPLOYEE_SECRET_KEY_ENV = "EMPLOYEE_LIST_SECRET_ACCESS_KEY"
+# Atlas answers up to 10000 records a page by default; asking for fewer keeps one answer small.
+_EMPLOYEE_PAGE_SIZE = 1000
 
-    employee_auth_url = "https://identity.prod.mittwald.systems/authenticate"
-    employee_url = "https://lb.mittwald.it/api/users"
+
+def employee_credentials() -> tuple[str, str]:
+    """The service key pair the employee directory is read with, or two empty strings."""
+    access = get_env_var(EMPLOYEE_ACCESS_KEY_ENV).strip()
+    secret = get_env_var(EMPLOYEE_SECRET_KEY_ENV).strip()
+    return (access, secret) if access and secret else ("", "")
+
+
+def employee_record(employee: dict, group_names: dict) -> dict:
+    """An Atlas employee in the record shape the cache file, the fallback file and the CLI share.
+
+    The cache predates Atlas, and keeping its shape keeps a cache written by an older version,
+    the hand-written fallback file and `query_employees.py` readable without a migration.
+    """
+    forename = str(employee.get("forename") or "").strip()
+    surname = str(employee.get("surname") or "").strip()
+    group_id = employee.get("groupId") or next(iter(employee.get("groupIds") or []), "")
+    return {
+        "ad_name": str(employee.get("adName") or "").strip(),
+        "fullname": f"{forename} {surname}".strip(),
+        "group": group_names.get(group_id, ""),
+        "mail": str(employee.get("email") or "").strip(),
+        "is_deleted": bool(employee.get("archivedAt")) or bool(employee.get("isIgnored")),
+    }
+
+
+async def _read_json(response, what: str):
+    if retryutil.is_retryable_status(response.status):
+        raise retryutil.TransientHTTPError(
+            what, response.status, retryutil.parse_retry_after(response.headers.get("Retry-After")))
+    if response.status != 200:
+        body = (await response.text())[:300]
+        log_error(f"{what} failed with status {response.status}: {body}")
+        return None
+    return await response.json()
+
+
+async def _list_all(session: aiohttp.ClientSession, path: str, headers: dict, params: dict,
+                    what: str) -> list | None:
+    """Every item of a paginated internal-v2 listing, or None when a page was refused."""
+    items: list = []
+    while True:
+        page_params = {**params, "limit": str(_EMPLOYEE_PAGE_SIZE), "skip": str(len(items))}
+        async with session.get(f"{EMPLOYEE_API_URL}/{path}", headers=headers,
+                               params=page_params) as response:
+            page = await _read_json(response, what)
+        if page is None:
+            return None
+        if not isinstance(page, list):
+            raise ValueError(f"{what} answered with {type(page).__name__}, not a list")
+        items.extend(page)
+        if len(page) < _EMPLOYEE_PAGE_SIZE:
+            return items
+
+
+async def fetch_employees() -> dict | None:
+    """The employee list read live from Atlas, with the fallback records merged in.
+
+    None when no key pair is configured or the directory could not be read: the caller decides
+    whether the disk cache is good enough (`load_employees`) or whether what it already holds is
+    better (the user cache refresh). A successful read also rewrites the disk cache.
+    """
+    access, secret = employee_credentials()
+    if not access:
+        return None
+    employee_url = f"{EMPLOYEE_API_URL}/employees"
 
     async def attempt() -> list | None:
         """One authenticate-and-fetch round trip. None means a permanent refusal."""
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            auth_payload = {
-                "username": username,
-                "password": password,
-                "providers": ["service"],
-            }
+            auth_url = f"{EMPLOYEE_AUTH_URL}/services/{urllib.parse.quote(access, safe='')}/actions/authenticate"
+            async with session.post(auth_url, json={"secretAccessKey": secret}) as auth_response:
+                payload = await _read_json(auth_response, "Authenticating against the employee directory")
+            if payload is None:
+                return None
+            access_token = payload.get("accessToken") if isinstance(payload, dict) else None
+            token = str((access_token or {}).get("publicToken") or "").strip() \
+                if isinstance(access_token, dict) else ""
+            if not token:
+                log_error("Failed to authenticate to retrieve employees: no token in the answer.")
+                return None
 
-            async with session.post(employee_auth_url, json=auth_payload) as auth_response:
-                if retryutil.is_retryable_status(auth_response.status):
-                    raise retryutil.TransientHTTPError(
-                        "Authenticating against the employee directory", auth_response.status,
-                        retryutil.parse_retry_after(auth_response.headers.get("Retry-After")))
-                if auth_response.status != 200:
-                    log_error(f"Failed to authenticate to retrieve employees: {await auth_response.text()}")
-                    return None
+            headers = {"x-access-token": token, "Accept": "application/json"}
+            # Archived groups included, so an employee still filed under one keeps its name.
+            groups = await _list_all(session, "groups", headers, {"withArchived": "true"},
+                                     "Reading the employee groups")
+            if groups is None:
+                return None
+            employees = await _list_all(session, "employees", headers, {},
+                                        "Reading the employee directory")
+            if employees is None:
+                return None
+            group_names = {g.get("id"): str(g.get("name") or "").strip()
+                           for g in groups if isinstance(g, dict)}
+            return [employee_record(e, group_names) for e in employees]
 
-                token = (await auth_response.text()).strip()
-                if not token:
-                    log_error(f"Failed to authenticate to retrieve employees, no token received: {token!r}")
-                    return None
-
-            headers = {"jwt": token}
-            async with session.get(employee_url, headers=headers) as users_response:
-                if retryutil.is_retryable_status(users_response.status):
-                    raise retryutil.TransientHTTPError(
-                        "Reading the employee directory", users_response.status,
-                        retryutil.parse_retry_after(users_response.headers.get("Retry-After")))
-                if users_response.status != 200:
-                    log_error(f"Failed to fetch employees: {await users_response.text()}")
-                    return None
-                return await users_response.json()
-
-    # The disk cache below is a real fallback, but it is a *stale* one: everybody hired since
-    # the last successful fetch is missing from it, and their team is what several conditions
-    # are judged on. Worth a few more attempts before settling for it.
+    # The disk cache is a real fallback, but it is a *stale* one: everybody hired since the last
+    # successful fetch is missing from it, and their team is what several conditions are judged
+    # on. Worth a few more attempts before settling for it.
     try:
         users = await retryutil.retry_async(attempt, what="Reading the employee directory")
     except Exception as e:
         log_error(f"Failed to retrieve employees from {employee_url}:", e)
-        return await load_employees_from_disk()
+        return None
     if users is None:
-        return await load_employees_from_disk()
+        return None
 
-    # A 200 with JSON of the wrong shape — an object, or a list with a null in it — used to be
-    # covered by the same `except` as the request. It still has to be: this runs at startup, and
-    # an exception escaping here aborts the process instead of falling back to the disk cache.
+    # A 200 with JSON of the wrong shape — an object, or a list with a null in it — must not
+    # escape: this runs at startup, and an exception here aborts the process instead of falling
+    # back to the disk cache.
     try:
         employees = generate_employee_list(users)
     except Exception as e:
         log_error(f"Failed to read the employees returned by {employee_url}:", e)
-        return await load_employees_from_disk()
+        return None
 
     log(f"{len(employees)} employees retrieved from {employee_url}.")
     await save_employees_to_disk(users)
     return merge_employee_fallbacks(employees, await load_employee_fallbacks())
+
+
+async def load_employees() -> dict:
+    """The employee list: live from Atlas when possible, else the disk cache and fallbacks."""
+    employees = await fetch_employees()
+    if employees is None:
+        return await load_employees_from_disk()
+    return employees

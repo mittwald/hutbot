@@ -176,8 +176,8 @@ def test_deployment_reads_the_out_of_band_secret():
     assert secret_refs["SLACK_BOT_TOKEN"] == {
         "name": SECRET_NAME, "key": "SLACK_BOT_TOKEN"
     }
-    for key in ("OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME", "EMPLOYEE_LIST_USERNAME",
-                "EMPLOYEE_LIST_PASSWORD", "EMPLOYEE_LIST_MAPPINGS",
+    for key in ("OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME", "EMPLOYEE_LIST_ACCESS_KEY_ID",
+                "EMPLOYEE_LIST_SECRET_ACCESS_KEY", "EMPLOYEE_LIST_MAPPINGS",
                 # The bridge listing's token sits in its query string, so the URL is a Secret
                 # field rather than a chart value.
                 "HUTBOT_CALENDAR_BRIDGE_URL"):
@@ -429,6 +429,20 @@ def test_no_bridge_refresh_interval_means_no_variable():
     assert "HUTBOT_CALENDAR_BRIDGE_REFRESH" not in result.stdout
 
 
+def test_the_user_cache_refresh_times_reach_the_container():
+    result = _render("v1.2.3", "--set-string", "slack.userCacheRefreshTimes=07:00\\,19:00")
+
+    assert result.returncode == 0, result.stderr
+    assert {"name": "HUTBOT_USER_CACHE_REFRESH_TIMES", "value": "07:00,19:00"} in _container(result)["env"]
+
+
+def test_no_user_cache_refresh_times_means_no_variable():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "HUTBOT_USER_CACHE_REFRESH_TIMES" not in result.stdout
+
+
 def test_no_allowed_hosts_means_no_variable():
     """Absent, not empty: the bot's own default is to allow-list nothing."""
     result = _render()
@@ -643,11 +657,11 @@ def test_sync_secret_ignores_a_field_hutbot_does_not_read(tmp_path):
 
 def test_sync_secret_refuses_to_drop_a_key_the_live_secret_has(tmp_path):
     """A `vault kv put` replaces the whole version; that must not silently retire a key."""
-    live = {"SLACK_APP_TOKEN": "eA==", "SLACK_BOT_TOKEN": "eA==", "EMPLOYEE_LIST_PASSWORD": "eA=="}
+    live = {"SLACK_APP_TOKEN": "eA==", "SLACK_BOT_TOKEN": "eA==", "EMPLOYEE_LIST_SECRET_ACCESS_KEY": "eA=="}
     result = _run_sync(tmp_path, "--dry-run", live_secret=live)
 
     assert result.returncode != 0
-    assert "would REMOVE" in result.stderr and "EMPLOYEE_LIST_PASSWORD" in result.stderr
+    assert "would REMOVE" in result.stderr and "EMPLOYEE_LIST_SECRET_ACCESS_KEY" in result.stderr
 
     allowed = _run_sync(tmp_path / "allowed", "--dry-run", "--allow-drop", live_secret=live)
     assert allowed.returncode == 0, allowed.stderr
@@ -659,7 +673,7 @@ def test_sync_secret_local_drop_flags_do_not_carry_live_keys_back(tmp_path):
     local_env = {
         "SLACK_APP_TOKEN": "xapp-local", "SLACK_BOT_TOKEN": "xoxb-local",
         "OPSGENIE_TOKEN": "", "OPSGENIE_HEARTBEAT_NAME": "",
-        "EMPLOYEE_LIST_USERNAME": "", "EMPLOYEE_LIST_PASSWORD": "",
+        "EMPLOYEE_LIST_ACCESS_KEY_ID": "", "EMPLOYEE_LIST_SECRET_ACCESS_KEY": "",
         "EMPLOYEE_LIST_MAPPINGS": "", "HUTBOT_BUILTIN_CALENDARS": "",
     }
 
@@ -833,13 +847,13 @@ def test_container_context_is_allow_listed_and_dockerfile_uses_narrow_copies():
 
 SEED_VAULT = ROOT / "scripts/seed-vault.sh"
 SEEDED_KEYS = ("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME",
-               "EMPLOYEE_LIST_USERNAME", "EMPLOYEE_LIST_PASSWORD", "EMPLOYEE_LIST_MAPPINGS")
+               "EMPLOYEE_LIST_ACCESS_KEY_ID", "EMPLOYEE_LIST_SECRET_ACCESS_KEY", "EMPLOYEE_LIST_MAPPINGS")
 ENV_FILE = """export SLACK_APP_TOKEN='xapp-secretapp'
 export SLACK_BOT_TOKEN='xoxb-secretbot'
 export OPSGENIE_TOKEN='og-secret'
 export OPSGENIE_HEARTBEAT_NAME=''
-export EMPLOYEE_LIST_USERNAME='employee-user'
-export EMPLOYEE_LIST_PASSWORD='employee-pass'
+export EMPLOYEE_LIST_ACCESS_KEY_ID='employee-key-id'
+export EMPLOYEE_LIST_SECRET_ACCESS_KEY='employee-secret'
 export NETWORKPOLICY_RULES='443:192.168.0.15/32'
 """
 
@@ -886,7 +900,7 @@ def test_seed_vault_writes_only_the_secret_keys(tmp_path):
     assert result.returncode == 0, result.stderr
     # Deploy settings from the same env file are no secrets and stay out of Vault.
     assert set(result.payload) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN",
-                                  "EMPLOYEE_LIST_USERNAME", "EMPLOYEE_LIST_PASSWORD"}
+                                  "EMPLOYEE_LIST_ACCESS_KEY_ID", "EMPLOYEE_LIST_SECRET_ACCESS_KEY"}
     assert result.payload["SLACK_BOT_TOKEN"] == "xoxb-secretbot"
     # An empty optional field is left unset rather than stored as "".
     assert "OPSGENIE_HEARTBEAT_NAME" not in result.payload
@@ -897,7 +911,7 @@ def test_seed_vault_never_puts_a_value_on_the_command_line(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "kv put secrets-tools/hutbot-dev @" in result.vault_calls
-    for value in ("xoxb-secretbot", "xapp-secretapp", "og-secret", "employee-pass"):
+    for value in ("xoxb-secretbot", "xapp-secretapp", "og-secret", "employee-secret"):
         assert value not in result.vault_calls
         assert value not in result.stdout
 

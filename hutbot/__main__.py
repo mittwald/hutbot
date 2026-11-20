@@ -79,6 +79,7 @@ async def main() -> None:
     heartbeat_task = None
     scheduler_task = None
     calendar_task = None
+    user_cache_task = None
     web_runner = None
     try:
         app = AsyncApp(token=slack_bot_token)
@@ -105,6 +106,9 @@ async def main() -> None:
         # calls below are in flight.
         calendar_task = asyncio.create_task(calendarfeed.run_bridge_refresh_loop())
         await slackcache.update_user_cache(app)
+        # The fill above happens once; this rebuilds the caches on a timer, so a team change or a
+        # new employee record reaches the running bot without a restart.
+        user_cache_task = asyncio.create_task(slackcache.run_user_cache_refresh_loop(app))
         # Before any restored timer can run: one that came due during the restart fires as soon as
         # its task exists, and a calendar condition evaluated then must not read an empty roster.
         # Only the listing is waited for — the titles behind it arrive in the background.
@@ -134,7 +138,7 @@ async def main() -> None:
                 await web_runner.cleanup()
             if handler:
                 await handler.close_async()
-            for background_task in (heartbeat_task, scheduler_task, calendar_task):
+            for background_task in (heartbeat_task, scheduler_task, calendar_task, user_cache_task):
                 if background_task:
                     background_task.cancel()
                     try:

@@ -663,13 +663,13 @@ async def test_the_employee_cache_keeps_its_mode(tmp_path):
 
 @contextlib.contextmanager
 def _employee_endpoint(payload):
-    """A directory that authenticates and answers 200 with `payload`."""
+    """A directory that authenticates and answers the employee listing with `payload`."""
     class _Response:
         def __init__(self, body):
             self.status = 200
             self.headers = {}
             self._body = body
-        async def text(self): return "a-token"
+        async def text(self): return json.dumps(self._body)
         async def json(self): return self._body
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
@@ -677,8 +677,9 @@ def _employee_endpoint(payload):
     class _Session:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
-        def post(self, url, json=None): return _Response(None)
-        def get(self, url, headers=None): return _Response(payload)
+        def post(self, url, json=None): return _Response({"accessToken": {"publicToken": "a-token"}})
+        def get(self, url, headers=None, params=None):
+            return _Response([] if url.endswith("/groups") else payload)
 
     with patch('employee_list.get_env_var', side_effect=lambda name: "set"), \
          patch('employee_list.aiohttp.ClientSession', lambda *a, **k: _Session()):
