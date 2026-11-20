@@ -116,14 +116,25 @@ def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
     user_team = TEAM_UNKNOWN
 
     if len(employees) > 0 and not user_is_bot:
-        # Try different variations of the username to find a match in employees
-        user_key_candidates = [
-            user_name,
-            user_name_normalized,
-            user_email_alias,
-            user_email_alias_normalized
-        ]
-        user_key = next((k for k in user_key_candidates if k in employees), None)
+        user_key = None
+        if mapped_name and not user_is_ignored:
+            # An explicit mapping names the employee; nothing else is asked.
+            user_key = mapped_name if mapped_name in employees else None
+        elif user_email:
+            # The Slack address and the directory's are the same mailbox, so this is the one
+            # match that cannot pick a namesake: `l.busch-george` is `lbuschgeorge` in the
+            # directory, and `e.friesen` would match whichever Friesen's name came closest.
+            user_key = next((key for key, employee in employees.items()
+                             if normalize_id(str(employee.get('mail') or '')) == user_email), None)
+        if not user_key:
+            # Try different variations of the username to find a match in employees
+            user_key_candidates = [
+                user_name,
+                user_name_normalized,
+                user_email_alias,
+                user_email_alias_normalized
+            ]
+            user_key = next((k for k in user_key_candidates if k in employees), None)
 
         if not user_key:
             # loop through all employees and try to match some form of the real name

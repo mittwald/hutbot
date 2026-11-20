@@ -276,3 +276,44 @@ async def test_the_refresh_loop_waits_for_the_next_time_and_retries_a_failed_tur
     # 05:00 -> 06:00; it fails and is tried 15 minutes later, twice; the success waits for 12:00.
     assert sleeps == [3600, 900, 900, 5 * 3600 + 1800]
     assert refresh.await_count == 3
+
+
+# ----- matching a Slack user to an employee -----
+
+_FRIESENS = {
+    "edfriesen": {"ad_name": "edfriesen", "fullname": "Edwin Friesen", "group": "m-kubed (m³)",
+                  "mail": "Ed.Friesen@example.com"},
+    "efriesen": {"ad_name": "efriesen", "fullname": "Elias Friesen", "group": "Software",
+                 "mail": "E.Friesen@example.com"},
+    "lbuschgeorge": {"ad_name": "lbuschgeorge", "fullname": "Leon Martin Busch-George",
+                     "group": "Software", "mail": "L.Busch-George@example.com"},
+}
+
+
+def test_a_user_is_matched_by_email_when_no_name_fits():
+    """`l.busch-george` loses only its dot when normalized, and the directory spells it without
+    the hyphen too; the full names differ by a middle name. The mailbox is the same."""
+    _, user = hutbot.slackcache.build_user(
+        _member("U1", "l.busch-george", "Leon M. Busch-George", "l.busch-george@example.com"),
+        _FRIESENS, {})
+    assert user.team == "Software"
+
+
+def test_the_email_match_picks_the_right_namesake():
+    _, user = hutbot.slackcache.build_user(
+        _member("U2", "e.friesen", "Elias Friesen", "e.friesen@example.com"), _FRIESENS, {})
+    assert user.team == "Software"
+
+
+def test_an_explicit_mapping_wins_over_the_email_match():
+    _, user = hutbot.slackcache.build_user(
+        _member("U2", "e.friesen", "Elias Friesen", "e.friesen@example.com"), _FRIESENS,
+        {"e.friesen": "edfriesen"})
+    assert user.team == "m-kubed (m³)"
+    assert user.name == "edfriesen"
+
+
+def test_without_a_matching_email_the_name_still_matches():
+    _, user = hutbot.slackcache.build_user(
+        _member("U2", "e.friesen", "Elias Friesen", "elias@private.example"), _FRIESENS, {})
+    assert user.team == "Software"
