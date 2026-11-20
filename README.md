@@ -1485,6 +1485,12 @@ running bot by the next of those times. A rebuild that fails keeps the previous 
 again 15 minutes later; each one that works logs a line such as `User cache refreshed: 412 users, 2 team changes.` An account the employee list does
 not know is warned about once per process, not on every rebuild.
 
+A Slack user is matched to an employee in this order: an `EMPLOYEE_LIST_MAPPINGS` entry for them;
+their Slack email address against the employee's (`mail`), ignoring case; their Slack name and the
+local part of their address against the employee's `ad_name`, with and without dots; and last
+their full name. The email comes before the names because it cannot pick a namesake: Slack
+`l.busch-george` is `lbuschgeorge` in the directory, which no spelling of the name reaches.
+
 Accounts that are nobody — shared or functional Slack users — belong in `EMPLOYEE_LIST_MAPPINGS`
 as `user=-` instead, which silences the "cannot be mapped" warning without inventing a record.
 
