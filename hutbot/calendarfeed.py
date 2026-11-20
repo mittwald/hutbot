@@ -730,8 +730,10 @@ class _DeadlineThread(threading.Thread):
         self._loop = loop
         self._future = future
         self._on_exit = on_exit
-        # Log lines from the job keep the origin of the event that asked for it.
-        self._context = contextvars.copy_context()
+        # Log lines from the job keep the origin of the event that asked for it. Not `_context`:
+        # from Python 3.14 on, `Thread` keeps its own context there and runs `run()` inside it,
+        # so entering that one again for the job fails with "cannot enter context".
+        self._job_context = contextvars.copy_context()
         self._lock = threading.Lock()
         self._in_job = False
         self._abandoned = False
@@ -751,7 +753,7 @@ class _DeadlineThread(threading.Thread):
                     return
                 self._in_job = True
             try:
-                value, error = self._context.run(self._job), None
+                value, error = self._job_context.run(self._job), None
             except _EvaluationAbandoned:
                 raise
             except BaseException as e:
