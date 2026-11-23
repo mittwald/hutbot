@@ -993,6 +993,7 @@ large lists do not hit the process environment's size limit.
 | `EMPLOYEE_LIST_ACCESS_KEY_ID` | no | Access key ID of the mittwald service the employee directory (Atlas) is read with, for team lookups |
 | `EMPLOYEE_LIST_SECRET_ACCESS_KEY` | no | That service's secret access key |
 | `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record |
+| `HUTBOT_DIRECTORY_CARDDAV_TOKEN` | no | Token of the bridge's CardDAV directory, which gives employees without an Atlas group a team (see below) |
 | `HUTBOT_CALENDAR_BRIDGE_URL` | no | The calendar bridge's listing endpoint, token included (see below) |
 | `HUTBOT_BUILTIN_CALENDARS` | no | Calendars offered on top of the bridge's, and overrides of them (see below) |
 | `HUTBOT_UI_PROXY_SECRET` | no | Shared secret the web UI's authenticating proxy must send (see [Web configuration UI](#web-configuration-ui)) |
@@ -1451,6 +1452,19 @@ before each read, the same way mPing reads Nexus. The service needs a capability
 Atlas employees and groups. An employee's team is the name of their primary group (`groupId`);
 archived and ignored employees are left out. Without the pair, the bot reads only the disk cache and
 the fallback file below.
+
+Atlas has employees without any group. For those alone, and only with
+`HUTBOT_DIRECTORY_CARDDAV_TOKEN` set, the bot reads the organisation's directory that
+mittwald-outlook-bridge serves over CardDAV (one `REPORT` of
+`https://mittwald-outlook-bridge.prod.mittwald.systems/carddav/books/directory/` as user `mittwald`;
+`HUTBOT_DIRECTORY_CARDDAV_URL` and `HUTBOT_DIRECTORY_CARDDAV_USER` override both). The card with the
+employee's email gives the Exchange department (the second part of `ORG`). That free text is
+matched to an Atlas group, ignoring case, spacing and punctuation, trying its most specific part
+first and also the part of a group name before a slash: `Infrastruktur - Mail` becomes `Mail`,
+`Infrastruktur` becomes `Infrastruktur/Technik`, `Produktmanagement` becomes `Produkt Management`.
+A department that matches no group becomes the team as written. An employee Atlas does place never
+looks at the directory, and a directory that is down or still empty changes nothing. Each read
+logs who was placed where, and warns about anyone neither source knows a team for.
 
 Additionally, Hutbot stores its employee list cache in a JSON file (`employees.json`) on the same mounted volume. The chart will set the `HUTBOT_EMPLOYEE_CACHE_FILE` environment variable so Hutbot reads and writes its employee cache from the mounted volume (at `<mountPath>/employees.json`).
 

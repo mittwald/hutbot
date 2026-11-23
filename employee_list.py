@@ -2,7 +2,9 @@ import base64
 import binascii
 import json
 import os
+import re
 import urllib.parse
+import xml.etree.ElementTree as ET
 
 import aiofiles
 import aiohttp
@@ -280,9 +282,12 @@ async def fetch_employees() -> dict | None:
     if not access:
         return None
     employee_url = f"{EMPLOYEE_API_URL}/employees"
+    # The names of the groups still in use, for placing employees without one (see below).
+    active_groups: list[str] = []
 
     async def attempt() -> list | None:
         """One authenticate-and-fetch round trip. None means a permanent refusal."""
+        active_groups.clear()
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             auth_url = f"{EMPLOYEE_AUTH_URL}/services/{urllib.parse.quote(access, safe='')}/actions/authenticate"
             async with session.post(auth_url, json={"secretAccessKey": secret}) as auth_response:
@@ -308,6 +313,8 @@ async def fetch_employees() -> dict | None:
                 return None
             group_names = {g.get("id"): str(g.get("name") or "").strip()
                            for g in groups if isinstance(g, dict)}
+            active_groups.extend(name for g in groups if isinstance(g, dict) and not g.get("archivedAt")
+                                 for name in [group_names.get(g.get("id"))] if name)
             return [employee_record(e, group_names) for e in employees]
 
     # The disk cache is a real fallback, but it is a *stale* one: everybody hired since the last
@@ -321,6 +328,8 @@ async def fetch_employees() -> dict | None:
     if users is None:
         return None
 
+    await fill_missing_groups(users, active_groups)
+
     # A 200 with JSON of the wrong shape — an object, or a list with a null in it — must not
     # escape: this runs at startup, and an exception here aborts the process instead of falling
     # back to the disk cache.
@@ -333,6 +342,167 @@ async def fetch_employees() -> dict | None:
     log(f"{len(employees)} employees retrieved from {employee_url}.")
     await save_employees_to_disk(users)
     return merge_employee_fallbacks(employees, await load_employee_fallbacks())
+
+
+# A fallback for employees Atlas has no group for: the department Exchange files them under,
+# read from the organisation's directory that mittwald-outlook-bridge serves over CardDAV.
+# Off without a token, and never consulted for an employee Atlas does place.
+DIRECTORY_CARDDAV_TOKEN_ENV = "HUTBOT_DIRECTORY_CARDDAV_TOKEN"
+DIRECTORY_CARDDAV_URL_ENV = "HUTBOT_DIRECTORY_CARDDAV_URL"
+DIRECTORY_CARDDAV_USER_ENV = "HUTBOT_DIRECTORY_CARDDAV_USER"
+DEFAULT_DIRECTORY_CARDDAV_URL = "https://mittwald-outlook-bridge.prod.mittwald.systems/carddav/books/directory/"
+DEFAULT_DIRECTORY_CARDDAV_USER = "mittwald"
+# The whole directory (about 800 cards) is a few hundred kilobytes; anything far larger is not it.
+_DIRECTORY_MAX_BYTES = 16 * 1024 * 1024
+_DIRECTORY_TIMEOUT_SECONDS = 15
+_CARDDAV_NS = "urn:ietf:params:xml:ns:carddav"
+_DIRECTORY_QUERY = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<C:addressbook-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">'
+    '<D:prop><C:address-data/></D:prop></C:addressbook-query>'
+)
+
+
+def directory_carddav_settings() -> tuple[str, str, str]:
+    """The address book's URL, user and token, or three empty strings while no token is set.
+
+    Read straight from the environment rather than through `get_env_var`: the bridge's tokens are
+    hex, which is also valid base64, and must never be "decoded".
+    """
+    token = os.environ.get(DIRECTORY_CARDDAV_TOKEN_ENV, "").strip()
+    if not token:
+        return "", "", ""
+    url = os.environ.get(DIRECTORY_CARDDAV_URL_ENV, "").strip() or DEFAULT_DIRECTORY_CARDDAV_URL
+    user = os.environ.get(DIRECTORY_CARDDAV_USER_ENV, "").strip() or DEFAULT_DIRECTORY_CARDDAV_USER
+    return url, user, token
+
+
+def _vcard_unescape(value: str) -> str:
+    return re.sub(r"\\(.)", lambda m: "\n" if m.group(1) in "nN" else m.group(1), value)
+
+
+def card_departments(vcards: list[str]) -> dict[str, str]:
+    """{lowercased email: department} out of vCards, for every card that names a department.
+
+    The department is the second component of ORG (`company;department`).
+    """
+    departments: dict[str, str] = {}
+    for text in vcards:
+        # Unfold first: a long line continues on the next one after a space or a tab.
+        lines = re.sub(r"\r?\n[ \t]", "", text).splitlines()
+        emails, department = [], ""
+        for line in lines:
+            name, sep, value = line.partition(":")
+            if not sep:
+                continue
+            # Drop parameters (`EMAIL;TYPE=INTERNET`) and a group prefix (`item1.EMAIL`).
+            prop = name.split(";", 1)[0].rsplit(".", 1)[-1].upper()
+            if prop == "EMAIL":
+                emails.append(_vcard_unescape(value).strip().lower())
+            elif prop == "ORG":
+                parts = re.split(r"(?<!\\);", value)
+                if len(parts) > 1:
+                    department = _vcard_unescape(parts[1]).strip()
+        if department:
+            for email in emails:
+                if email:
+                    departments.setdefault(email, department)
+    return departments
+
+
+def _group_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", unidecode(name).lower())
+
+
+def resolve_department(department: str, group_names: list[str]) -> str:
+    """The Atlas group a free-text Exchange department stands for, or the department itself.
+
+    Exchange writes departments by hand: "Infrastruktur - Mail", "Produktentwicklung_Spaces",
+    "Produktmanagement". Each part is tried, the most specific (last) first, against every group
+    name ignoring case, spacing and punctuation, and against the part of a name before a slash
+    ("Infrastruktur" is "Infrastruktur/Technik"). What matches nothing is kept as written, so the
+    employee still gets a team, if one no condition will name.
+    """
+    parts = [part.strip() for part in re.split(r"\s+-\s+|_", department) if part.strip()]
+    for part in reversed(parts):
+        key = _group_key(part)
+        if not key:
+            continue
+        for name in group_names:
+            if key in (_group_key(name), _group_key(name.split("/", 1)[0])):
+                return name
+    return department.strip()
+
+
+async def fetch_directory_departments() -> dict[str, str] | None:
+    """{email: department} from the CardDAV directory, or None when it is off or unreadable."""
+    url, user, token = directory_carddav_settings()
+    if not token:
+        return None
+
+    credentials = base64.b64encode(f"{user}:{token}".encode()).decode()
+    headers = {"Authorization": f"Basic {credentials}", "Depth": "1",
+               "Content-Type": "application/xml; charset=utf-8"}
+
+    async def attempt() -> dict[str, str] | None:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=_DIRECTORY_TIMEOUT_SECONDS)) as session:
+            async with session.request("REPORT", url, data=_DIRECTORY_QUERY.encode(),
+                                       headers=headers) as response:
+                if response.status != 207:
+                    log_error(f"Reading the CardDAV directory failed with status {response.status}.")
+                    return None
+                # Read to the end in chunks: one `read(n)` returns what has arrived so far, not n bytes.
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    body.extend(chunk)
+                    if len(body) > _DIRECTORY_MAX_BYTES:
+                        log_error(f"The CardDAV directory answered with more than {_DIRECTORY_MAX_BYTES} bytes.")
+                        return None
+        root = ET.fromstring(bytes(body))
+        return card_departments([el.text or "" for el in root.iter(f"{{{_CARDDAV_NS}}}address-data")])
+
+    # One attempt, not retried: this runs on the startup path ahead of the health endpoint, and
+    # the fallback is optional. A miss is tried again at the next user cache refresh.
+    try:
+        departments = await attempt()
+    except Exception as e:
+        log_error(f"Failed to read the CardDAV directory at {url}:", e)
+        return None
+    if departments is not None and not departments:
+        # The bridge serves an empty book until its first crawl of the directory has finished.
+        log_warning("The CardDAV directory has no departments yet.")
+        return None
+    return departments
+
+
+async def fill_missing_groups(users: list, group_names: list[str]) -> None:
+    """Give employees Atlas has no group for the team their Exchange department names.
+
+    Only a fallback: a record that has a group keeps it, and nothing is changed when the
+    directory is off or cannot be read. Records are changed in place, so the disk cache keeps
+    the placement too.
+    """
+    missing = [u for u in users if isinstance(u, dict) and not u.get("group") and not u.get("is_deleted")
+               and u.get("mail")]
+    if not missing or not directory_carddav_settings()[2]:
+        return
+    departments = await fetch_directory_departments()
+    if not departments:
+        return
+    placed, unplaced = [], []
+    for user in missing:
+        department = departments.get(str(user["mail"]).strip().lower())
+        if department:
+            user["group"] = resolve_department(department, group_names)
+            placed.append(f"{user.get('ad_name')} -> {user['group']}")
+        else:
+            unplaced.append(str(user.get("ad_name")))
+    if placed:
+        log(f"{len(placed)} employees without an Atlas group placed by their Exchange department: "
+            f"{', '.join(placed)}.")
+    if unplaced:
+        log_warning(f"{len(unplaced)} employees have no group in Atlas and no department in the "
+                    f"CardDAV directory: {', '.join(unplaced)}.")
 
 
 async def load_employees() -> dict:

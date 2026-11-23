@@ -178,6 +178,7 @@ def test_deployment_reads_the_out_of_band_secret():
     }
     for key in ("OPSGENIE_TOKEN", "OPSGENIE_HEARTBEAT_NAME", "EMPLOYEE_LIST_ACCESS_KEY_ID",
                 "EMPLOYEE_LIST_SECRET_ACCESS_KEY", "EMPLOYEE_LIST_MAPPINGS",
+                "HUTBOT_DIRECTORY_CARDDAV_TOKEN",
                 # The bridge listing's token sits in its query string, so the URL is a Secret
                 # field rather than a chart value.
                 "HUTBOT_CALENDAR_BRIDGE_URL"):
