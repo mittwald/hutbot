@@ -12,7 +12,8 @@ image:
 # Kubernetes Secret holding every credential, managed out of band — by scripts/sync-secret.sh for
 # a self-deploy, by deploy-tools for the releases it deploys, both sourced from Vault — and only
 # read here. It must carry SLACK_APP_TOKEN and SLACK_BOT_TOKEN;
-# OPSGENIE_*, EMPLOYEE_LIST_* and HUTBOT_BUILTIN_CALENDARS are optional additions. Runtime
+# OPSGENIE_*, EMPLOYEE_LIST_*, HUTBOT_DIRECTORY_CARDDAV_TOKEN and HUTBOT_BUILTIN_CALENDARS are
+# optional additions. Runtime
 # variables use individual key references; the potentially large calendar value is mounted
 # only as a file. Rendering fails while this is empty, on purpose: there is no fallback that
 # would template credentials back into the release.
