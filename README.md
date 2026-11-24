@@ -24,7 +24,7 @@ where the break belongs — `/hutbot set message "First line.\nSecond line."` �
 literal backslash-n is what you want. Every other backslash is left alone. The web UI takes
 real line breaks in its text box instead.
 
-A reply message can `@mention` someone by **email address** — `@d.grieser@example.com` — which
+A reply message can `@mention` someone by **email address** — `@d.miller@example.com` — which
 is resolved to their Slack user when the message is set, alongside the existing `@username`
 form. An address that maps to nobody is reported there and then rather than rendering wrongly
 later.
@@ -54,7 +54,7 @@ fires. Which event is a matter of two arguments, `offset` and `at`, described be
   **lists**, rendered comma-separated — plus `{{calendar_attendee_count}}`
 - `{{calendar_other_attendees}}` / `{{calendar_other_attendee_emails}}` — the
   same lists **without the organizer**. A shared mailbox invites itself to the events it
-  organizes, so on a rota entry organized by *Notfallhotline* these leave just the person
+  organizes, so on a rota entry organized by *Hotline* these leave just the person
   actually on call
 
 - `{{calendar_organizer_user}}`, `{{calendar_attendee_users}}` and
@@ -104,7 +104,7 @@ three days later, which is exactly the uncovered day it was asked about. Spelled
 
 ```bash
 # nobody has the hotline on the day two weeks out — checked at 10:00 for an 18:00 entry
-/hutbot notfallhotline-check add condition calendar_other_attendee_emails(at=+2w, offset=same-day) empty
+/hutbot hotline-check add condition calendar_other_attendee_emails(at=+2w, offset=same-day) empty
 ```
 
 `at` accepts:
@@ -543,9 +543,9 @@ existing configs keep working unchanged.
     pending message, so a restart does not reset it. `add condition parent_config empty` is the way
     to say "only run when nothing triggered me".
   - Once a message is handled, its buttons are removed and replaced by a one-line note of what
-    happened: *Dave Grieser: [I've got it]* or *Dave Grieser: [Page] ▶︎ alarm* for a press, and
+    happened: *Dave Miller: [I've got it]* or *Dave Miller: [Page] ▶︎ alarm* for a press, and
     *⌛︎ 1m* or *⌛︎ 5m ▶︎ alarm* when the escalation acted instead. A button that runs several
-    configs names each of them — *Dave Grieser: [Page] ▶︎ alarm, ticket (skipped)* — so the note
+    configs names each of them — *Dave Miller: [Page] ▶︎ alarm, ticket (skipped)* — so the note
     says which of the list actually went out.
   - An escalation Slack refuses to take is tried again — three times, a minute apart — and the
     buttons stay on the message until one of them gets through or the attempts run out. Where it
@@ -921,6 +921,14 @@ export HUTBOT_CALENDAR_STALE_GRACE=86400
 # Minutes between reads of the calendar bridge's listing; unset means 60, `0` reads it once at
 # startup. The listing URL itself carries a token and lives in the Secret, not here.
 export HUTBOT_CALENDAR_BRIDGE_REFRESH=60
+# Base URLs of the employee directory (Atlas): the API it is listed from and the one its service key
+# pair is traded at for a token. Unset means the directory is not read, only the disk cache.
+export EMPLOYEE_LIST_API_URL='https://api.example.com/internal'
+export EMPLOYEE_LIST_AUTH_URL='https://auth.example.com/v2'
+# The CardDAV address book (and its login user) that places employees Atlas has no group for.
+# Unset means that fallback is off; its token is HUTBOT_DIRECTORY_CARDDAV_TOKEN in the Secret.
+export HUTBOT_DIRECTORY_CARDDAV_URL='https://outlook-bridge.prod.example.systems/carddav/books/directory/'
+export HUTBOT_DIRECTORY_CARDDAV_USER='directory'
 # Local times of day the user cache is rebuilt from Slack and the employee list; unset means
 # 06:00,12:00,20:00, `off` keeps what startup read.
 export HUTBOT_USER_CACHE_REFRESH_TIMES='06:00,12:00,20:00'
@@ -1175,7 +1183,7 @@ Secret field — and the listing it answers with is a JSON document naming the c
 serves:
 
 ```json
-{"feeds": ["notfallhotline", "cloudhosting", "mkubed", "infrastruktur"]}
+{"feeds": ["hotline", "hosting", "platform", "network"]}
 ```
 
 Each of those hangs off the listing path as `<name>.ics` with the same token, so the bot needs
@@ -1187,7 +1195,7 @@ itself (`X-WR-CALNAME`), read once per name and kept for the life of the process
 title cannot be read is shown by its name. One log line per change names the roster:
 
 ```
-Calendar bridge serves: cloudhosting, infrastruktur, mkubed, notfallhotline.
+Calendar bridge serves: hosting, network, platform, hotline.
 ```
 
 Startup waits for that first listing — at most 45 seconds, then it comes up without it and says so
@@ -1273,7 +1281,7 @@ cluster DNS does not serve that zone, a `NETWORKPOLICY_RULES` entry on its port,
 `HUTBOT_CALENDAR_ALLOWED_HOSTS`, or the bot refuses the internal address before it dials. With only
 some of the three the fetch fails — with a resolution error, a refusal in the log, or no trace at
 all. `sync-secret.sh` prints the feed hosts so they can be checked against the rules. The calendar
-bridge is such a host: `mittwald-outlook-bridge.prod.mittwald.systems` needs all three, and the
+bridge is such a host: `outlook-bridge.prod.example.systems` needs all three, and the
 listing goes down the same guarded path as any feed — https only, every redirect hop revalidated.
 
 ### Deploy
@@ -1443,28 +1451,58 @@ capability dropped (`podSecurityContext` / `securityContext` in the chart values
 is the only place it writes. `fsGroup: 10001` makes Kubernetes hand the volume — including files an
 earlier, root-run image wrote there — to that group on the first start. A volume type without
 ownership management (NFS, for one) needs a one-time `chown -R 10001:10001` of its files instead.
-Teams come from the employee directory, Atlas, read through mittwald's internal API
-(`GET https://api.prod.mittwald.systems/internal-v2/employees`, group names from `…/groups`). The
-bot authenticates as a mittwald **service**: it trades `EMPLOYEE_LIST_ACCESS_KEY_ID` and
-`EMPLOYEE_LIST_SECRET_ACCESS_KEY` for a service token at
-`POST https://api-public.prod.mittwald.systems/v2/services/<accessKeyId>/actions/authenticate`
-before each read, the same way mPing reads Nexus. The service needs a capability that may list
+Teams come from the employee directory, Atlas, read through an internal API
+(`GET <EMPLOYEE_LIST_API_URL>/employees`, group names from `…/groups`). The bot authenticates as a
+**service**: it trades `EMPLOYEE_LIST_ACCESS_KEY_ID` and `EMPLOYEE_LIST_SECRET_ACCESS_KEY` for a
+service token at `POST <EMPLOYEE_LIST_AUTH_URL>/services/<accessKeyId>/actions/authenticate` before
+each read. Both base URLs are plain chart values (`employeeDirectory.apiUrl`,
+`employeeDirectory.authUrl`); without both, the directory is not read. The service needs a capability that may list
 Atlas employees and groups. An employee's team is the name of their primary group (`groupId`);
-archived and ignored employees are left out. Without the pair, the bot reads only the disk cache and
+archived and ignored employees are left out. Without the pair or the URLs, the bot reads only the disk cache and
 the fallback file below.
 
 Atlas has employees without any group. For those alone, and only with
 `HUTBOT_DIRECTORY_CARDDAV_TOKEN` set, the bot reads the organisation's directory that
-mittwald-outlook-bridge serves over CardDAV (one `REPORT` of
-`https://mittwald-outlook-bridge.prod.mittwald.systems/carddav/books/directory/` as user `mittwald`;
-`HUTBOT_DIRECTORY_CARDDAV_URL` and `HUTBOT_DIRECTORY_CARDDAV_USER` override both). The card with the
+the calendar bridge serves over CardDAV: one `REPORT` of the address book at
+`HUTBOT_DIRECTORY_CARDDAV_URL` as user `HUTBOT_DIRECTORY_CARDDAV_USER`, both plain chart values
+(`employeeDirectory.carddavUrl` and `employeeDirectory.carddavUser`). Without all three settings
+the fallback is off. The card with the
 employee's email gives the Exchange department (the second part of `ORG`). That free text is
 matched to an Atlas group, ignoring case, spacing and punctuation, trying its most specific part
-first and also the part of a group name before a slash: `Infrastruktur - Mail` becomes `Mail`,
-`Infrastruktur` becomes `Infrastruktur/Technik`, `Produktmanagement` becomes `Produkt Management`.
-A department that matches no group becomes the team as written. An employee Atlas does place never
+first and also the part of a group name before a slash: `Infrastructure - Mail` becomes `Mail`,
+`Infrastructure` becomes `Infrastructure/Engineering`, `Productmanagement` becomes `Product Management`.
+`EMPLOYEE_LIST_DEPARTMENT_MAPPINGS` (comma-separated `Department=Team`, compared the same way;
+the chart renders it from `employeeDirectory.departmentTeamMappings`) is asked first at each step: for the whole department, then for each part, most specific first.
+`CS=Central Services` files `CS` there, while `CS - Controlling` still lands in the
+`Controlling` group, its more specific part. A department that matches nothing becomes the team
+as written. An employee Atlas does place never
 looks at the directory, and a directory that is down or still empty changes nothing. Each read
 logs who was placed where, and warns about anyone neither source knows a team for.
+
+Slack user groups are the other fallback. `EMPLOYEE_LIST_USERGROUP_MAPPINGS` (comma-separated
+`part=Team`; the chart renders it from the list `employeeDirectory.usergroupTeamMappings`) gives `Team` to every member of a user group whose handle contains `part`, ignoring
+case: `cloud-ops=Cloud (c³)` covers `@cloud-ops`, `team-internal-it=Internal IT` covers
+`@team-internal-it`. The first entry that fits a user wins. It applies to Slack users Atlas has no
+group for — no employee record, a record without a group, or one only the CardDAV department
+placed — so it beats the department, but never Atlas's own group or a fallback-file record. The
+user groups are read each time the user cache is built (startup and every scheduled refresh), and
+a failed read keeps the previous assignment. Accounts mapped to `-` in `EMPLOYEE_LIST_MAPPINGS`
+are left alone.
+
+Neither mapping is a secret, so both are chart values rather than Secret keys, reviewed with the
+rest of the deployment:
+
+```yaml
+employeeDirectory:
+  departmentTeamMappings:
+    CS: Central Services
+  usergroupTeamMappings:
+    - part: cloud-ops
+      team: Cloud (c³)
+```
+
+Rendering fails on a comma anywhere in an entry, or an `=` in a key, since the variables have no
+way to carry them.
 
 Additionally, Hutbot stores its employee list cache in a JSON file (`employees.json`) on the same mounted volume. The chart will set the `HUTBOT_EMPLOYEE_CACHE_FILE` environment variable so Hutbot reads and writes its employee cache from the mounted volume (at `<mountPath>/employees.json`).
 
@@ -1477,7 +1515,7 @@ matter:
 
 ```json
 [
-  {"ad_name": "rmantler", "fullname": "Rudi Mantler", "group": "Support", "is_deleted": false}
+  {"ad_name": "rmuster", "fullname": "Rita Muster", "group": "Support", "is_deleted": false}
 ]
 ```
 
@@ -1503,7 +1541,7 @@ A Slack user is matched to an employee in this order: an `EMPLOYEE_LIST_MAPPINGS
 their Slack email address against the employee's (`mail`), ignoring case; their Slack name and the
 local part of their address against the employee's `ad_name`, with and without dots; and last
 their full name. The email comes before the names because it cannot pick a namesake: Slack
-`l.busch-george` is `lbuschgeorge` in the directory, which no spelling of the name reaches.
+`l.meyer-lang` is `lmeyerlang` in the directory, which no spelling of the name reaches.
 
 Accounts that are nobody — shared or functional Slack users — belong in `EMPLOYEE_LIST_MAPPINGS`
 as `user=-` instead, which silences the "cannot be mapped" warning without inventing a record.

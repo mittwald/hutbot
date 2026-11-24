@@ -163,6 +163,34 @@ spec:
             - name: HUTBOT_ALLOW_GUEST_COMMANDS
               value: "true"
             {{- end }}
+            {{- with .Values.employeeDirectory.apiUrl }}
+            # The employee directory's API and authentication base URLs; the key pair is a Secret.
+            - name: EMPLOYEE_LIST_API_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.employeeDirectory.authUrl }}
+            - name: EMPLOYEE_LIST_AUTH_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.employeeDirectory.carddavUrl }}
+            # The CardDAV address book of the department fallback; its token is a Secret key.
+            - name: HUTBOT_DIRECTORY_CARDDAV_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.employeeDirectory.carddavUser }}
+            - name: HUTBOT_DIRECTORY_CARDDAV_USER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.employeeDirectory.departmentTeamMappings }}
+            # Exchange department -> Atlas team, for employees only the CardDAV fallback places.
+            - name: EMPLOYEE_LIST_DEPARTMENT_MAPPINGS
+              value: {{ include "hutbot.departmentTeamMappings" . | quote }}
+            {{- end }}
+            {{- with .Values.employeeDirectory.usergroupTeamMappings }}
+            # Part of a Slack user group handle -> Atlas team, for users Atlas gives no group.
+            - name: EMPLOYEE_LIST_USERGROUP_MAPPINGS
+              value: {{ include "hutbot.usergroupTeamMappings" . | quote }}
+            {{- end }}
             {{- if .Values.slack.userCacheRefreshTimes }}
             # Local times of day the user cache is rebuilt at; "off" keeps what startup read.
             - name: HUTBOT_USER_CACHE_REFRESH_TIMES

@@ -76,8 +76,8 @@ async def test_show_config_displays_multiline_team_values():
         **DEFAULT_CONFIG.copy(),
         "excluded_teams": [
             "Cloud Hosting",
-            "m-kubed (m³)",
-            "Systemarchitektur Infrastruktur/Technik",
+            "Cloud (c³)",
+            "Systems Infrastructure/Engineering",
             "Site Reliability",
         ],
     }
@@ -92,8 +92,8 @@ async def test_show_config_displays_multiline_team_values():
     indent = " " * (len(first) - len("Cloud Hosting"))
     assert (
         f"{first}\n"
-        f"{indent}m-kubed (m³)\n"
-        f"{indent}Systemarchitektur Infrastruktur/Technik\n"
+        f"{indent}Cloud (c³)\n"
+        f"{indent}Systems Infrastructure/Engineering\n"
         f"{indent}Site Reliability"
     ) in sent_message
 
@@ -317,7 +317,7 @@ async def test_show_config_names_the_destination_per_action():
     app = AsyncMock()
     configs = {
         "post": {**DEFAULT_CONFIG.copy(), "action": ACTION_POST_CHANNEL, "action_target": "<#CTARGET|targets>"},
-        "dm": {**DEFAULT_CONFIG.copy(), "action": ACTION_DM_USER, "action_target": "d.grieser@mittwald.de"},
+        "dm": {**DEFAULT_CONFIG.copy(), "action": ACTION_DM_USER, "action_target": "d.miller@example.org"},
         "group": {**DEFAULT_CONFIG.copy(), "action": ACTION_GROUP_DM, "action_target": "SGROUP"},
         "scheduled": {**DEFAULT_CONFIG.copy(), "trigger": TRIGGER_CRON, "cron": "0 9 * * 1-5"},
     }
@@ -329,7 +329,7 @@ async def test_show_config_names_the_destination_per_action():
 
     sent_message = sent_messages(mock_send_message)
     assert "*Posted in* <#CTARGET>" in sent_message
-    assert "*Sent to* `d.grieser@mittwald.de` (direct message)" in sent_message
+    assert "*Sent to* `d.miller@example.org` (direct message)" in sent_message
     assert "*Sent to* <!subteam^SGROUP> (group message)" in sent_message
     # No message to thread on for a schedule trigger.
     assert "*Replied in* <#C123>\n" in sent_message

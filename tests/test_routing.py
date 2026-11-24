@@ -419,7 +419,7 @@ async def test_route_message_treats_an_app_bot_user_as_a_bot():
     channel = Channel(id="C12345", name="davetest", configs={"default": DEFAULT_CONFIG.copy()})
     # An app posting through its bot user sends `user` *and* `bot_id`, and users.info
     # reports is_bot — none of which used to count as "a bot wrote this".
-    bot_user = User(id="U0A9NGY2U5B", name="mping", real_name="mPing", team=TEAM_UNKNOWN, is_bot=True)
+    bot_user = User(id="UBOT000001", name="pager", real_name="Pager", team=TEAM_UNKNOWN, is_bot=True)
     event = {
         "type": "message", "text": "mr-merged m3-helmfile", "ts": "1786709950.634419",
         "user": bot_user.id, "bot_id": "B0A9NGY2U5B", "app_id": "A0A9",
@@ -473,11 +473,11 @@ async def test_route_message_treats_a_bot_user_without_bot_id_as_a_bot():
 
 def test_build_user_marks_bots_and_skips_employee_mapping():
     import hutbot
-    employees = {"d.grieser": {"fullname": "David Grieser", "group": "Platform"}}
+    employees = {"d.miller": {"fullname": "David Miller", "group": "Platform"}}
 
     with patch('hutbot.slackcache.log_warning') as mock_log_warning:
         _, bot = hutbot.slackcache.build_user(
-            {"id": "U0A9NGY2U5B", "name": "mping", "is_bot": True, "real_name": "mPing"}, employees, {})
+            {"id": "UBOT000001", "name": "pager", "is_bot": True, "real_name": "Pager"}, employees, {})
         _, slackbot = hutbot.slackcache.build_user({"id": "USLACKBOT", "name": "slackbot"}, employees, {})
         # Slack's own system user: the API does not flag it as a bot, and it is nobody's
         # employee record either.

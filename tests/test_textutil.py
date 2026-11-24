@@ -130,12 +130,12 @@ def test_unwrap_slack_link_handles_quotes_and_link_wrapping(typed):
 # ----- @mentioning by email address -----
 
 @pytest.mark.parametrize("text,expected", [
-    ("@d.grieser@mittwald.de", ["d.grieser@mittwald.de"]),
-    ("hi @d.grieser@mittwald.de there", ["d.grieser@mittwald.de"]),
+    ("@d.miller@example.org", ["d.miller@example.org"]),
+    ("hi @d.miller@example.org there", ["d.miller@example.org"]),
     ("@a@b.de and @c@d.de", ["a@b.de", "c@d.de"]),
-    ("@Nico.Engelbrecht@Mittwald.DE", ["Nico.Engelbrecht@Mittwald.DE"]),
+    ("@Nina.Berger@Example.ORG", ["Nina.Berger@Example.ORG"]),
     # A bare address is not a mention.
-    ("mail me at d.grieser@mittwald.de", []),
+    ("mail me at d.miller@example.org", []),
     # Neither is a plain username, an id, or a Slack-formatted link.
     ("@plainname", []),
     ("<@U123>", []),
@@ -148,9 +148,9 @@ def test_email_mention_pattern(text, expected):
 @pytest.mark.asyncio
 async def test_process_mentions_resolves_an_email_address():
     app = AsyncMock()
-    known = User("U9", "dave", "Dave Grieser", "Platform")
+    known = User("U9", "dave", "Dave Miller", "Platform")
     with patch('hutbot.slackcache.get_user_by_email', new=AsyncMock(return_value=known)):
-        ok, error, message = await hutbot.messaging.process_mentions(app, "Hey @d.grieser@mittwald.de look")
+        ok, error, message = await hutbot.messaging.process_mentions(app, "Hey @d.miller@example.org look")
     assert (ok, error, message) == (True, "", "Hey <@U9> look")
 
 
@@ -164,12 +164,12 @@ async def test_process_mentions_reports_an_unknown_email_at_set_time():
 
 @pytest.mark.asyncio
 async def test_an_email_mention_is_not_mistaken_for_a_username():
-    """MENTION_PATTERN stops at the second `@`, so it would resolve `d.grieser` by name."""
+    """MENTION_PATTERN stops at the second `@`, so it would resolve `d.miller` by name."""
     app = AsyncMock()
     by_name = AsyncMock(return_value=User("U1", "wrong", "Wrong Person", "T"))
     with patch('hutbot.slackcache.get_user_by_email', new=AsyncMock(return_value=User("U9", "dave", "Dave", "T"))), \
          patch('hutbot.slackcache.get_user_by_name', new=by_name):
-        ok, _, message = await hutbot.messaging.process_mentions(app, "Hey @d.grieser@mittwald.de")
+        ok, _, message = await hutbot.messaging.process_mentions(app, "Hey @d.miller@example.org")
     assert message == "Hey <@U9>"
     by_name.assert_not_awaited()
 
@@ -182,7 +182,7 @@ async def test_set_message_accepts_an_email_mention():
     with patch('hutbot.persistence.save_configuration', new=AsyncMock()), \
          patch('hutbot.slackcache.get_user_by_email', new=AsyncMock(return_value=User("U9", "dave", "Dave", "T"))), \
          patch('hutbot.messaging.send_message'):
-        await process_command(app, "set message Ping @d.grieser@mittwald.de now", channel, user)
+        await process_command(app, "set message Ping @d.miller@example.org now", channel, user)
     assert channel.configs["default"]["reply_message"] == "Ping <@U9> now"
 
 

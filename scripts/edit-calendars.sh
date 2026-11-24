@@ -138,9 +138,9 @@ if $seeded; then
   cat > "$file" <<'EXAMPLE'
 [
   {
-    "name": "notfallhotline",
-    "title": "Notfallhotline",
-    "url": "https://REPLACE-ME.example.com/calendars/notfallhotline.ics?token=REPLACE-ME"
+    "name": "hotline",
+    "title": "Hotline",
+    "url": "https://REPLACE-ME.example.com/calendars/hotline.ics?token=REPLACE-ME"
   }
 ]
 EXAMPLE

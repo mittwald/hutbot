@@ -517,7 +517,7 @@ async def test_a_reply_is_only_queued_when_the_conditions_could_still_pass(condi
     cfg = {**copy.deepcopy(DEFAULT_CONFIG), "conditions": conditions, "conditions_mode": mode}
     channel = Channel(id="C1", name="general", configs={"default": cfg})
     hutbot.state.channel_config["C1"] = channel.configs
-    user = User("U1", "dave", "Dave Grieser", "Platform")
+    user = User("U1", "dave", "Dave Miller", "Platform")
     with patch('hutbot.scheduling.schedule_reply', new=AsyncMock()) as sched, \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()):
         await hutbot.routing.handle_channel_message(app, OPSGENIE_TOKENS, channel, user, "please look at this", "1.1")
