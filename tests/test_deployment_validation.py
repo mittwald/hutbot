@@ -991,8 +991,8 @@ def test_seed_vault_dry_run_writes_nothing(tmp_path):
 # ----- scripts/edit-calendars.sh -----
 
 EDIT_CALENDARS = ROOT / "scripts/edit-calendars.sh"
-CALENDARS_JSON = ('[{"name":"notfallhotline","title":"Notfallhotline",'
-                  '"url":"https://bridge.example.com/calendars/notfallhotline.ics?token=SECRETTOKEN"}]')
+CALENDARS_JSON = ('[{"name":"hotline","title":"Hotline",'
+                  '"url":"https://bridge.example.com/calendars/hotline.ics?token=SECRETTOKEN"}]')
 
 
 def _run_edit_calendars(tmp_path, state, edit=CALENDARS_JSON, *args, deployment_secret=""):
@@ -1043,7 +1043,7 @@ def test_edit_calendars_patches_a_v2_mount(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "kv patch" in result.vault_calls and "kv put" not in result.vault_calls
     # patch touches one field, so the payload is the list itself.
-    assert result.payload[0]["name"] == "notfallhotline"
+    assert result.payload[0]["name"] == "hotline"
 
 
 def test_edit_calendars_merges_the_other_fields_on_a_kv_v1_mount(tmp_path):
@@ -1058,7 +1058,7 @@ def test_edit_calendars_merges_the_other_fields_on_a_kv_v1_mount(tmp_path):
     assert set(result.payload) == {"SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "OPSGENIE_TOKEN",
                                    "HUTBOT_BUILTIN_CALENDARS"}
     assert result.payload["SLACK_BOT_TOKEN"] == "xoxb-b"
-    assert "notfallhotline" in result.payload["HUTBOT_BUILTIN_CALENDARS"]
+    assert "hotline" in result.payload["HUTBOT_BUILTIN_CALENDARS"]
 
 
 def test_edit_calendars_never_puts_a_value_on_the_command_line(tmp_path):
@@ -1071,8 +1071,8 @@ def test_edit_calendars_never_puts_a_value_on_the_command_line(tmp_path):
 
 
 @pytest.mark.parametrize("edit", [
-    '{"notfallhotline": "…"}',
-    '[{"name":"Notfallhotline","title":"N","url":"https://bridge.example.com/x.ics"}]',
+    '{"hotline": "…"}',
+    '[{"name":"Hotline","title":"N","url":"https://bridge.example.com/x.ics"}]',
     '[{"name":"rota","title":"","url":"https://bridge.example.com/x.ics"}]',
     '[{"name":"rota","title":"R","url":"http://bridge.example.com/x.ics"}]',
     # The seeded example, renamed but with its placeholder URL left in place.
@@ -1110,7 +1110,7 @@ exit 0
                                  "EDITOR": "cat"})
 
     assert result.returncode == 0, result.stderr
-    assert '"name": "notfallhotline"' in result.stdout
+    assert '"name": "hotline"' in result.stdout
     assert "REPLACE-ME" in result.stdout
     assert "the editor opens with an example" in result.stderr
     # Handing the example straight back is not an edit.
@@ -1162,7 +1162,7 @@ def test_edit_calendars_show_prints_the_current_list(tmp_path):
     result = _run_edit_calendars(tmp_path, state, CALENDARS_JSON, "--show")
 
     assert result.returncode == 0, result.stderr
-    assert "notfallhotline" in result.stdout
+    assert "hotline" in result.stdout
     assert "kv put" not in result.vault_calls
 
 
@@ -1415,3 +1415,61 @@ def test_state_import_rejects_the_reserved_mount_path():
 
     assert result.returncode != 0
     assert "must not be /state-import" in result.stderr
+
+
+def _env_value(result, name):
+    return next((e.get("value") for e in _container(result)["env"] if e["name"] == name), None)
+
+
+def test_the_team_mappings_render_as_plain_variables(tmp_path):
+    values = tmp_path / "values.yaml"
+    values.write_text(
+        "employeeDirectory:\n"
+        "  apiUrl: https://api.example.com/internal\n"
+        "  authUrl: https://auth.example.com/v2\n"
+        "  carddavUrl: https://bridge.example.com/carddav/books/directory/\n"
+        "  carddavUser: directory\n"
+        "  departmentTeamMappings:\n"
+        "    CS: Central Services\n"
+        "    Infrastructure: Infrastructure/Engineering\n"
+        "  usergroupTeamMappings:\n"
+        "    - {part: team-internal-it, team: Internal IT}\n"
+        "    - {part: cloud-ops, team: Cloud (c³)}\n", encoding="utf-8")
+    result = _render("v1.2.3", "-f", str(values))
+
+    assert result.returncode == 0, result.stderr
+    # A map renders sorted by key; the list keeps its order, which decides between groups.
+    assert _env_value(result, "EMPLOYEE_LIST_DEPARTMENT_MAPPINGS") == \
+        "CS=Central Services,Infrastructure=Infrastructure/Engineering"
+    assert _env_value(result, "EMPLOYEE_LIST_USERGROUP_MAPPINGS") == \
+        "team-internal-it=Internal IT,cloud-ops=Cloud (c³)"
+    assert _env_value(result, "HUTBOT_DIRECTORY_CARDDAV_URL") == "https://bridge.example.com/carddav/books/directory/"
+    assert _env_value(result, "HUTBOT_DIRECTORY_CARDDAV_USER") == "directory"
+    assert _env_value(result, "EMPLOYEE_LIST_API_URL") == "https://api.example.com/internal"
+    assert _env_value(result, "EMPLOYEE_LIST_AUTH_URL") == "https://auth.example.com/v2"
+
+
+def test_no_team_mappings_means_no_variables():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    assert "EMPLOYEE_LIST_DEPARTMENT_MAPPINGS" not in result.stdout
+    assert "EMPLOYEE_LIST_USERGROUP_MAPPINGS" not in result.stdout
+    assert "HUTBOT_DIRECTORY_CARDDAV_URL" not in result.stdout
+    assert "HUTBOT_DIRECTORY_CARDDAV_USER" not in result.stdout
+    assert "EMPLOYEE_LIST_API_URL" not in result.stdout
+    assert "EMPLOYEE_LIST_AUTH_URL" not in result.stdout
+
+
+@pytest.mark.parametrize("values", [
+    "employeeDirectory:\n  departmentTeamMappings:\n    CS: 'Central, Services'\n",
+    "employeeDirectory:\n  usergroupTeamMappings:\n    - {part: 'a=b', team: Team}\n",
+    "employeeDirectory:\n  usergroupTeamMappings:\n    - {part: cloud-ops}\n",
+])
+def test_a_team_mapping_the_variable_cannot_carry_fails_the_render(tmp_path, values):
+    path = tmp_path / "values.yaml"
+    path.write_text(values, encoding="utf-8")
+    result = _render("v1.2.3", "-f", str(path))
+
+    assert result.returncode != 0
+    assert "employeeDirectory." in result.stderr

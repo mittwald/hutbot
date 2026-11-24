@@ -359,7 +359,7 @@ CALENDAR_DATETIME_TEMPLATE_VARIABLES = {
 # matches when *any* item matches, and a `not_` operator when *none* does.
 CALENDAR_LIST_TEMPLATE_VARIABLES = {
     # `other_*` drops the organizer, which a shared mailbox invites itself to — so a rota
-    # entry organized by "Notfallhotline" leaves just the person actually on call.
+    # entry organized by "Hotline" leaves just the person actually on call.
     # `*_users` are the addresses mapped to Slack users, ready to @mention or DM.
     f"calendar_{field}"
     for field in ("attendees", "attendee_emails", "attendee_users",

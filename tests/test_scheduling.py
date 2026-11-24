@@ -261,7 +261,7 @@ async def test_restore_logs_the_original_wait_time_not_the_current_one():
     import hutbot
     app = AsyncMock()
     channel = Channel(id="C1", name="davetest", configs={"default": {**DEFAULT_CONFIG.copy(), "wait_time": 60}})
-    user = User("U1", "d.grieser", "Dave", "T")
+    user = User("U1", "d.miller", "Dave", "T")
     hutbot.state.channel_config[channel.id] = channel.configs
     future = datetime.datetime.now() + datetime.timedelta(seconds=223)
     hutbot.state._scheduled_replies_cache[(channel.id, "M1", "default")] = {
@@ -291,7 +291,7 @@ async def test_restore_omits_the_original_wait_time_for_legacy_cache_entries():
     import hutbot
     app = AsyncMock()
     channel = Channel(id="C1", name="davetest", configs={"default": {**DEFAULT_CONFIG.copy(), "wait_time": 60}})
-    user = User("U1", "d.grieser", "Dave", "T")
+    user = User("U1", "d.miller", "Dave", "T")
     hutbot.state.channel_config[channel.id] = channel.configs
     future = datetime.datetime.now() + datetime.timedelta(seconds=90)
     hutbot.state._scheduled_replies_cache[(channel.id, "M2", "default")] = {
@@ -321,7 +321,7 @@ async def test_handle_channel_message_caches_the_wait_time_it_scheduled_with():
     app = AsyncMock()
     config = {**DEFAULT_CONFIG.copy(), "wait_time": 1800}
     channel = Channel(id="C1", name="davetest", configs={"default": config})
-    user = User("U1", "d.grieser", "Dave", "T")
+    user = User("U1", "d.miller", "Dave", "T")
 
     with patch('hutbot.datetimefmt.is_work_day', return_value=True), \
          patch('hutbot.persistence.flush_replies_cache', new=AsyncMock()), \
@@ -510,7 +510,7 @@ async def test_a_scheduled_reply_names_itself_rather_than_whatever_scheduled_it(
     app = AsyncMock()
     channel = Channel(id="C12345", name="general", configs={})
     config = {**DEFAULT_CONFIG.copy(), "wait_time": 0}
-    user = User("U1", "dave", "Dave Grieser", "Core Platform")
+    user = User("U1", "dave", "Dave Miller", "Core Platform")
 
     # The reply is scheduled while a message is being handled, but fires much later; its lines
     # are about the reply, not about the message that started it.

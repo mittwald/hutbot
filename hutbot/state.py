@@ -57,6 +57,9 @@ team_cache: set = set()
 # Slack user ids already warned about as having no employee record. The user cache is rebuilt
 # on a timer, and the same unmapped accounts would otherwise repeat their warning every turn.
 unmapped_user_warnings: set = set()
+# Slack user id -> team, from the user groups EMPLOYEE_LIST_USERGROUP_MAPPINGS names. Read when the
+# user cache is built; a fallback for users Atlas gives no group. Rebound as a whole.
+usergroup_teams: dict[str, str] = {}
 
 # Resolved on startup from auth.test.
 bot_user_id = None
@@ -144,7 +147,7 @@ current_command: ContextVar[str] = ContextVar('current_command', default='')
 
 def reset() -> None:
     """Reset all shared state to its initial values (used by the test suite)."""
-    global _scheduler_last_check, _calendar_evaluation_slots, bot_user_id, bot_user_name, bot_team_id, bot_enterprise_id, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, _bridge_roster_ready, slash_command, bot_name, default_datetime_locale, version
+    global usergroup_teams, _scheduler_last_check, _calendar_evaluation_slots, bot_user_id, bot_user_name, bot_team_id, bot_enterprise_id, opsgenie_configured, builtin_calendars, bridge_calendars, configured_calendars, _logged_bridge_roster, _bridge_roster_ready, slash_command, bot_name, default_datetime_locale, version
     channel_config.clear()
     scheduled_messages.clear()
     _scheduled_replies_cache.clear()
@@ -157,6 +160,7 @@ def reset() -> None:
     id_usergroup_cache.clear()
     team_cache.clear()
     unmapped_user_warnings.clear()
+    usergroup_teams = {}
     _channel_members_cache.clear()
     _calendar_cache.clear()
     _calendar_failures.clear()

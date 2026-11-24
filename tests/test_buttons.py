@@ -805,15 +805,15 @@ async def test_a_config_named_button_still_gets_its_own_commands():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("button,expected", [
-    ({"label": "I've got it", "action": "ack", "value": "On it"}, "_Dave Grieser: [I've got it]_"),
-    ({"label": "No", "action": "ack", "value": ""}, "_Dave Grieser: [No]_"),
-    ({"label": "Page", "action": "config", "value": "alarm"}, "_Dave Grieser: [Page] ▶︎ alarm_"),
+    ({"label": "I've got it", "action": "ack", "value": "On it"}, "_Dave Miller: [I've got it]_"),
+    ({"label": "No", "action": "ack", "value": ""}, "_Dave Miller: [No]_"),
+    ({"label": "Page", "action": "config", "value": "alarm"}, "_Dave Miller: [Page] ▶︎ alarm_"),
 ])
 async def test_a_press_leaves_a_note_in_place_of_the_buttons(button, expected):
     import hutbot
     app = AsyncMock()
     channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy()})
-    dave = User("U1", "dave", "Dave Grieser", "T")
+    dave = User("U1", "dave", "Dave Miller", "T")
     key = ("C12345", "R1")
     hutbot.state.pending_buttons.clear()
     hutbot.state.pending_buttons[key] = {
@@ -872,7 +872,7 @@ async def test_a_press_note_says_skipped_when_the_target_declines():
     # A manual run has no message behind it, so `{{message}} not_empty` cannot hold.
     alarm["conditions"] = [{"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False}]
     channel = _mk_channel({"default": copy.deepcopy(DEFAULT_CONFIG), "alarm": alarm})
-    dave = User("U1", "dave", "Dave Grieser", "T")
+    dave = User("U1", "dave", "Dave Miller", "T")
     key = ("C12345", "R1")
     hutbot.state.pending_buttons.clear()
     hutbot.state.pending_buttons[key] = {
@@ -889,7 +889,7 @@ async def test_a_press_note_says_skipped_when_the_target_declines():
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})):
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
-    note = "_Dave Grieser: [Page] ▶︎ alarm (skipped)_"
+    note = "_Dave Miller: [Page] ▶︎ alarm (skipped)_"
     assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{note}"
 
 
@@ -930,7 +930,7 @@ async def test_an_ack_button_still_posts_when_the_source_config_is_gated():
     src["conditions"] = [{"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False}]
     app = AsyncMock()
     channel = _mk_channel({"default": src})
-    dave = User("U1", "dave", "Dave Grieser", "T")
+    dave = User("U1", "dave", "Dave Miller", "T")
     key = ("C12345", "R1")
     hutbot.state.pending_buttons.clear()
     hutbot.state.pending_buttons[key] = {
@@ -949,7 +949,7 @@ async def test_an_ack_button_still_posts_when_the_source_config_is_gated():
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
     assert post.await_count == 1 and post.await_args.args[2] == "On it"
-    assert app.client.chat_update.await_args.kwargs["text"] == "Incident — on it?\n\n---\n_Dave Grieser: [I've got it]_"
+    assert app.client.chat_update.await_args.kwargs["text"] == "Incident — on it?\n\n---\n_Dave Miller: [I've got it]_"
 
 
 # ----- a buttoned message keeps the conditions its targets had when it was posted -----
@@ -973,7 +973,7 @@ async def _post_and_press(alarm_conditions, edit_alarm=None, escalate=False):
     """Post a buttoned message, optionally edit the target, then press or let it escalate."""
     app = AsyncMock()
     channel, src, alarm = _buttoned_channel(alarm_conditions)
-    dave = User("U1", "dave", "Dave Grieser", "T")
+    dave = User("U1", "dave", "Dave Miller", "T")
     hutbot.state.pending_buttons.clear()
     hutbot.state._button_states_cache.clear()
     with patch('hutbot.persistence.flush_button_cache', new=AsyncMock()), \
@@ -1015,7 +1015,7 @@ async def test_editing_a_target_after_posting_does_not_change_what_a_press_does(
     """The record is already committed; an edit must not retroactively veto the press."""
     ran, note = await _post_and_press(_AS_POSTED, edit_alarm=lambda a: a.update(conditions=copy.deepcopy(_NEVER)))
     assert ran == 1
-    assert note == "_Dave Grieser: [Page] ▶︎ alarm_"
+    assert note == "_Dave Miller: [Page] ▶︎ alarm_"
 
 
 @pytest.mark.asyncio
@@ -1030,7 +1030,7 @@ async def test_the_snapshotted_target_conditions_are_still_enforced():
     """Freezing them must not mean ignoring them."""
     ran, note = await _post_and_press(_NEVER)
     assert ran == 0
-    assert note == "_Dave Grieser: [Page] ▶︎ alarm (skipped)_"
+    assert note == "_Dave Miller: [Page] ▶︎ alarm (skipped)_"
 
 
 @pytest.mark.asyncio
@@ -1537,7 +1537,7 @@ async def test_a_press_runs_every_config_in_the_order_written():
     app = AsyncMock()
     channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy(),
                            "ticket": DEFAULT_CONFIG.copy()})
-    dave = User("U1", "dave", "Dave Grieser", "T")
+    dave = User("U1", "dave", "Dave Miller", "T")
     key = ("C12345", "R1")
     hutbot.state.pending_buttons.clear()
     hutbot.state.pending_buttons[key] = {
@@ -1556,7 +1556,7 @@ async def test_a_press_runs_every_config_in_the_order_written():
 
     assert [call.args[4] for call in run.await_args_list] == ["alarm", "ticket"]
     # The note names each of them, in the same order.
-    assert app.client.chat_update.await_args.kwargs["text"].endswith("_Dave Grieser: [Page] ▶︎ alarm, ticket_")
+    assert app.client.chat_update.await_args.kwargs["text"].endswith("_Dave Miller: [Page] ▶︎ alarm, ticket_")
 
 
 @pytest.mark.asyncio
@@ -1569,7 +1569,7 @@ async def test_a_press_note_says_which_of_several_configs_was_skipped():
     ticket["conditions"] = [{"variable": "message", "operator": "not_empty", "value": "", "case_sensitive": False}]
     channel = _mk_channel({"default": copy.deepcopy(DEFAULT_CONFIG), "alarm": copy.deepcopy(DEFAULT_CONFIG),
                            "ticket": ticket})
-    dave = User("U1", "dave", "Dave Grieser", "T")
+    dave = User("U1", "dave", "Dave Miller", "T")
     key = ("C12345", "R1")
     hutbot.state.pending_buttons.clear()
     hutbot.state.pending_buttons[key] = {
@@ -1587,7 +1587,7 @@ async def test_a_press_note_says_which_of_several_configs_was_skipped():
          patch('hutbot.messaging._post_message', new=AsyncMock(return_value={"channel": "C12345", "ts": "R2"})):
         await hutbot.buttons.handle_button_press(app, OPSGENIE_TOKENS, body, action)
 
-    note = "_Dave Grieser: [Page] ▶︎ ticket (skipped), alarm, gone (skipped)_"
+    note = "_Dave Miller: [Page] ▶︎ ticket (skipped), alarm, gone (skipped)_"
     assert app.client.chat_update.await_args.kwargs["text"] == f"Incident — on it?\n\n---\n{note}"
 
 
@@ -1661,7 +1661,7 @@ async def test_one_target_raising_does_not_take_the_rest_of_the_fan_out_down():
     app = AsyncMock()
     channel = _mk_channel({"default": DEFAULT_CONFIG.copy(), "alarm": DEFAULT_CONFIG.copy(),
                            "ticket": DEFAULT_CONFIG.copy()})
-    dave = User("U1", "dave", "Dave Grieser", "T")
+    dave = User("U1", "dave", "Dave Miller", "T")
     key = ("C12345", "R1")
     hutbot.state.pending_buttons.clear()
     hutbot.state.pending_buttons[key] = {
@@ -1683,7 +1683,7 @@ async def test_one_target_raising_does_not_take_the_rest_of_the_fan_out_down():
     # The second target still ran, and the note pins the failure to the one it belongs to.
     assert [call.args[4] for call in run.await_args_list] == ["alarm", "ticket"]
     assert app.client.chat_update.await_args.kwargs["text"].endswith(
-        "_Dave Grieser: [Page] ▶︎ alarm (skipped), ticket_")
+        "_Dave Miller: [Page] ▶︎ alarm (skipped), ticket_")
 
 
 # ----- Where a log line came from (see `logutil.log_origin`) -----

@@ -280,40 +280,116 @@ async def test_the_refresh_loop_waits_for_the_next_time_and_retries_a_failed_tur
 
 # ----- matching a Slack user to an employee -----
 
-_FRIESENS = {
-    "edfriesen": {"ad_name": "edfriesen", "fullname": "Edwin Friesen", "group": "m-kubed (m³)",
-                  "mail": "Ed.Friesen@example.com"},
-    "efriesen": {"ad_name": "efriesen", "fullname": "Elias Friesen", "group": "Software",
-                 "mail": "E.Friesen@example.com"},
-    "lbuschgeorge": {"ad_name": "lbuschgeorge", "fullname": "Leon Martin Busch-George",
-                     "group": "Software", "mail": "L.Busch-George@example.com"},
+_SCHMIDTS = {
+    "edschmidt": {"ad_name": "edschmidt", "fullname": "Edwin Schmidt", "group": "Cloud (c³)",
+                  "mail": "Ed.Schmidt@example.com"},
+    "eschmidt": {"ad_name": "eschmidt", "fullname": "Elias Schmidt", "group": "Software",
+                 "mail": "E.Schmidt@example.com"},
+    "lmeyerlang": {"ad_name": "lmeyerlang", "fullname": "Anna Maria Meyer-Lang",
+                     "group": "Software", "mail": "L.Meyer-Lang@example.com"},
 }
 
 
 def test_a_user_is_matched_by_email_when_no_name_fits():
-    """`l.busch-george` loses only its dot when normalized, and the directory spells it without
+    """`l.meyer-lang` loses only its dot when normalized, and the directory spells it without
     the hyphen too; the full names differ by a middle name. The mailbox is the same."""
     _, user = hutbot.slackcache.build_user(
-        _member("U1", "l.busch-george", "Leon M. Busch-George", "l.busch-george@example.com"),
-        _FRIESENS, {})
+        _member("U1", "l.meyer-lang", "Anna M. Meyer-Lang", "l.meyer-lang@example.com"),
+        _SCHMIDTS, {})
     assert user.team == "Software"
 
 
 def test_the_email_match_picks_the_right_namesake():
     _, user = hutbot.slackcache.build_user(
-        _member("U2", "e.friesen", "Elias Friesen", "e.friesen@example.com"), _FRIESENS, {})
+        _member("U2", "e.schmidt", "Elias Schmidt", "e.schmidt@example.com"), _SCHMIDTS, {})
     assert user.team == "Software"
 
 
 def test_an_explicit_mapping_wins_over_the_email_match():
     _, user = hutbot.slackcache.build_user(
-        _member("U2", "e.friesen", "Elias Friesen", "e.friesen@example.com"), _FRIESENS,
-        {"e.friesen": "edfriesen"})
-    assert user.team == "m-kubed (m³)"
-    assert user.name == "edfriesen"
+        _member("U2", "e.schmidt", "Elias Schmidt", "e.schmidt@example.com"), _SCHMIDTS,
+        {"e.schmidt": "edschmidt"})
+    assert user.team == "Cloud (c³)"
+    assert user.name == "edschmidt"
 
 
 def test_without_a_matching_email_the_name_still_matches():
     _, user = hutbot.slackcache.build_user(
-        _member("U2", "e.friesen", "Elias Friesen", "elias@private.example"), _FRIESENS, {})
+        _member("U2", "e.schmidt", "Elias Schmidt", "elias@private.example"), _SCHMIDTS, {})
     assert user.team == "Software"
+
+
+# ----- EMPLOYEE_LIST_USERGROUP_MAPPINGS -----
+
+def _usergroups(*groups):
+    return {"ok": True, "usergroups": [{"id": f"S{i}", "handle": handle, "users": users, "date_delete": 0}
+                                       for i, (handle, users) in enumerate(groups)]}
+
+
+_PLACED = {
+    "atlas": {"ad_name": "atlas", "fullname": "At Las", "group": "Software", "mail": "atlas@example.com"},
+    "dept": {"ad_name": "dept", "fullname": "De Pt", "group": "Infrastructure/Engineering",
+             "group_source": "directory", "mail": "dept@example.com"},
+    "none": {"ad_name": "none", "fullname": "No Ne", "group": "", "mail": "none@example.com"},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_usergroup_mapping_fills_in_only_where_atlas_has_no_group():
+    app = AsyncMock()
+    app.client.usergroups_list.return_value = _usergroups(
+        ("cloud-ops", ["U1", "U2", "U3", "U4", "U5"]), ("team-internal-it", ["U3"]))
+    with patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "internal-it=Internal IT,OPS=Cloud (c³)"}):
+        await hutbot.slackcache.refresh_usergroup_teams(app)
+
+    app.client.usergroups_list.assert_awaited_once_with(include_users=True)
+    # The first mapping that fits decides: U3 is in both groups.
+    assert hutbot.state.usergroup_teams == {"U3": "Internal IT", "U1": "Cloud (c³)", "U2": "Cloud (c³)",
+                                            "U4": "Cloud (c³)", "U5": "Cloud (c³)"}
+
+    def team(uid, name, mappings=None):
+        return hutbot.slackcache.build_user(_member(uid, name, name, f"{name}@example.com"),
+                                            _PLACED, mappings or {})[1].team
+
+    assert team("U1", "atlas") == "Software"            # Atlas's own group wins
+    assert team("U2", "dept") == "Cloud (c³)"         # beats the CardDAV department
+    assert team("U4", "none") == "Cloud (c³)"         # fills an empty group
+    assert team("U5", "stranger") == "Cloud (c³)"     # and a Slack user with no record at all
+    assert team("U5", "stranger", {"stranger": "-"}) == TEAM_UNKNOWN  # ignored accounts stay alone
+    assert team("U9", "dept") == "Infrastructure/Engineering"  # outside every group: the fallback stays
+
+
+@pytest.mark.asyncio
+async def test_without_usergroup_mappings_no_usergroups_are_read():
+    hutbot.state.usergroup_teams = {"U1": "Old"}
+    app = AsyncMock()
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("EMPLOYEE_LIST_USERGROUP_MAPPINGS", None)
+        await hutbot.slackcache.refresh_usergroup_teams(app)
+    app.client.usergroups_list.assert_not_awaited()
+    assert hutbot.state.usergroup_teams == {}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_usergroup_read_keeps_the_previous_teams(capsys):
+    hutbot.state.usergroup_teams = {"U1": "Cloud (c³)"}
+    app = AsyncMock()
+    app.client.usergroups_list.side_effect = SlackApiError("nope", {"ok": False, "error": "missing_scope"})
+    with patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "ops=Cloud (c³)"}):
+        await hutbot.slackcache.refresh_usergroup_teams(app)
+    assert hutbot.state.usergroup_teams == {"U1": "Cloud (c³)"}
+    assert "Failed to fetch the Slack user groups" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_reads_the_usergroups_before_building_users():
+    app = AsyncMock()
+    app.client.users_list.return_value = _users_list(_member("U4", "none", "No Ne", "none@example.com"))
+    app.client.usergroups_list.return_value = _usergroups(("cloud-ops", ["U4"]))
+    with patch('hutbot.slackcache.fetch_employees', new=AsyncMock(return_value=dict(_PLACED))), \
+         patch('hutbot.slackcache.load_employee_mappings', return_value={}), \
+         patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "ops=Cloud (c³)"}):
+        assert await hutbot.slackcache.refresh_user_cache(app) is True
+
+    assert hutbot.state.id_user_cache["U4"].team == "Cloud (c³)"
+    assert "Cloud (c³)" in hutbot.state.team_cache

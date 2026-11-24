@@ -84,7 +84,7 @@ def _write_json(path, payload):
 
 async def test_load_employee_fallbacks_reads_the_same_shape_as_the_cache(tmp_path):
     fallback = tmp_path / "employees-fallback.json"
-    _write_json(fallback, [_employee("RMantler", "Rudi Mantler", "Support"),
+    _write_json(fallback, [_employee("RMuster", "Rita Muster", "Support"),
                            _employee("gone", "Gone Away", "Support", is_deleted=True)])
 
     with patch.dict(os.environ, {"HUTBOT_EMPLOYEE_FALLBACK_FILE": str(fallback)}):
@@ -92,32 +92,32 @@ async def test_load_employee_fallbacks_reads_the_same_shape_as_the_cache(tmp_pat
 
     # Keyed by the normalized ad_name, and retired entries are dropped the same way the
     # employee API's own deleted records are.
-    assert list(fallbacks) == ["rmantler"]
-    assert fallbacks["rmantler"]["group"] == "Support"
+    assert list(fallbacks) == ["rmuster"]
+    assert fallbacks["rmuster"]["group"] == "Support"
 
 
 async def test_malformed_fallback_records_are_skipped_one_by_one(tmp_path):
     fallback = tmp_path / "employees-fallback.json"
     _write_json(fallback, [
         None,
-        "rmantler",
+        "rmuster",
         {"ad_name": 42, "fullname": "Numeric Name", "group": "Support"},
         {"ad_name": "badgroup", "fullname": "Bad Group", "group": ["Support"]},
-        _employee("rmantler", "Rudi Mantler", "Support"),
+        _employee("rmuster", "Rita Muster", "Support"),
     ])
 
     with patch.dict(os.environ, {"HUTBOT_EMPLOYEE_FALLBACK_FILE": str(fallback)}):
         fallbacks = await load_employee_fallbacks()
 
     # A record the operator typed wrong costs that record, never the file or the user cache.
-    assert list(fallbacks) == ["rmantler"]
+    assert list(fallbacks) == ["rmuster"]
 
 
 async def test_a_missing_or_broken_fallback_file_is_not_fatal(tmp_path):
     broken = tmp_path / "broken.json"
     broken.write_text("{not json", encoding="utf-8")
     not_a_list = tmp_path / "object.json"
-    _write_json(not_a_list, {"ad_name": "rmantler"})
+    _write_json(not_a_list, {"ad_name": "rmuster"})
 
     for path in (tmp_path / "absent.json", broken, not_a_list):
         with patch.dict(os.environ, {"HUTBOT_EMPLOYEE_FALLBACK_FILE": str(path)}):
@@ -127,50 +127,50 @@ async def test_a_missing_or_broken_fallback_file_is_not_fatal(tmp_path):
 def test_merge_employee_fallbacks_lets_the_employee_list_win():
     employees = {"jdoe": _employee("jdoe", "John Doe", "Support")}
     fallbacks = {"jdoe": _employee("jdoe", "John Doe", "Stale Team"),
-                 "rmantler": _employee("rmantler", "Rudi Mantler", "Platform")}
+                 "rmuster": _employee("rmuster", "Rita Muster", "Platform")}
 
     merged = merge_employee_fallbacks(employees, fallbacks)
 
     assert merged["jdoe"]["group"] == "Support"
-    assert merged["rmantler"]["group"] == "Platform"
+    assert merged["rmuster"]["group"] == "Platform"
     assert merge_employee_fallbacks(employees, {}) == employees
 
 
 async def test_load_employees_from_disk_fills_gaps_from_the_fallback_file(tmp_path):
     cache = tmp_path / "employees.json"
     _write_json(cache, [_employee("jdoe", "John Doe", "Support"),
-                        _employee("rmantler", "Rudi Mantler", "Support", is_deleted=True)])
+                        _employee("rmuster", "Rita Muster", "Support", is_deleted=True)])
     fallback = tmp_path / "employees-fallback.json"
-    _write_json(fallback, [_employee("rmantler", "Rudi Mantler", "Platform")])
+    _write_json(fallback, [_employee("rmuster", "Rita Muster", "Platform")])
 
     with patch.dict(os.environ, {"HUTBOT_EMPLOYEE_CACHE_FILE": str(cache),
                                  "HUTBOT_EMPLOYEE_FALLBACK_FILE": str(fallback)}):
         employees = await load_employees_from_disk()
 
     # The cache dropped the deleted record, so the fallback is what carries the team now.
-    assert sorted(employees) == ["jdoe", "rmantler"]
-    assert employees["rmantler"]["group"] == "Platform"
+    assert sorted(employees) == ["jdoe", "rmuster"]
+    assert employees["rmuster"]["group"] == "Platform"
 
 
 async def test_load_employees_from_disk_uses_fallbacks_without_a_cache(tmp_path):
     fallback = tmp_path / "employees-fallback.json"
-    _write_json(fallback, [_employee("rmantler", "Rudi Mantler", "Platform")])
+    _write_json(fallback, [_employee("rmuster", "Rita Muster", "Platform")])
 
     with patch.dict(os.environ, {"HUTBOT_EMPLOYEE_CACHE_FILE": str(tmp_path / "missing.json"),
                                  "HUTBOT_EMPLOYEE_FALLBACK_FILE": str(fallback)}):
         employees = await load_employees_from_disk()
 
-    assert list(employees) == ["rmantler"]
+    assert list(employees) == ["rmuster"]
 
 
 async def test_load_employees_from_disk_uses_fallbacks_when_cache_is_corrupt(tmp_path):
     cache = tmp_path / "employees.json"
     cache.write_text("{broken", encoding="utf-8")
     fallback = tmp_path / "employees-fallback.json"
-    _write_json(fallback, [_employee("rmantler", "Rudi Mantler", "Platform")])
+    _write_json(fallback, [_employee("rmuster", "Rita Muster", "Platform")])
 
     with patch.dict(os.environ, {"HUTBOT_EMPLOYEE_CACHE_FILE": str(cache),
                                  "HUTBOT_EMPLOYEE_FALLBACK_FILE": str(fallback)}):
         employees = await load_employees_from_disk()
 
-    assert list(employees) == ["rmantler"]
+    assert list(employees) == ["rmuster"]

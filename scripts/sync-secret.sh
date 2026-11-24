@@ -27,7 +27,7 @@
 # printed instead.
 set -euo pipefail
 
-# hutbot's secret material is a closed set — unlike mping there is no name pattern to
+# hutbot's secret material is a closed set — unlike other services there is no name pattern to
 # discover, and a regex over the environment would sweep .env's deploy settings into the pod.
 readonly KNOWN_KEYS=(
   SLACK_APP_TOKEN

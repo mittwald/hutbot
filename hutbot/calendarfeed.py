@@ -121,7 +121,7 @@ BUILTIN_CALENDARS_FILE_ENV = f'{BUILTIN_CALENDARS_ENV}_FILE'
 # `set calendar <value>` tell a name from a URL without guessing.
 BUILTIN_CALENDAR_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
-# The calendar bridge serving this instance: mittwald-outlook-bridge publishes which calendars it
+# The calendar bridge serving this instance: the bridge publishes which calendars it
 # serves at `https://<host>/calendars/?token=…`, and every one of them sits beside that listing as
 # `<name>.ics` with the same token. That listing is where the built-in calendars come from, so the
 # deployment names the calendars it offers in one place — the bridge — rather than in a registry
@@ -1233,7 +1233,7 @@ def calendar_bridge_ics_url(listing_url: str, name: str) -> str:
 def parse_calendar_bridge_listing(raw: str) -> list[str] | None:
     """The calendar names in a bridge listing, or ``None`` when it is not one.
 
-    The document is `{"feeds": ["notfallhotline", …]}`. ``None`` and an empty list are different
+    The document is `{"feeds": ["hotline", …]}`. ``None`` and an empty list are different
     answers: the first means the listing could not be read and the calendars from the last one are
     kept, the second means the bridge really serves nothing.
     """

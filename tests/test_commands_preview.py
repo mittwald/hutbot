@@ -21,15 +21,15 @@ def _rota_ics(now=None):
             f"DTSTART:{stamp(start)}", f"DTEND:{stamp(end)}",
             f"SUMMARY:{summary}", "LOCATION:Rufbereitschaft",
             "DESCRIPTION:Ruf an\\, wenn was ist.",
-            'ORGANIZER;CN="Notfallhotline":invalid:nomail',
-            'ATTENDEE;CN="Notfallhotline";ROLE=REQ-PARTICIPANT:mailto:hotline@example.com',
+            'ORGANIZER;CN="Hotline":invalid:nomail',
+            'ATTENDEE;CN="Hotline";ROLE=REQ-PARTICIPANT:mailto:hotline@example.com',
             'ATTENDEE;CN="Some User";ROLE=REQ-PARTICIPANT:mailto:x@example.com',
             "STATUS:CONFIRMED", "TRANSP:OPAQUE", "END:VEVENT",
         ]
 
     hour = datetime.timedelta(hours=1)
     return "\r\n".join([
-        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//mittwald//tests//EN",
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//example//tests//EN",
         "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:rota@example.com",
         *event("running", "Rufbereitschaft - Now", now - hour, now + hour),
         *event("upcoming", "Rufbereitschaft - Next", now + hour, now + 3 * hour),
@@ -48,7 +48,7 @@ def _rota_calendar():
 @contextlib.contextmanager
 def _patch_rota():
     with patch('hutbot.calendarfeed.fetch_calendar',
-               new=AsyncMock(return_value=(_rota_calendar(), "Notfallhotline"))):
+               new=AsyncMock(return_value=(_rota_calendar(), "Hotline"))):
         yield
 
 
@@ -262,12 +262,12 @@ async def test_the_preview_prints_every_event_it_resolved():
     with _patch_rota():
         text = await _preview(app, "rota test", channel, user)
 
-    assert "*Calendar*: `Notfallhotline`" in text
+    assert "*Calendar*: `Hotline`" in text
     assert "*Event* now, read at" in text
     assert "*Summary*: Rufbereitschaft - Now" in text
     assert "*Summary*: Rufbereitschaft - Next" in text
     # The detail a variable cannot show on its own: who is on the entry, and its body.
-    assert "*Attendees*: Notfallhotline (hotline@example.com), Some User (x@example.com)" in text
+    assert "*Attendees*: Hotline (hotline@example.com), Some User (x@example.com)" in text
     assert "*Other attendees*: Some User (x@example.com)" in text
     assert "*Description*: Ruf an, wenn was ist." in text
 

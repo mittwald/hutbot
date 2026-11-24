@@ -74,6 +74,13 @@ releases:
           # carries a token and is a Vault field (HUTBOT_CALENDAR_BRIDGE_URL), never a value
           # passed through here.
           bridgeRefreshMinutes: {{ env "HUTBOT_CALENDAR_BRIDGE_REFRESH" | default "" | quote }}
+      # Where the employee directory (Atlas) and the CardDAV department fallback are read.
+      # Not secret, and empty switches each off; the keys and the token stay in the Secret.
+      - employeeDirectory:
+          apiUrl: {{ env "EMPLOYEE_LIST_API_URL" | default "" | quote }}
+          authUrl: {{ env "EMPLOYEE_LIST_AUTH_URL" | default "" | quote }}
+          carddavUrl: {{ env "HUTBOT_DIRECTORY_CARDDAV_URL" | default "" | quote }}
+          carddavUser: {{ env "HUTBOT_DIRECTORY_CARDDAV_USER" | default "" | quote }}
 {{- if env "HUTBOT_CALENDAR_ALLOWED_HOSTS" }}
       # Feed hosts the bot may fetch despite their internal address. Keep in sync with
       # NETWORKPOLICY_RULES and HOST_ALIASES: all three are needed for an internal feed.

@@ -10,11 +10,13 @@ from slack_bolt.async_app import AsyncApp
 
 from employee_list import (
     EMPLOYEE_MAPPING_IGNORE,
+    GROUP_SOURCE_DIRECTORY,
     employee_credentials,
     fetch_employees,
     load_employee_mappings,
     load_employees,
     load_employees_from_disk,
+    load_usergroup_mappings,
     normalize_id,
     normalize_real_name,
     normalize_real_name_with_diagraphs,
@@ -114,16 +116,16 @@ def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
     user_real_name_normalized = normalize_real_name(user_real_name)
     user_is_bot = bool(user.get('is_bot')) or user_id in SLACK_SYSTEM_USER_IDS
     user_team = TEAM_UNKNOWN
+    user_key = None
 
     if len(employees) > 0 and not user_is_bot:
-        user_key = None
         if mapped_name and not user_is_ignored:
             # An explicit mapping names the employee; nothing else is asked.
             user_key = mapped_name if mapped_name in employees else None
         elif user_email:
             # The Slack address and the directory's are the same mailbox, so this is the one
-            # match that cannot pick a namesake: `l.busch-george` is `lbuschgeorge` in the
-            # directory, and `e.friesen` would match whichever Friesen's name came closest.
+            # match that cannot pick a namesake: `l.meyer-lang` is `lmeyerlang` in the
+            # directory, and `e.schmidt` would match whichever Schmidt's name came closest.
             user_key = next((key for key, employee in employees.items()
                              if normalize_id(str(employee.get('mail') or '')) == user_email), None)
         if not user_key:
@@ -161,6 +163,17 @@ def build_user(user: dict, employees: dict, mappings: dict) -> tuple[str, User]:
         if user_key:
             user_team = employees[user_key].get('group', '').strip()
 
+    # A team from a mapped Slack user group, for anyone Atlas itself gives no group: no employee
+    # record, a record without a group, or one only the CardDAV department placed. Atlas's own
+    # group — and a hand-written fallback-file record — always wins.
+    if not user_is_bot and not user_is_ignored:
+        record = employees.get(user_key) if user_key else None
+        from_atlas = bool(record and str(record.get('group') or '').strip()
+                          and record.get('group_source') != GROUP_SOURCE_DIRECTORY)
+        usergroup_team = state.usergroup_teams.get(user_id)
+        if usergroup_team and not from_atlas:
+            user_team = usergroup_team
+
     return user_email, User(id=user_id, name=user_name, team=user_team, real_name=user_real_name, is_bot=user_is_bot)
 
 
@@ -192,8 +205,42 @@ async def update_user_cache(app: AsyncApp) -> None:
             cache_user(user_email, user)
 
 
+async def refresh_usergroup_teams(app: AsyncApp) -> None:
+    """Rebuild `state.usergroup_teams` from the user groups EMPLOYEE_LIST_USERGROUP_MAPPINGS names.
+
+    A mapping's key is part of a user group handle, compared ignoring case (`ops` fits
+    `@cloud-ops`). Mappings are tried in the order written, so the first that fits a user decides.
+    Without mappings the table is emptied; when the user groups cannot be read the previous table
+    is kept, since a team taken away is worse than one a few hours old.
+    """
+    mappings = load_usergroup_mappings()
+    if not mappings:
+        state.usergroup_teams = {}
+        return
+    try:
+        response = await retryutil.retry_async(
+            lambda: app.client.usergroups_list(include_users=True),
+            what="Fetching the Slack user groups and their members")
+    except Exception as e:
+        log_error("Failed to fetch the Slack user groups for EMPLOYEE_LIST_USERGROUP_MAPPINGS:", e)
+        return
+    usergroups = [g for g in response.get('usergroups') or []
+                  if isinstance(g, dict) and not g.get('date_delete')]
+    teams: dict[str, str] = {}
+    for part, team in mappings:
+        matched = [g for g in usergroups if part in str(g.get('handle') or '').lower()]
+        if not matched:
+            log_warning(f"No Slack user group handle contains '{part}' (EMPLOYEE_LIST_USERGROUP_MAPPINGS).")
+        for usergroup in matched:
+            for user_id in usergroup.get('users') or []:
+                teams.setdefault(user_id, team)
+    state.usergroup_teams = teams
+    log(f"{len(teams)} Slack users are in a user group EMPLOYEE_LIST_USERGROUP_MAPPINGS maps to a team.")
+
+
 async def _fetch_workspace_users(app: AsyncApp, employees: dict) -> list[tuple[str, User]] | None:
     """Every human member of the workspace from `users.list`, or ``None`` when a page failed."""
+    await refresh_usergroup_teams(app)
     mappings = load_employee_mappings()
     fetched: list[tuple[str, User]] = []
     try:

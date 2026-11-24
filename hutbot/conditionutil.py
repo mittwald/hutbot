@@ -346,7 +346,7 @@ def snapshot_conditions(config: dict) -> dict:
 def set_list_variable(variables: dict, key: str, items_key: str, items: list) -> None:
     """Store a list variable: the aligned entries, plus the joined form a message renders.
 
-    The joined form leaves out the blanks — a reader wants "Nico Engelbrecht", not a stray
+    The joined form leaves out the blanks — a reader wants "Nina Berger", not a stray
     comma for the room mailbox that has no address — while the entries keep them so `nth`
     lines up across the parallel lists.
     """

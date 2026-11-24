@@ -207,21 +207,42 @@ async def save_employees_to_disk(users: list) -> None:
     await fileutil.write_json_file(get_employee_cache_file_name(), users, "Writing the employee cache")
 
 
-# The employee directory is Atlas, read through mittwald's internal API. Its token comes from a
-# service key pair, traded at the public API the way any mittwald service authenticates.
-EMPLOYEE_API_URL = "https://api.prod.mittwald.systems/internal-v2"
-EMPLOYEE_AUTH_URL = "https://api-public.prod.mittwald.systems/v2"
+# The employee directory is Atlas, read through an internal API. Its token comes from a service
+# key pair, traded at the authentication API. Both base URLs come from the deployment.
+EMPLOYEE_API_URL_ENV = "EMPLOYEE_LIST_API_URL"
+EMPLOYEE_AUTH_URL_ENV = "EMPLOYEE_LIST_AUTH_URL"
+_warned_missing_urls = False
 EMPLOYEE_ACCESS_KEY_ENV = "EMPLOYEE_LIST_ACCESS_KEY_ID"
 EMPLOYEE_SECRET_KEY_ENV = "EMPLOYEE_LIST_SECRET_ACCESS_KEY"
 # Atlas answers up to 10000 records a page by default; asking for fewer keeps one answer small.
 _EMPLOYEE_PAGE_SIZE = 1000
 
 
+def employee_api_urls() -> tuple[str, str]:
+    """The directory's API and authentication base URLs, without a trailing slash, or two empty
+    strings while either is unset."""
+    api = os.environ.get(EMPLOYEE_API_URL_ENV, "").strip().rstrip("/")
+    auth = os.environ.get(EMPLOYEE_AUTH_URL_ENV, "").strip().rstrip("/")
+    return (api, auth) if api and auth else ("", "")
+
+
 def employee_credentials() -> tuple[str, str]:
-    """The service key pair the employee directory is read with, or two empty strings."""
+    """The service key pair the employee directory is read with, or two empty strings.
+
+    Also empty while the directory's URLs are unset: without them the pair reaches nothing.
+    """
     access = get_env_var(EMPLOYEE_ACCESS_KEY_ENV).strip()
     secret = get_env_var(EMPLOYEE_SECRET_KEY_ENV).strip()
-    return (access, secret) if access and secret else ("", "")
+    if not (access and secret):
+        return "", ""
+    if not employee_api_urls()[0]:
+        global _warned_missing_urls
+        if not _warned_missing_urls:
+            _warned_missing_urls = True
+            log_warning(f"{EMPLOYEE_API_URL_ENV} and {EMPLOYEE_AUTH_URL_ENV} must both be set; "
+                        "the employee directory is not read.")
+        return "", ""
+    return access, secret
 
 
 def employee_record(employee: dict, group_names: dict) -> dict:
@@ -253,13 +274,13 @@ async def _read_json(response, what: str):
     return await response.json()
 
 
-async def _list_all(session: aiohttp.ClientSession, path: str, headers: dict, params: dict,
-                    what: str) -> list | None:
+async def _list_all(session: aiohttp.ClientSession, api_url: str, path: str, headers: dict,
+                    params: dict, what: str) -> list | None:
     """Every item of a paginated internal-v2 listing, or None when a page was refused."""
     items: list = []
     while True:
         page_params = {**params, "limit": str(_EMPLOYEE_PAGE_SIZE), "skip": str(len(items))}
-        async with session.get(f"{EMPLOYEE_API_URL}/{path}", headers=headers,
+        async with session.get(f"{api_url}/{path}", headers=headers,
                                params=page_params) as response:
             page = await _read_json(response, what)
         if page is None:
@@ -281,7 +302,8 @@ async def fetch_employees() -> dict | None:
     access, secret = employee_credentials()
     if not access:
         return None
-    employee_url = f"{EMPLOYEE_API_URL}/employees"
+    api_url, auth_url_base = employee_api_urls()
+    employee_url = f"{api_url}/employees"
     # The names of the groups still in use, for placing employees without one (see below).
     active_groups: list[str] = []
 
@@ -289,7 +311,7 @@ async def fetch_employees() -> dict | None:
         """One authenticate-and-fetch round trip. None means a permanent refusal."""
         active_groups.clear()
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            auth_url = f"{EMPLOYEE_AUTH_URL}/services/{urllib.parse.quote(access, safe='')}/actions/authenticate"
+            auth_url = f"{auth_url_base}/services/{urllib.parse.quote(access, safe='')}/actions/authenticate"
             async with session.post(auth_url, json={"secretAccessKey": secret}) as auth_response:
                 payload = await _read_json(auth_response, "Authenticating against the employee directory")
             if payload is None:
@@ -303,11 +325,11 @@ async def fetch_employees() -> dict | None:
 
             headers = {"x-access-token": token, "Accept": "application/json"}
             # Archived groups included, so an employee still filed under one keeps its name.
-            groups = await _list_all(session, "groups", headers, {"withArchived": "true"},
+            groups = await _list_all(session, api_url, "groups", headers, {"withArchived": "true"},
                                      "Reading the employee groups")
             if groups is None:
                 return None
-            employees = await _list_all(session, "employees", headers, {},
+            employees = await _list_all(session, api_url, "employees", headers, {},
                                         "Reading the employee directory")
             if employees is None:
                 return None
@@ -345,13 +367,11 @@ async def fetch_employees() -> dict | None:
 
 
 # A fallback for employees Atlas has no group for: the department Exchange files them under,
-# read from the organisation's directory that mittwald-outlook-bridge serves over CardDAV.
-# Off without a token, and never consulted for an employee Atlas does place.
+# read from the organisation's directory, an address book served over CardDAV. Off unless the
+# URL, user and token are all set, and never consulted for an employee Atlas does place.
 DIRECTORY_CARDDAV_TOKEN_ENV = "HUTBOT_DIRECTORY_CARDDAV_TOKEN"
 DIRECTORY_CARDDAV_URL_ENV = "HUTBOT_DIRECTORY_CARDDAV_URL"
 DIRECTORY_CARDDAV_USER_ENV = "HUTBOT_DIRECTORY_CARDDAV_USER"
-DEFAULT_DIRECTORY_CARDDAV_URL = "https://mittwald-outlook-bridge.prod.mittwald.systems/carddav/books/directory/"
-DEFAULT_DIRECTORY_CARDDAV_USER = "mittwald"
 # The whole directory (about 800 cards) is a few hundred kilobytes; anything far larger is not it.
 _DIRECTORY_MAX_BYTES = 16 * 1024 * 1024
 _DIRECTORY_TIMEOUT_SECONDS = 15
@@ -364,16 +384,16 @@ _DIRECTORY_QUERY = (
 
 
 def directory_carddav_settings() -> tuple[str, str, str]:
-    """The address book's URL, user and token, or three empty strings while no token is set.
+    """The address book's URL, user and token, or three empty strings while any of them is unset.
 
     Read straight from the environment rather than through `get_env_var`: the bridge's tokens are
     hex, which is also valid base64, and must never be "decoded".
     """
     token = os.environ.get(DIRECTORY_CARDDAV_TOKEN_ENV, "").strip()
-    if not token:
+    url = os.environ.get(DIRECTORY_CARDDAV_URL_ENV, "").strip()
+    user = os.environ.get(DIRECTORY_CARDDAV_USER_ENV, "").strip()
+    if not (token and url and user):
         return "", "", ""
-    url = os.environ.get(DIRECTORY_CARDDAV_URL_ENV, "").strip() or DEFAULT_DIRECTORY_CARDDAV_URL
-    user = os.environ.get(DIRECTORY_CARDDAV_USER_ENV, "").strip() or DEFAULT_DIRECTORY_CARDDAV_USER
     return url, user, token
 
 
@@ -414,20 +434,71 @@ def _group_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", unidecode(name).lower())
 
 
-def resolve_department(department: str, group_names: list[str]) -> str:
+# Hand-written `part=Team` lists for the two team fallbacks. Kept apart from EMPLOYEE_LIST_MAPPINGS,
+# which names employees rather than teams. Read raw, like the CardDAV token: a value of plain
+# letters is also valid base64, and `get_env_var` would "decode" it.
+DEPARTMENT_MAPPINGS_ENV = "EMPLOYEE_LIST_DEPARTMENT_MAPPINGS"
+USERGROUP_MAPPINGS_ENV = "EMPLOYEE_LIST_USERGROUP_MAPPINGS"
+# Records whose group came from a fallback rather than from Atlas carry this as `group_source`, so
+# a better fallback (a Slack user group) may still replace it.
+GROUP_SOURCE_DIRECTORY = "directory"
+
+
+def _parse_team_mappings(env: str, what: str) -> list[tuple[str, str]]:
+    """`key=Team` pairs of a comma-separated env var, in the order written, malformed ones skipped."""
+    pairs: list[tuple[str, str]] = []
+    for item in os.environ.get(env, "").split(","):
+        if not item.strip():
+            continue
+        key, sep, team = item.partition("=")
+        key, team = key.strip(), team.strip()
+        if not sep or not key or not team:
+            log_warning(f"Failed to parse {what} mapping '{item.strip()}', skipping")
+            continue
+        pairs.append((key, team))
+    return pairs
+
+
+def load_department_mappings() -> dict[str, str]:
+    """{department key: team} from EMPLOYEE_LIST_DEPARTMENT_MAPPINGS, e.g. `CS=Central Services`.
+
+    Keys compare the way `resolve_department` compares group names: ignoring case, spacing and
+    punctuation. The first entry for a key wins.
+    """
+    mappings: dict[str, str] = {}
+    for department, team in _parse_team_mappings(DEPARTMENT_MAPPINGS_ENV, "department"):
+        key = _group_key(department)
+        if key and key not in mappings:
+            mappings[key] = team
+    return mappings
+
+
+def load_usergroup_mappings() -> list[tuple[str, str]]:
+    """(lowercased part of a user group handle, team) pairs from EMPLOYEE_LIST_USERGROUP_MAPPINGS,
+    e.g. `cloud-ops=Cloud (c³)`, in the order written: the first that fits a user wins."""
+    return [(part.lower(), team) for part, team in _parse_team_mappings(USERGROUP_MAPPINGS_ENV, "user group")]
+
+
+def resolve_department(department: str, group_names: list[str],
+                       mappings: dict[str, str] | None = None) -> str:
     """The Atlas group a free-text Exchange department stands for, or the department itself.
 
-    Exchange writes departments by hand: "Infrastruktur - Mail", "Produktentwicklung_Spaces",
-    "Produktmanagement". Each part is tried, the most specific (last) first, against every group
-    name ignoring case, spacing and punctuation, and against the part of a name before a slash
-    ("Infrastruktur" is "Infrastruktur/Technik"). What matches nothing is kept as written, so the
-    employee still gets a team, if one no condition will name.
+    Exchange writes departments by hand: "Infrastructure - Mail", "Development_Apps",
+    "Productmanagement". The whole department is tried first, then each part, the most specific
+    (last) first. For each, an EMPLOYEE_LIST_DEPARTMENT_MAPPINGS entry decides; otherwise it is
+    compared with every group name ignoring case, spacing and punctuation, and with the part of a
+    name before a slash ("Infrastructure" is "Infrastructure/Engineering").
+    What matches nothing is kept as written, so the employee still gets a team, if one no
+    condition will name.
     """
     parts = [part.strip() for part in re.split(r"\s+-\s+|_", department) if part.strip()]
-    for part in reversed(parts):
-        key = _group_key(part)
+    for candidate in [department.strip(), *reversed(parts)]:
+        key = _group_key(candidate)
         if not key:
             continue
+        team = (mappings or {}).get(key)
+        if team:
+            return team
         for name in group_names:
             if key in (_group_key(name), _group_key(name.split("/", 1)[0])):
                 return name
@@ -489,11 +560,13 @@ async def fill_missing_groups(users: list, group_names: list[str]) -> None:
     departments = await fetch_directory_departments()
     if not departments:
         return
+    mappings = load_department_mappings()
     placed, unplaced = [], []
     for user in missing:
         department = departments.get(str(user["mail"]).strip().lower())
         if department:
-            user["group"] = resolve_department(department, group_names)
+            user["group"] = resolve_department(department, group_names, mappings)
+            user["group_source"] = GROUP_SOURCE_DIRECTORY
             placed.append(f"{user.get('ad_name')} -> {user['group']}")
         else:
             unplaced.append(str(user.get("ad_name")))

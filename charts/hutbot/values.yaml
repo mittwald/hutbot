@@ -81,6 +81,28 @@ slack:
   # next restart.
   userCacheRefreshTimes: ""
 
+# Team fallbacks for people Atlas gives no group. Atlas's own group always wins.
+employeeDirectory:
+  # Base URLs of the employee directory (Atlas): the API it is listed from and the API the
+  # service key pair (EMPLOYEE_LIST_ACCESS_KEY_ID / _SECRET_ACCESS_KEY in the Secret) is traded at
+  # for a token. The directory is not read unless both are set.
+  apiUrl: ""
+  authUrl: ""
+  # The CardDAV address book the department fallback reads, and the user it logs in as. The
+  # fallback is off unless both are set and the Secret holds HUTBOT_DIRECTORY_CARDDAV_TOKEN.
+  carddavUrl: ""
+  carddavUser: ""
+  # Exchange department (from the CardDAV directory, see HUTBOT_DIRECTORY_CARDDAV_TOKEN) -> Atlas
+  # team. Keys compare ignoring case, spacing and punctuation, e.g.
+  #   CS: Central Services
+  departmentTeamMappings: {}
+  # Slack user group -> Atlas team: members of a group whose handle contains `part` (ignoring case)
+  # get `team`. A list because order matters: the first entry that fits a user wins. Beats the
+  # department fallback. E.g.
+  #   - part: cloud-ops
+  #     team: Cloud (c³)
+  usergroupTeamMappings: []
+
 # Timezone and date/time locale the whole instance runs in.
 time:
   # IANA zone name forced into the container as TZ, e.g. "Europe/Berlin". This is
