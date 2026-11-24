@@ -96,10 +96,10 @@ employeeDirectory:
   # team. Keys compare ignoring case, spacing and punctuation, e.g.
   #   CS: Central Services
   departmentTeamMappings: {}
-  # Slack user group -> Atlas team: members of a group whose handle contains `part` (ignoring case)
-  # get `team`. A list because order matters: the first entry that fits a user wins. Beats the
-  # department fallback. E.g.
-  #   - part: cloud-ops
+  # Slack user group -> Atlas team: members of the user group whose handle is `handle` (the whole
+  # handle, ignoring case and a leading @) get `team`. A list because order matters: the first
+  # entry that fits a user wins. Beats the department fallback. E.g.
+  #   - handle: cloud-ops
   #     team: Cloud (c³)
   usergroupTeamMappings: []
 

@@ -389,10 +389,11 @@ def test_malformed_team_mappings_are_skipped_and_the_first_entry_wins(capsys):
     assert "'broken'" in err and "'=NoKey'" in err and "'NoTeam='" in err
 
 
-def test_usergroup_mappings_keep_their_order_and_lowercase_the_part():
-    # Plain letters are valid base64 too; the value must be read as written.
-    with patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "Cloud-Ops=Cloud (c³),abcd=Team"}):
+def test_usergroup_mappings_keep_their_order_and_lowercase_the_handle(capsys):
+    # Plain letters are valid base64 too; the value must be read as written. A leading @ is dropped.
+    with patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "@Cloud-Ops=Cloud (c³),abcd=Team,@=Nobody"}):
         assert employee_list.load_usergroup_mappings() == [("cloud-ops", "Cloud (c³)"), ("abcd", "Team")]
+    assert "without a handle" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio

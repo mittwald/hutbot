@@ -208,8 +208,9 @@ async def update_user_cache(app: AsyncApp) -> None:
 async def refresh_usergroup_teams(app: AsyncApp) -> None:
     """Rebuild `state.usergroup_teams` from the user groups EMPLOYEE_LIST_USERGROUP_MAPPINGS names.
 
-    A mapping's key is part of a user group handle, compared ignoring case (`ops` fits
-    `@cloud-ops`). Mappings are tried in the order written, so the first that fits a user decides.
+    A mapping's key is a whole user group handle, compared ignoring case (`ops` fits `@ops` and
+    `@OPS`, never `@cloud-ops`). Mappings are tried in the order written, so the first that fits
+    a user decides.
     Without mappings the table is emptied; when the user groups cannot be read the previous table
     is kept, since a team taken away is worse than one a few hours old.
     """
@@ -227,10 +228,10 @@ async def refresh_usergroup_teams(app: AsyncApp) -> None:
     usergroups = [g for g in response.get('usergroups') or []
                   if isinstance(g, dict) and not g.get('date_delete')]
     teams: dict[str, str] = {}
-    for part, team in mappings:
-        matched = [g for g in usergroups if part in str(g.get('handle') or '').lower()]
+    for handle, team in mappings:
+        matched = [g for g in usergroups if str(g.get('handle') or '').lower() == handle]
         if not matched:
-            log_warning(f"No Slack user group handle contains '{part}' (EMPLOYEE_LIST_USERGROUP_MAPPINGS).")
+            log_warning(f"No Slack user group has the handle '@{handle}' (EMPLOYEE_LIST_USERGROUP_MAPPINGS).")
         for usergroup in matched:
             for user_id in usergroup.get('users') or []:
                 teams.setdefault(user_id, team)

@@ -62,7 +62,10 @@ here, at render time, rather than mis-map at runtime.
 {{- define "hutbot.usergroupTeamMappings" -}}
 {{- $entries := list -}}
 {{- range . -}}
-{{- $entries = append $entries (include "hutbot.teamMappingEntry" (dict "key" .part "team" .team "what" "employeeDirectory.usergroupTeamMappings")) -}}
+{{- if hasKey . "part" -}}
+{{- fail (printf "employeeDirectory.usergroupTeamMappings: `part` is gone, name the whole user group as `handle` (got part %q)" (toString .part)) -}}
+{{- end -}}
+{{- $entries = append $entries (include "hutbot.teamMappingEntry" (dict "key" .handle "team" .team "what" "employeeDirectory.usergroupTeamMappings")) -}}
 {{- end -}}
 {{- join "," $entries -}}
 {{- end -}}

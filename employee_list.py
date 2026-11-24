@@ -474,9 +474,17 @@ def load_department_mappings() -> dict[str, str]:
 
 
 def load_usergroup_mappings() -> list[tuple[str, str]]:
-    """(lowercased part of a user group handle, team) pairs from EMPLOYEE_LIST_USERGROUP_MAPPINGS,
-    e.g. `cloud-ops=Cloud (c³)`, in the order written: the first that fits a user wins."""
-    return [(part.lower(), team) for part, team in _parse_team_mappings(USERGROUP_MAPPINGS_ENV, "user group")]
+    """(lowercased user group handle, team) pairs from EMPLOYEE_LIST_USERGROUP_MAPPINGS, e.g.
+    `cloud-ops=Cloud (c³)`, in the order written: the first that fits a user wins. A leading `@`
+    on the handle is optional."""
+    mappings = []
+    for handle, team in _parse_team_mappings(USERGROUP_MAPPINGS_ENV, "user group"):
+        handle = handle.strip().removeprefix("@").strip().lower()
+        if handle:
+            mappings.append((handle, team))
+        else:
+            log_warning(f"Ignoring a {USERGROUP_MAPPINGS_ENV} entry without a handle: '@={team}'.")
+    return mappings
 
 
 def resolve_department(department: str, group_names: list[str],

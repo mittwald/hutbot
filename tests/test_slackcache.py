@@ -339,7 +339,8 @@ async def test_a_usergroup_mapping_fills_in_only_where_atlas_has_no_group():
     app = AsyncMock()
     app.client.usergroups_list.return_value = _usergroups(
         ("cloud-ops", ["U1", "U2", "U3", "U4", "U5"]), ("team-internal-it", ["U3"]))
-    with patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "internal-it=Internal IT,OPS=Cloud (c³)"}):
+    with patch.dict(os.environ,
+                    {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "team-internal-it=Internal IT,@Cloud-Ops=Cloud (c³)"}):
         await hutbot.slackcache.refresh_usergroup_teams(app)
 
     app.client.usergroups_list.assert_awaited_once_with(include_users=True)
@@ -360,6 +361,19 @@ async def test_a_usergroup_mapping_fills_in_only_where_atlas_has_no_group():
 
 
 @pytest.mark.asyncio
+async def test_a_handle_matches_whole_and_never_a_piece_of_another(capsys):
+    app = AsyncMock()
+    app.client.usergroups_list.return_value = _usergroups(
+        ("ops-po", ["U1"]), ("devops", ["U2"]), ("OPS", ["U3"]), ("ops", ["U4"]))
+    with patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "ops=Operations,dev=Dev"}):
+        await hutbot.slackcache.refresh_usergroup_teams(app)
+
+    # Handles compare ignoring case, but only as a whole: `dev` fits nothing.
+    assert hutbot.state.usergroup_teams == {"U3": "Operations", "U4": "Operations"}
+    assert "No Slack user group has the handle '@dev'" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
 async def test_without_usergroup_mappings_no_usergroups_are_read():
     hutbot.state.usergroup_teams = {"U1": "Old"}
     app = AsyncMock()
@@ -375,7 +389,7 @@ async def test_a_failed_usergroup_read_keeps_the_previous_teams(capsys):
     hutbot.state.usergroup_teams = {"U1": "Cloud (c³)"}
     app = AsyncMock()
     app.client.usergroups_list.side_effect = SlackApiError("nope", {"ok": False, "error": "missing_scope"})
-    with patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "ops=Cloud (c³)"}):
+    with patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "cloud-ops=Cloud (c³)"}):
         await hutbot.slackcache.refresh_usergroup_teams(app)
     assert hutbot.state.usergroup_teams == {"U1": "Cloud (c³)"}
     assert "Failed to fetch the Slack user groups" in capsys.readouterr().err
@@ -388,7 +402,7 @@ async def test_a_refresh_reads_the_usergroups_before_building_users():
     app.client.usergroups_list.return_value = _usergroups(("cloud-ops", ["U4"]))
     with patch('hutbot.slackcache.fetch_employees', new=AsyncMock(return_value=dict(_PLACED))), \
          patch('hutbot.slackcache.load_employee_mappings', return_value={}), \
-         patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "ops=Cloud (c³)"}):
+         patch.dict(os.environ, {"EMPLOYEE_LIST_USERGROUP_MAPPINGS": "cloud-ops=Cloud (c³)"}):
         assert await hutbot.slackcache.refresh_user_cache(app) is True
 
     assert hutbot.state.id_user_cache["U4"].team == "Cloud (c³)"

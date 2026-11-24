@@ -1433,8 +1433,8 @@ def test_the_team_mappings_render_as_plain_variables(tmp_path):
         "    CS: Central Services\n"
         "    Infrastructure: Infrastructure/Engineering\n"
         "  usergroupTeamMappings:\n"
-        "    - {part: team-internal-it, team: Internal IT}\n"
-        "    - {part: cloud-ops, team: Cloud (c³)}\n", encoding="utf-8")
+        "    - {handle: team-internal-it, team: Internal IT}\n"
+        "    - {handle: '@cloud-ops', team: Cloud (c³)}\n", encoding="utf-8")
     result = _render("v1.2.3", "-f", str(values))
 
     assert result.returncode == 0, result.stderr
@@ -1442,7 +1442,7 @@ def test_the_team_mappings_render_as_plain_variables(tmp_path):
     assert _env_value(result, "EMPLOYEE_LIST_DEPARTMENT_MAPPINGS") == \
         "CS=Central Services,Infrastructure=Infrastructure/Engineering"
     assert _env_value(result, "EMPLOYEE_LIST_USERGROUP_MAPPINGS") == \
-        "team-internal-it=Internal IT,cloud-ops=Cloud (c³)"
+        "team-internal-it=Internal IT,@cloud-ops=Cloud (c³)"
     assert _env_value(result, "HUTBOT_DIRECTORY_CARDDAV_URL") == "https://bridge.example.com/carddav/books/directory/"
     assert _env_value(result, "HUTBOT_DIRECTORY_CARDDAV_USER") == "directory"
     assert _env_value(result, "EMPLOYEE_LIST_API_URL") == "https://api.example.com/internal"
@@ -1463,8 +1463,9 @@ def test_no_team_mappings_means_no_variables():
 
 @pytest.mark.parametrize("values", [
     "employeeDirectory:\n  departmentTeamMappings:\n    CS: 'Central, Services'\n",
-    "employeeDirectory:\n  usergroupTeamMappings:\n    - {part: 'a=b', team: Team}\n",
-    "employeeDirectory:\n  usergroupTeamMappings:\n    - {part: cloud-ops}\n",
+    "employeeDirectory:\n  usergroupTeamMappings:\n    - {handle: 'a=b', team: Team}\n",
+    "employeeDirectory:\n  usergroupTeamMappings:\n    - {handle: cloud-ops}\n",
+    "employeeDirectory:\n  usergroupTeamMappings:\n    - {part: cloud-ops, team: Cloud}\n",
 ])
 def test_a_team_mapping_the_variable_cannot_carry_fails_the_render(tmp_path, values):
     path = tmp_path / "values.yaml"

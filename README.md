@@ -1480,9 +1480,10 @@ looks at the directory, and a directory that is down or still empty changes noth
 logs who was placed where, and warns about anyone neither source knows a team for.
 
 Slack user groups are the other fallback. `EMPLOYEE_LIST_USERGROUP_MAPPINGS` (comma-separated
-`part=Team`; the chart renders it from the list `employeeDirectory.usergroupTeamMappings`) gives `Team` to every member of a user group whose handle contains `part`, ignoring
-case: `cloud-ops=Cloud (c³)` covers `@cloud-ops`, `team-internal-it=Internal IT` covers
-`@team-internal-it`. The first entry that fits a user wins. It applies to Slack users Atlas has no
+`handle=Team`; the chart renders it from the list `employeeDirectory.usergroupTeamMappings`) gives
+`Team` to every member of the user group with that handle. The handle must match whole, ignoring
+case and a leading `@`: `cloud-ops=Cloud (c³)` covers `@cloud-ops` but not `@cloud-ops-oncall`.
+The first entry that fits a user wins. It applies to Slack users Atlas has no
 group for — no employee record, a record without a group, or one only the CardDAV department
 placed — so it beats the department, but never Atlas's own group or a fallback-file record. The
 user groups are read each time the user cache is built (startup and every scheduled refresh), and
@@ -1497,7 +1498,7 @@ employeeDirectory:
   departmentTeamMappings:
     CS: Central Services
   usergroupTeamMappings:
-    - part: cloud-ops
+    - handle: cloud-ops
       team: Cloud (c³)
 ```
 
