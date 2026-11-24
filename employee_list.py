@@ -434,9 +434,10 @@ def _group_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", unidecode(name).lower())
 
 
-# Hand-written `part=Team` lists for the two team fallbacks. Kept apart from EMPLOYEE_LIST_MAPPINGS,
-# which names employees rather than teams. Read raw, like the CardDAV token: a value of plain
-# letters is also valid base64, and `get_env_var` would "decode" it.
+# Hand-written `key=Team` lists for the two team fallbacks, keyed by department and by whole user
+# group handle. Kept apart from EMPLOYEE_LIST_MAPPINGS, which names employees rather than teams.
+# Read raw, like the CardDAV token: a value of plain letters is also valid base64, and
+# `get_env_var` would "decode" it.
 DEPARTMENT_MAPPINGS_ENV = "EMPLOYEE_LIST_DEPARTMENT_MAPPINGS"
 USERGROUP_MAPPINGS_ENV = "EMPLOYEE_LIST_USERGROUP_MAPPINGS"
 # Records whose group came from a fallback rather than from Atlas carry this as `group_source`, so

@@ -1000,7 +1000,7 @@ large lists do not hit the process environment's size limit.
 | `OPSGENIE_HEARTBEAT_NAME` | no | Heartbeat to ping; empty on dev so it cannot ping production's |
 | `EMPLOYEE_LIST_ACCESS_KEY_ID` | no | Access key ID of the mittwald service the employee directory (Atlas) is read with, for team lookups |
 | `EMPLOYEE_LIST_SECRET_ACCESS_KEY` | no | That service's secret access key |
-| `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record |
+| `EMPLOYEE_LIST_MAPPINGS` | no | `user=alias` overrides for the mapping; `user=-` silences the "cannot be mapped" warning for accounts with no employee record. Only read from the Secret while the chart value `employeeDirectory.employeeMappings` is empty (see below) |
 | `HUTBOT_DIRECTORY_CARDDAV_TOKEN` | no | Token of the bridge's CardDAV directory, which gives employees without an Atlas group a team (see below) |
 | `HUTBOT_CALENDAR_BRIDGE_URL` | no | The calendar bridge's listing endpoint, token included (see below) |
 | `HUTBOT_BUILTIN_CALENDARS` | no | Calendars offered on top of the bridge's, and overrides of them (see below) |
@@ -1546,6 +1546,17 @@ their full name. The email comes before the names because it cannot pick a names
 
 Accounts that are nobody — shared or functional Slack users — belong in `EMPLOYEE_LIST_MAPPINGS`
 as `user=-` instead, which silences the "cannot be mapped" warning without inventing a record.
+
+The overrides are not secret either. The chart takes them as the map
+`employeeDirectory.employeeMappings`, which replaces the Secret's `EMPLOYEE_LIST_MAPPINGS` once
+set; left empty, the Secret key is used as before:
+
+```yaml
+employeeDirectory:
+  employeeMappings:
+    r.muster: rita.muster
+    pager-bot: "-"
+```
 
 > **Note:** The PersistentVolumeClaim created by this chart is annotated with `helm.sh/resource-policy: keep`, so it will not be deleted when you run `helm uninstall`. You can manually remove the PVC (and its underlying volume) by running `kubectl delete pvc <release-name>-pvc`. Keep in mind that if your StorageClass has a `Delete` reclaimPolicy, the underlying storage will still be deleted by the provisioner; to prevent this, use a StorageClass with `ReclaimPolicy: Retain`.
 

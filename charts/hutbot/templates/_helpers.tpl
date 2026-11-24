@@ -43,7 +43,7 @@ here, at render time, rather than mis-map at runtime.
 {{- $key := .key | default "" | toString | trim -}}
 {{- $team := .team | default "" | toString | trim -}}
 {{- if or (not $key) (not $team) -}}
-{{- fail (printf "%s: every entry needs a non-empty key and team (got %q=%q)" .what $key $team) -}}
+{{- fail (printf "%s: every entry needs a non-empty key and value (got %q=%q)" .what $key $team) -}}
 {{- end -}}
 {{- if or (contains "," $key) (contains "=" $key) (contains "," $team) -}}
 {{- fail (printf "%s: %q=%q contains a comma, or an = in the key, which the env format cannot carry" .what $key $team) -}}
@@ -55,6 +55,19 @@ here, at render time, rather than mis-map at runtime.
 {{- $entries := list -}}
 {{- range $department, $team := . -}}
 {{- $entries = append $entries (include "hutbot.teamMappingEntry" (dict "key" $department "team" $team "what" "employeeDirectory.departmentTeamMappings")) -}}
+{{- end -}}
+{{- join "," $entries -}}
+{{- end -}}
+
+{{/*
+Slack user -> employee overrides, `-` for accounts that are nobody. Rendered as a plain
+variable: every entry has an `=` before a non-empty value, so hutbot's base64 sniffing (which
+rejects an `=` that is not trailing padding) never mistakes the list for an encoded value.
+*/}}
+{{- define "hutbot.employeeMappings" -}}
+{{- $entries := list -}}
+{{- range $user, $employee := . -}}
+{{- $entries = append $entries (include "hutbot.teamMappingEntry" (dict "key" $user "team" $employee "what" "employeeDirectory.employeeMappings")) -}}
 {{- end -}}
 {{- join "," $entries -}}
 {{- end -}}
