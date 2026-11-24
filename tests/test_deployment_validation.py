@@ -1449,6 +1449,30 @@ def test_the_team_mappings_render_as_plain_variables(tmp_path):
     assert _env_value(result, "EMPLOYEE_LIST_AUTH_URL") == "https://auth.example.com/v2"
 
 
+def test_employee_mappings_in_values_replace_the_secret_key(tmp_path):
+    values = tmp_path / "values.yaml"
+    values.write_text(
+        "employeeDirectory:\n"
+        "  employeeMappings:\n"
+        "    r.muster: rita.muster\n"
+        "    pager-bot: '-'\n", encoding="utf-8")
+    result = _render("v1.2.3", "-f", str(values))
+
+    assert result.returncode == 0, result.stderr
+    env = [e for e in _container(result)["env"] if e["name"] == "EMPLOYEE_LIST_MAPPINGS"]
+    # Exactly one entry, the plain value: a second one from the Secret would shadow or be shadowed.
+    assert env == [{"name": "EMPLOYEE_LIST_MAPPINGS", "value": "pager-bot=-,r.muster=rita.muster"}]
+
+
+def test_without_employee_mappings_the_secret_key_stays():
+    result = _render()
+
+    assert result.returncode == 0, result.stderr
+    env = [e for e in _container(result)["env"] if e["name"] == "EMPLOYEE_LIST_MAPPINGS"]
+    assert env == [{"name": "EMPLOYEE_LIST_MAPPINGS", "valueFrom": {"secretKeyRef": {
+        "name": SECRET_NAME, "key": "EMPLOYEE_LIST_MAPPINGS", "optional": True}}}]
+
+
 def test_no_team_mappings_means_no_variables():
     result = _render()
 
@@ -1466,6 +1490,8 @@ def test_no_team_mappings_means_no_variables():
     "employeeDirectory:\n  usergroupTeamMappings:\n    - {handle: 'a=b', team: Team}\n",
     "employeeDirectory:\n  usergroupTeamMappings:\n    - {handle: cloud-ops}\n",
     "employeeDirectory:\n  usergroupTeamMappings:\n    - {part: cloud-ops, team: Cloud}\n",
+    "employeeDirectory:\n  employeeMappings:\n    r.muster: 'rita,muster'\n",
+    "employeeDirectory:\n  employeeMappings:\n    r.muster: ''\n",
 ])
 def test_a_team_mapping_the_variable_cannot_carry_fails_the_render(tmp_path, values):
     path = tmp_path / "values.yaml"

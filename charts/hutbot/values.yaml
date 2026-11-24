@@ -92,6 +92,12 @@ employeeDirectory:
   # fallback is off unless both are set and the Secret holds HUTBOT_DIRECTORY_CARDDAV_TOKEN.
   carddavUrl: ""
   carddavUser: ""
+  # Slack user name -> employee, overriding the automatic match; `-` marks an account that is
+  # nobody (shared or functional users) and silences its "cannot be mapped" warning. Set, it
+  # replaces EMPLOYEE_LIST_MAPPINGS from the Secret. E.g.
+  #   r.muster: rita.muster
+  #   pager-bot: "-"
+  employeeMappings: {}
   # Exchange department (from the CardDAV directory, see HUTBOT_DIRECTORY_CARDDAV_TOKEN) -> Atlas
   # team. Keys compare ignoring case, spacing and punctuation, e.g.
   #   CS: Central Services

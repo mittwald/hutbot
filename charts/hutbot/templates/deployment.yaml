@@ -132,7 +132,13 @@ spec:
             # HUTBOT_CALENDAR_BRIDGE_URL is in here rather than among the values below because
             # its query string carries the bridge's token: the listing it names, and every
             # calendar hanging off it, is readable by whoever holds that URL.
-            {{- range $key := list "OPSGENIE_TOKEN" "OPSGENIE_API_TOKEN" "OPSGENIE_HEARTBEAT_NAME" "EMPLOYEE_LIST_ACCESS_KEY_ID" "EMPLOYEE_LIST_SECRET_ACCESS_KEY" "EMPLOYEE_LIST_MAPPINGS" "HUTBOT_DIRECTORY_CARDDAV_TOKEN" "HUTBOT_CALENDAR_BRIDGE_URL" }}
+            # EMPLOYEE_LIST_MAPPINGS comes from the Secret only while employeeDirectory.employeeMappings
+            # is empty; set, the value below replaces it.
+            {{- $secretKeys := list "OPSGENIE_TOKEN" "OPSGENIE_API_TOKEN" "OPSGENIE_HEARTBEAT_NAME" "EMPLOYEE_LIST_ACCESS_KEY_ID" "EMPLOYEE_LIST_SECRET_ACCESS_KEY" "HUTBOT_DIRECTORY_CARDDAV_TOKEN" "HUTBOT_CALENDAR_BRIDGE_URL" }}
+            {{- if not .Values.employeeDirectory.employeeMappings }}
+            {{- $secretKeys = append $secretKeys "EMPLOYEE_LIST_MAPPINGS" }}
+            {{- end }}
+            {{- range $key := $secretKeys }}
             - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
@@ -181,13 +187,18 @@ spec:
             - name: HUTBOT_DIRECTORY_CARDDAV_USER
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.employeeDirectory.employeeMappings }}
+            # Slack user -> employee overrides; `-` marks accounts that are nobody.
+            - name: EMPLOYEE_LIST_MAPPINGS
+              value: {{ include "hutbot.employeeMappings" . | quote }}
+            {{- end }}
             {{- with .Values.employeeDirectory.departmentTeamMappings }}
             # Exchange department -> Atlas team, for employees only the CardDAV fallback places.
             - name: EMPLOYEE_LIST_DEPARTMENT_MAPPINGS
               value: {{ include "hutbot.departmentTeamMappings" . | quote }}
             {{- end }}
             {{- with .Values.employeeDirectory.usergroupTeamMappings }}
-            # Part of a Slack user group handle -> Atlas team, for users Atlas gives no group.
+            # Whole Slack user group handle -> Atlas team, for users Atlas gives no group.
             - name: EMPLOYEE_LIST_USERGROUP_MAPPINGS
               value: {{ include "hutbot.usergroupTeamMappings" . | quote }}
             {{- end }}
