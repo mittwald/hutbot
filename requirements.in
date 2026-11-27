@@ -6,7 +6,7 @@ aiohttp
 aiofiles
 unidecode
 croniter
-icalendar~=7.2
+icalendar~=7.3
 recurring-ical-events~=3.8
 # Reads recurrence rules the way the two above expand them (see hutbot/calendarfeed.py).
 python-dateutil
